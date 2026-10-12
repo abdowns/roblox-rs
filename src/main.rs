@@ -2,7 +2,7 @@ use std::{env, path::PathBuf, process::ExitCode};
 use studio_2016::collision;
 use studio_2016::{
     animation, assembly, bundle::Bundle, geometry::RenderScene, kernel, legacy_contact, locomotion,
-    physics, player, render, rig, runtime,
+    physics, player, render, rig, runtime, walking,
 };
 
 fn main() -> ExitCode {
@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
+            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-walking|viewport-walking|viewport-walking-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
         );
         return ExitCode::SUCCESS;
     }
@@ -23,6 +23,9 @@ fn main() -> ExitCode {
                 "audit-runtime"
                     | "audit-kernel"
                     | "audit-legacy-contact"
+                    | "audit-walking"
+                    | "viewport-walking"
+                    | "viewport-walking-smoke"
                     | "audit-assembly"
                     | "audit-geometry"
                     | "audit-render"
@@ -43,7 +46,7 @@ fn main() -> ExitCode {
         || args.len() > 2
     {
         eprintln!(
-            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
+            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-walking|viewport-walking|viewport-walking-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
         );
         return ExitCode::from(2);
     }
@@ -67,6 +70,9 @@ fn main() -> ExitCode {
             "audit-assembly" => assembly::audit(&bundle),
             "audit-kernel" => kernel::audit(&bundle),
             "audit-legacy-contact" => legacy_contact::audit(&bundle),
+            "audit-walking" => walking::audit(&bundle),
+            "viewport-walking" => render::viewport_walking(&bundle, None),
+            "viewport-walking-smoke" => render::viewport_walking(&bundle, Some(120)),
             "viewport-animation-smoke" => render::viewport_animation_smoke(&bundle),
             "viewport" => render::viewport(&bundle, None),
             "viewport-smoke" => render::viewport(&bundle, Some(120)),

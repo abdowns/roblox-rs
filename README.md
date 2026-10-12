@@ -7,6 +7,36 @@ beginning of the project and no equivalence is claimed. Unaffiliated with Roblox
 Current priority is the offline core Roblox client: rendering, player/Humanoid,
 physics, camera and appearance. Studio editor and editor GUI work is deferred.
 
+## Play the experimental walking fixture
+
+```sh
+sh tools/cargo.sh run --locked -- viewport-walking
+```
+
+Expected: the original character rendered on a gray floor beside a brown wall.
+**WASD** moves along world X/Z, **R** resets, **Escape** closes. The fixture camera
+follows translation. Movement uses native Humanoid command math, WalkSpeed=16,
+RunningBase forces, R6 assembly mass/inertia and constrained SimBody substeps.
+The two original collidable bodies (Head/Torso) generate vertex/plane wall
+connectors and receive native awake impulses/spring forces. Limbs retain their
+rest pose; default keyframe playback is not implemented.
+
+The floor support, wall, material coefficients, awake scheduling and camera are
+explicit research fixtures. Balancing, native floor/state queries and broadphase
+remain incomplete. Wall penetration reaches about 0.35 studs in the two-second
+test; this is experimental collision response, not native parity. Manual keys
+are **not tested**; automated input and Metal presentation are tested.
+
+```sh
+sh tools/cargo.sh run --locked -- audit-walking
+sh tools/cargo.sh run --locked -- viewport-walking-smoke
+```
+
+Expect `walking_pass walk_speed=16`, `input_release_stopped=true` and nonzero wall
+impulses. The automatic window test presses toward the wall, presents 120 frames,
+prints `walking_character_readback_pass` and `viewport_final_readback_pass`, then
+exits. Logs stay under RobloxStudio/analysis. Original files remain unchanged.
+
 ## Open the rendered client viewport
 
 ```sh
@@ -72,8 +102,8 @@ are downloaded on first build; runtime data loading uses no network requests.
   `sh tools/cargo.sh run --locked -- audit-kernel`; expect
   `kernel_pass parts=7 mass=9.9 constrained_steps=4560`. The diagnostic integrates
   the R6 assembly under an explicit constant force and tests two contact-history
-  samples. Contact generation, the iterative impulse pass and viewport walking
-  are still pending; this is not the full collision solver.
+  samples. The walking fixture integrates these paths; general contacts and the
+  full native scheduler remain pending.
 
 - Native block mass/inertia and recursive R6 assembly aggregation. Run
   `sh tools/cargo.sh run --locked -- audit-assembly`; expect
@@ -90,7 +120,8 @@ are downloaded on first build; runtime data loading uses no network requests.
 - RunningBase horizontal-force math, with explicit root/floor masses, solver
   selection, velocity and friction inputs. Run
   `sh tools/cargo.sh run --locked -- audit-locomotion`; expect
-  `running_force_pass cases=6`. This is not yet integrated walking.
+  `running_force_pass cases=6`. The explicit walking fixture now integrates this
+  legacy force calculation with original WalkSpeed and assembly mass.
 
 - Bundled procedural no-tool animation: Standing, Running, Jumping, FreeFall,
   Climbing and Seated. Run `sh tools/cargo.sh run --locked -- audit-animation`;
@@ -104,8 +135,9 @@ are downloaded on first build; runtime data loading uses no network requests.
 - Native R6 six-joint construction and the zero-offset Motor6D angle branch. Run
   `sh tools/cargo.sh run --locked -- audit-rig`; expect `rest_error=0`,
   `pivot_error=0` and `reset_identical=true`. The visible free-fall probe now
-  integrates one root and poses its linked children. Contact forces and physical
-  assembly mass/inertia remain incomplete.
+  integrates one root and poses its linked children. The walking fixture adds
+  recovered assembly mass/inertia and wall contact response; full physics remains
+  incomplete.
 
 - Native R6 body-mesh selection and scaling: six draws, 727 vertices and 1,066
   triangles. Run `sh tools/cargo.sh run --locked -- audit-render`; expect
@@ -118,7 +150,8 @@ are downloaded on first build; runtime data loading uses no network requests.
   `motion_render_pass steps=60`, `fresh_upload_identical=true`, and
   `reset_pixels_identical=true`. Moved frames change 11,781 pixels at 640×480;
   the moved face contributes 101 pixels. This is explicitly independent,
-  unconstrained Part motion; no playable rig or contacts are claimed.
+  unconstrained root motion with linked R6 Parts; walking and contacts use the
+  separate experimental fixture.
 
 - Native unconstrained free-fall branch. Run
   `sh tools/cargo.sh run --locked -- audit-physics`; expect
@@ -133,7 +166,8 @@ are downloaded on first build; runtime data loading uses no network requests.
   properties (WalkSpeed=16, JumpPower=50) and `player_command_pass updates=7`.
   Numeric checks cover analog strength, normalization, zero input, camera ground
   projection/full rotation, missing camera and detached handling. This does not
-  yet move the character or simulate locomotion. See
+  independently simulate locomotion; the walking fixture connects its command
+  math to assembly forces. See
   [core evidence](docs/provenance/2016-CORE.md).
 
 - Headless Metal rendering on this M3. Run
@@ -186,7 +220,7 @@ Window presentation now passes a 120-frame Metal smoke test after the BGRA
 format fix. Earlier failures remain recorded in STATUS.md. Pixel equivalence
 with the original running client is **not tested**.
 
-No full graphical client, general native geometry dispatch, interactive camera/input,
+No full graphical client, general native geometry dispatch, complete native camera/input,
 complete physics, keyframe animation, Lua runtime, Studio ribbon/docks/editing, place saving,
 or complete XML/binary-place loader exists yet. Mesh v1.00/v1.01 are not implemented.
 General surface subdivisions/UVs, decals/textures, high-quality materials, outlines,

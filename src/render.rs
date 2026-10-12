@@ -791,7 +791,7 @@ fn draw_bytes_with_studs(
             // branch without changing public native geometry/UV structures.
             let studs = if matches!(
                 draw.geometry.as_str(),
-                "special_head" | "humanoid_body_mesh"
+                "special_head" | "humanoid_body_mesh" | "walking_fixture"
             ) {
                 [-1.0; 2]
             } else {
@@ -1273,6 +1273,8 @@ struct Viewport {
     motion_remainder: f64,
     uploaded_step: u32,
     acquisition_retries: u32,
+    walking_keys: [bool; 4],
+    walking_camera_root: Option<[f32; 3]>,
 }
 impl Viewport {
     fn log_event(&mut self, event: String) -> Result<(), String> {
@@ -1298,7 +1300,7 @@ impl ApplicationHandler for Viewport {
                 event_loop
                     .create_window(
                         Window::default_attributes()
-                            .with_title("Roblox 2016 — Space: fall probe | R: reset | Esc: close")
+                            .with_title(if self.app.world().resource::<MotionControl>().walking_probe {"Roblox 2016 — walking fixture | WASD: move | R: reset | Esc: close"} else {"Roblox 2016 — Space: fall probe | R: reset | Esc: close"})
                             .with_inner_size(winit::dpi::LogicalSize::new(960.0, 720.0))
                             .with_visible(false),
                     )
@@ -1339,6 +1341,37 @@ impl ApplicationHandler for Viewport {
             if covered == 0 {
                 return Err("viewport warm-up rendered no geometry".into());
             }
+            if self.app.world().resource::<MotionControl>().walking_probe {
+                let original = self.app.world().resource::<Extracted>().0.clone();
+                let decals = self.app.world().resource::<ExtractedDecals>().0.clone();
+                let mut hidden = original.clone();
+                let mut hidden_decals = decals.clone();
+                for draw in &mut hidden {
+                    if draw.geometry != "walking_fixture" {
+                        for vertex in &mut draw.vertices {
+                            vertex.position = [1e6; 3];
+                        }
+                    }
+                }
+                for decal in &mut hidden_decals {
+                    for vertex in &mut decal.draw.vertices {
+                        vertex.position = [1e6; 3];
+                    }
+                }
+                gpu.update_geometry(&hidden, &hidden_decals, &self.surfaces)?;
+                let fixture_only = gpu.read_frame(config.width, config.height, &self.inputs)?;
+                gpu.update_geometry(&original, &decals, &self.surfaces)?;
+                let repeat = gpu.read_frame(config.width, config.height, &self.inputs)?;
+                let contribution = pixels
+                    .chunks_exact(4)
+                    .zip(fixture_only.chunks_exact(4))
+                    .filter(|(a, b)| a != b)
+                    .count();
+                if contribution == 0 || repeat != pixels {
+                    return Err("walking character contribution/reset check failed".into());
+                }
+                self.log_event(format!("walking_character_readback_pass changed_pixels={contribution} repeat_identical=true"))?;
+            }
             self.log_event(format!(
                 "viewport_readback_pass covered_pixels={covered} rgba_sha256={:x}",
                 Sha256::digest(&pixels)
@@ -1361,7 +1394,7 @@ impl ApplicationHandler for Viewport {
             self.config = Some(config);
             self.motion_clock = Instant::now();
             if self.motion_active {
-                self.log_event("motion_probe_started limit_steps=60 contacts=false joints=6 gravity=explicit_legacy".into())?;
+                self.log_event(if self.app.world().resource::<MotionControl>().walking_probe {"walking_fixture_started input=WASD floor_support=explicit wall_contacts=legacy_vertex_plane default_keyframes=false".into()} else {"motion_probe_started limit_steps=60 contacts=false joints=6 gravity=explicit_legacy".into()})?;
             }
             self.window.as_ref().unwrap().request_redraw();
             Ok(())
@@ -1381,6 +1414,60 @@ impl ApplicationHandler for Viewport {
                     && event.logical_key == Key::Named(NamedKey::Escape) =>
             {
                 event_loop.exit()
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.app.world().resource::<MotionControl>().walking_probe =>
+            {
+                let key = if matches!(&event.logical_key,Key::Character(k) if k.eq_ignore_ascii_case("w"))
+                {
+                    Some(0)
+                } else if matches!(&event.logical_key,Key::Character(k) if k.eq_ignore_ascii_case("a"))
+                {
+                    Some(1)
+                } else if matches!(&event.logical_key,Key::Character(k) if k.eq_ignore_ascii_case("s"))
+                {
+                    Some(2)
+                } else if matches!(&event.logical_key,Key::Character(k) if k.eq_ignore_ascii_case("d"))
+                {
+                    Some(3)
+                } else {
+                    None
+                };
+                if let Some(key) = key {
+                    self.walking_keys[key] = event.state == ElementState::Pressed;
+                    let input = [
+                        f32::from(self.walking_keys[3]) - f32::from(self.walking_keys[1]),
+                        0.0,
+                        f32::from(self.walking_keys[2]) - f32::from(self.walking_keys[0]),
+                    ];
+                    self.app
+                        .world_mut()
+                        .resource_mut::<MotionControl>()
+                        .walking_input = input;
+                    if let Err(error) = self.log_event(format!("walking_input vector={input:?}")) {
+                        self.fail(event_loop, error);
+                    }
+                } else if event.state == ElementState::Pressed
+                    && matches!(&event.logical_key,Key::Character(k) if k.eq_ignore_ascii_case("r"))
+                {
+                    motion::reset(self.app.world_mut());
+                    self.app
+                        .world_mut()
+                        .resource_mut::<MotionControl>()
+                        .walking_probe = true;
+                    self.walking_keys = [false; 4];
+                    self.motion_remainder = 0.0;
+                    self.motion_clock = Instant::now();
+                }
+            }
+            WindowEvent::Focused(false)
+                if self.app.world().resource::<MotionControl>().walking_probe =>
+            {
+                self.walking_keys = [false; 4];
+                self.app
+                    .world_mut()
+                    .resource_mut::<MotionControl>()
+                    .walking_input = [0.0; 3];
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && !event.repeat =>
@@ -1433,12 +1520,25 @@ impl ApplicationHandler for Viewport {
             WindowEvent::RedrawRequested => {
                 let result = (|| -> Result<(), String> {
                     if self.motion_active && self.frames > 0 {
+                        if self.frame_limit.is_some()
+                            && self.app.world().resource::<MotionControl>().walking_probe
+                        {
+                            self.app
+                                .world_mut()
+                                .resource_mut::<MotionControl>()
+                                .walking_input = [1.0, 0.0, 0.0];
+                        }
                         let now = Instant::now();
                         self.motion_remainder +=
                             now.duration_since(self.motion_clock).as_secs_f64();
                         self.motion_clock = now;
                         let dt = motion::timestep(self.app.world());
-                        let remaining = 60 - self.app.world().resource::<MotionControl>().steps;
+                        let walking = self.app.world().resource::<MotionControl>().walking_probe;
+                        let remaining = if walking {
+                            240
+                        } else {
+                            60 - self.app.world().resource::<MotionControl>().steps
+                        };
                         let steps = (self.motion_remainder / dt)
                             .floor()
                             .min(f64::from(remaining)) as u32;
@@ -1454,7 +1554,16 @@ impl ApplicationHandler for Viewport {
                         return Err(error.clone());
                     }
                     let step = control.steps;
-                    if self.motion_active && step == 60 {
+                    let walking = control.walking_probe;
+                    if let Some(frame) = motion::walking_frame(self.app.world()) {
+                        if let Some(previous) = self.walking_camera_root {
+                            self.inputs.frame.position = std::array::from_fn(|a| {
+                                self.inputs.frame.position[a] + frame.position[a] - previous[a]
+                            });
+                        }
+                        self.walking_camera_root = Some(frame.position);
+                    }
+                    if self.motion_active && !walking && step == 60 {
                         self.motion_active = false;
                         let head = self
                             .app
@@ -1558,6 +1667,9 @@ impl ApplicationHandler for Viewport {
                             gpu.count,
                             self.started.elapsed().as_secs_f64() * 1000.0
                         ))?;
+                        if let Some(report) = motion::walking_report(self.app.world()) {
+                            self.log_event(report)?;
+                        }
                     }
                     if self.frame_limit.is_some_and(|limit| self.frames >= limit) {
                         if let Some(event) = final_readback {
@@ -1580,17 +1692,21 @@ impl ApplicationHandler for Viewport {
 
 /// Open a diagnostic viewport. Optional frame limit supports numeric smoke tests.
 pub fn viewport(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, String> {
-    run_viewport(bundle, frame_limit, false, false)
+    run_viewport(bundle, frame_limit, false, false, false)
 }
 
 /// Automatic surface smoke with the same bounded free-fall trigger as Space.
 pub fn viewport_motion_smoke(bundle: &Bundle) -> Result<String, String> {
-    run_viewport(bundle, Some(120), true, false)
+    run_viewport(bundle, Some(120), true, false, false)
 }
 
 /// Explicit bundled procedural Running profile, with diagnostic 60 Hz callbacks.
 pub fn viewport_animation_smoke(bundle: &Bundle) -> Result<String, String> {
-    run_viewport(bundle, Some(120), true, true)
+    run_viewport(bundle, Some(120), true, true, false)
+}
+
+pub fn viewport_walking(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, String> {
+    run_viewport(bundle, frame_limit, true, false, true)
 }
 
 fn run_viewport(
@@ -1598,6 +1714,7 @@ fn run_viewport(
     frame_limit: Option<u32>,
     auto_motion: bool,
     animation: bool,
+    walking: bool,
 ) -> Result<String, String> {
     if frame_limit.is_some_and(|n| n == 0 || n > 10000) {
         return Err("viewport frame limit must be 1..=10000".into());
@@ -1605,7 +1722,7 @@ fn run_viewport(
     let scene = RenderScene::character(bundle)?;
     let mut report = scene.report.clone();
     let decals = texture::character_decals(bundle, &scene)?;
-    let surfaces = surface::character(bundle, &scene)?;
+    let mut surfaces = surface::character(bundle, &scene)?;
     report.push_str(&decals.report);
     report.push_str(&surfaces.report);
     let mut app = scene_app(scene);
@@ -1614,6 +1731,27 @@ fn run_viewport(
     }
     app.update();
     install_motion(&mut app, bundle)?;
+    let walking_camera_root = if walking {
+        app.world_mut()
+            .resource_mut::<MotionControl>()
+            .walking_probe = true;
+        if frame_limit.is_some() {
+            app.world_mut()
+                .resource_mut::<MotionControl>()
+                .walking_input = [1.0, 0.0, 0.0];
+        }
+        for draw in motion::walking_geometry(app.world()) {
+            surfaces
+                .coordinates
+                .insert(draw.name.clone(), vec![[0.0; 2]; draw.vertices.len()]);
+            app.world_mut().spawn(draw);
+        }
+        app.update();
+        report.push_str("walking_fixture support=explicit_anchored_plane target_height=original_torso wall=explicit_infinite_plane friction=explicit animation=rest_pose camera=fixture_translation_follow native_parity=not_tested\n");
+        motion::walking_frame(app.world()).map(|f| f.position)
+    } else {
+        None
+    };
     app.world_mut()
         .resource_mut::<MotionControl>()
         .animation_probe = animation;
@@ -1632,11 +1770,27 @@ fn run_viewport(
         .open(&live_path)
         .map_err(|e| e.to_string())?;
     println!("viewport_live_log={}", live_path.display());
+    let mut inputs = RenderInputs::character_probe();
+    if walking {
+        // Explicit follow-camera fixture on the character's side of the wall.
+        let position = Vec3::new(-8.0, 22.0, 35.0);
+        let back = (position - Vec3::new(0.0, 17.5, 22.5)).normalize();
+        let right = Vec3::Y.cross(back).normalize();
+        let up = back.cross(right);
+        inputs.frame = CoordinateFrame {
+            position: position.to_array(),
+            rotation: [
+                [right.x, up.x, back.x],
+                [right.y, up.y, back.y],
+                [right.z, up.z, back.z],
+            ],
+        };
+    }
     let mut viewport = Viewport {
         app,
         bundle_root: bundle.root().to_path_buf(),
         report,
-        inputs: RenderInputs::character_probe(),
+        inputs,
         window: None,
         surface: None,
         gpu: None,
@@ -1652,6 +1806,8 @@ fn run_viewport(
         motion_remainder: 0.0,
         uploaded_step: 0,
         acquisition_retries: 0,
+        walking_keys: [false; 4],
+        walking_camera_root,
     };
     EventLoop::new()
         .map_err(|e| e.to_string())?

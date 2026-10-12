@@ -417,3 +417,51 @@ the constrained body. Separate central collisions verify zero restitution,
 0.5 restitution and equal-mass momentum conservation. Forty iterations and
 material coefficients are explicit synthetic fixtures, not recovered defaults.
 No complete collision world or native execution parity is claimed.
+
+
+## Playable walking fixture
+
+walking.rs connects the existing native Humanoid Move input and legacy horizontal
+RunningBase forces to the recovered R6 assembly and 19 SimBody substeps per
+1/240-second interval. WalkSpeed is read from character3. The selected stationary,
+anchored-floor branch of 00c09632 also supplies support force: original torso
+height minus current torso height times 30000, minus root Y velocity times 1100;
+only a positive acceleration exceeding existing force/mass is applied, after
+subtracting existing force/mass and limiting force to +/-1e7. Constants are loaded
+from 017b05a0/017b05a4/017b05bc. This preserves the torso/root distinction. Native
+floor queries, state flags, movable-floor reaction and balancing remain pending.
+The fixture explicitly keeps support active at the original torso height and
+renders a floor at the original legs' lower bounds (15). It does not floor-clamp
+the root or use a modern controller. Original CanCollide flags select Head/Torso.
+
+An explicitly defined infinite plane at x=4 generates collidable-body face
+vertices. Face selection 006b2077 prefers Y over X on a tie, then Z on ties with
+the largest component; live decompilation corrected the initially strict-first
+selection. Vertex-plane points use the existing native contract; normals point
+from the dynamic character into the wall. Awake impulses precede 19 force/contact
+spring passes. Material coefficients, zero reference impulses and up-to-60 awake
+iterations are fixture inputs. Full native adaptive/sleep/invalidation/displacement
+scheduling is not claimed. Mass/inertia remain the rigid rest-pose assembly;
+walking poses do not play guessed clips or substitute procedural animation for
+the missing default keyframe data. AutoRotate, jump, stairs, slopes and complete
+balance/state dispatch remain pending. Two seconds of pressing into the wall
+produce up to 0.34594154 studs penetration and some lateral/angular response.
+
+The optional viewport-walking mode uses the existing Bevy pose/extraction path,
+adds independently authored floor/wall quads, bypasses their studs and follows
+root translation with an explicit fixture camera. W/A/S/D feed world-space input;
+opposite keys cancel and focus loss releases inputs. R resets the assembly and
+input. Existing public viewport and audit signatures and default probe behavior
+remain stable. The walking smoke driver restores its scripted input each redraw
+because macOS startup focus events cleared its first injected input. That first
+run presented correctly but did not walk; it is not counted as walking validation.
+
+Numeric checks reach 16 studs/second, cover 15.746418 studs during acceleration
+and one second of movement, stop on release, and record nonzero wall impulses.
+Metal warmup hides only character geometry/face, compares against the scene, then
+restores it: 59,432 changed pixels and repeat-identical restoration prove character
+contribution. A 120-frame smoke test reaches 466 physics ticks and 789 impulses.
+Motion regression preserves the previous 46,558-pixel frame/hash exactly. Manual
+keyboard interaction and native visual/behavior equivalence are not tested.
+The shipped keyframe scripts still contain remote asset IDs; no matching 2016
+KeyframeSequence data has been recovered from the local bundle.

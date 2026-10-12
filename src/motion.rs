@@ -8,6 +8,7 @@ use crate::{
     rig::R6Rig,
     scene::CoordinateFrame,
     texture::{self, TexturedDraw},
+    walking::WalkingFixture,
 };
 use bevy::prelude::*;
 use std::collections::BTreeMap;
@@ -33,6 +34,9 @@ pub(crate) struct MotionControl {
     pub steps: u32,
     pub error: Option<String>,
     pub animation_probe: bool,
+    pub walking_probe: bool,
+    pub walking_input: [f32; 3],
+    walking: WalkingFixture,
     animation: ProceduralAnimation,
     animation_ticks: u32,
 }
@@ -59,6 +63,7 @@ pub(crate) fn pose_draw(local: &Draw, frame: &CoordinateFrame) -> Draw {
 pub(crate) fn install(app: &mut App, bundle: &Bundle) -> Result<(), String> {
     let local = RenderScene::character_local(bundle)?;
     let rig = R6Rig::character(bundle, &local.scene)?;
+    let walking = WalkingFixture::new(bundle, &local.scene, &rig)?;
     let decals = texture::character_decals(bundle, &local)?;
     let mut draws: BTreeMap<_, _> = local
         .draws
@@ -119,6 +124,9 @@ pub(crate) fn install(app: &mut App, bundle: &Bundle) -> Result<(), String> {
         steps: 0,
         error: None,
         animation_probe: false,
+        walking_probe: false,
+        walking_input: [0.0; 3],
+        walking,
         animation: ProceduralAnimation::load(bundle)?,
         animation_ticks: 0,
     });
@@ -141,7 +149,19 @@ pub(crate) fn advance(
         return;
     }
     for _ in 0..steps {
-        if control.animation_probe {
+        if control.walking_probe {
+            let input = control.walking_input;
+            if let Err(error) = control.walking.step(&rig, input) {
+                control.error = Some(error);
+                return;
+            }
+            let published = control.walking.body.body_state();
+            for (name, mut body) in &mut bodies {
+                if name.0 == "HumanoidRootPart" {
+                    *body = published.clone();
+                }
+            }
+        } else if control.animation_probe {
             let time = f64::from(control.steps + 1) / 60.0;
             let ticks = (time / control.animation.wait_seconds + 1e-9).floor() as u32;
             if ticks > control.animation_ticks {
@@ -229,6 +249,9 @@ pub(crate) fn reset(world: &mut World) {
     control.requested_steps = 0;
     control.error = None;
     control.animation_probe = false;
+    control.walking_probe = false;
+    control.walking_input = [0.0; 3];
+    control.walking.reset();
     control.animation_ticks = 0;
 }
 
@@ -239,6 +262,62 @@ pub(crate) fn timestep(world: &World) -> f64 {
     } else {
         f64::from(control.profile.free_fall_dt)
     }
+}
+
+pub(crate) fn walking_report(world: &World) -> Option<String> {
+    let control = world.resource::<MotionControl>();
+    control.walking_probe.then(|| control.walking.report())
+}
+pub(crate) fn walking_frame(world: &World) -> Option<CoordinateFrame> {
+    let control = world.resource::<MotionControl>();
+    control
+        .walking_probe
+        .then(|| control.walking.body.frame.clone())
+}
+pub(crate) fn walking_geometry(world: &World) -> Vec<Draw> {
+    let control = world.resource::<MotionControl>();
+    let y = control.walking.floor_y;
+    let x = control.walking.wall_x;
+    let plane = |name: &str, points: [[f32; 3]; 4], normal: [f32; 3], color: [f32; 4]| Draw {
+        name: name.into(),
+        vertices: points
+            .into_iter()
+            .map(|position| crate::geometry::RenderVertex {
+                position,
+                normal,
+                uv: [0.0; 2],
+                color,
+                specular: [0.0; 2],
+            })
+            .collect(),
+        indices: vec![0, 1, 2, 0, 2, 3],
+        material: 256,
+        geometry: "walking_fixture".into(),
+    };
+    vec![
+        plane(
+            "WalkingFloor",
+            [
+                [-64.0, y, -64.0],
+                [-64.0, y, 86.0],
+                [64.0, y, 86.0],
+                [64.0, y, -64.0],
+            ],
+            [0.0, 1.0, 0.0],
+            [0.45, 0.45, 0.45, 1.0],
+        ),
+        plane(
+            "WalkingWall",
+            [
+                [x, y, -64.0],
+                [x, y + 10.0, -64.0],
+                [x, y + 10.0, 86.0],
+                [x, y, 86.0],
+            ],
+            [-1.0, 0.0, 0.0],
+            [0.65, 0.35, 0.25, 1.0],
+        ),
+    ]
 }
 
 #[cfg(test)]

@@ -1,5 +1,36 @@
 # MODLOG
 
+## 2026-10-12 Wire native movement and wall response into a playable fixture
+
+**Changed:** walking.rs integrates Humanoid input, original WalkSpeed, RunningBase
+horizontal/support forces, assembly substeps, original colliders and native wall
+connectors. Added viewport-walking, viewport-walking-smoke and audit-walking;
+WASD/release/reset/follow-camera and independently authored floor/wall geometry.
+Existing public signatures and default probes remain stable.
+**Why:** Exercise the recovered core physics/render paths together with playable
+input while keeping unrecovered floor/state/scheduler choices explicit.
+**Tested how:** Live Ghidra spring/face-selection constants; 42 source tests,
+Clippy, one-second movement/release and two-second wall audit; 120-frame Metal
+smoke with scripted input and character-only pixel comparison; previous motion
+window regression; all 2,606 original Contents entries match the fingerprint.
+**Result:** WalkSpeed 16, one-second distance 15.746418, release stops; wall audit
+817 impulses and maximum penetration 0.34594154. Final window: eight draws,
+3,210 indices, 120 frames/466 ticks/789 impulses. Character contributes 59,432
+pixels and restores identically. Previous motion hash remains identical.
+Test: `sh tools/cargo.sh run --locked -- viewport-walking`; expect rendered
+character/floor/wall, WASD translation and R reset. Automated verification:
+`sh tools/cargo.sh run --locked -- audit-walking`; expect `walking_pass`.
+**Still broken / not tested:** First Clippy flagged a needless return; corrected.
+First window smoke lost its injected input to a focus event; corrected and rerun.
+Fixture camera was moved to the character's side of the wall before the final
+contribution check. Initial face-axis tie handling was corrected from live native
+code. One glob used the wrong script path, then rg ignored install data; corrected
+using the original fonts path and --no-ignore. Manual keys, native parity,
+balancing, general collision, native floor/state/scheduling, default keyframes and
+complete rendering are **not tested**. Limbs stay in their original rest pose.
+**Next:** Recover balancing/native floor queries and original keyframe data/runtime.
+
+
 ## 2026-10-12 Generate legacy contained-face contacts and solve awake impulses
 
 **Changed:** Added legacy_contact.rs, runtime collision face table, native

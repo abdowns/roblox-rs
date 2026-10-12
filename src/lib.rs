@@ -21,3 +21,4 @@ pub mod scene;
 pub mod shader_pack;
 pub mod surface;
 pub mod texture;
+pub mod walking;

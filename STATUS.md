@@ -13,7 +13,7 @@ remain ignored under `RobloxStudio/analysis`. Rust 1.97.1, Bevy 0.20.0, Ghidra
 
 ## What works (tested)
 
-The current source has 33 passing synthetic tests; the following counts describe
+The current source has 42 passing synthetic tests; the following counts describe
 earlier checkpoints, with current changes detailed below. The runtime verifies the exact executable, reads
 37 meshes (10,992 vertices, 12,896 triangles), imports 26 character instances
 including seven Parts and retains hierarchy/Part state through 120 Bevy updates.
@@ -294,3 +294,26 @@ not yet integrated. Four corner impulses remove all approach speeds but produce
 some linear/angular rebound even with zero restitution; that observed fixture
 result is logged and has not been compared with native execution. No visual
 inspection. A patch context failure was corrected before any mutation.
+
+
+## Current playable-fixture checkpoint (2026-10-12)
+
+42 tests and Clippy pass. viewport-walking adds WASD translation of the rendered
+original R6 assembly with native RunningBase/SimBody math and vertex-plane wall
+response. audit-walking reaches 16 studs/second, moves 15.746418 studs in one
+second, stops on release and records 817 wall impulses over two seconds.
+Penetration reaches 0.34594154; balancing and full scheduler work are needed.
+Support, wall, materials, awake scheduling and camera remain explicit fixtures.
+Limbs stay in their rest pose. Default keyframe playback, AutoRotate, jump,
+slopes/stairs, native floor queries and complete rendering remain incomplete.
+Matching 2016 remote keyframe clip payloads are not recovered locally.
+
+First walking window smoke lost injected input to a focus event; the driver now
+sets its scripted input each redraw. Second run walked and presented correctly;
+final run added character-only readback validation (59,432 contributing pixels,
+repeat-identical restoration) and presented 120 frames/466 ticks/789 impulses.
+Previous free-fall window regression keeps its exact earlier 46,558-pixel hash.
+No visual inspection. Manual key interaction and native equivalence are not tested.
+First Clippy needless return and face-selection tie order were corrected. All
+2,606 original Contents entries remain unchanged. Source changes are committed
+as separate reversible steps; no assets/evidence leave RobloxStudio.

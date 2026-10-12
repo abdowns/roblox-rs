@@ -52,6 +52,42 @@ fn transform(f: &CoordinateFrame, p: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|a| r[a] + f.position[a])
 }
 impl BlockContactProfile {
+    /// Selected incident face against an explicit infinite plane fixture. Native
+    /// face selection chooses the largest local normal component (006b2077).
+    pub fn plane_vertices(
+        &self,
+        a: &CoordinateFrame,
+        size: [f32; 3],
+        b: &CoordinateFrame,
+        face: usize,
+    ) -> Result<Vec<(usize, ContactGeometry)>, String> {
+        if size.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err("invalid plane-contact box size".into());
+        }
+        let normal = self.vertex_plane(a, [0.0; 3], b, [0.0; 3], face)?.normal;
+        let direction = rotate(transpose(a.rotation), normal);
+        let axis = if direction[0].abs() <= direction[1].abs()
+            && direction[2].abs() < direction[1].abs()
+        {
+            1
+        } else if direction[0].abs() > direction[1].abs() && direction[2].abs() < direction[0].abs()
+        {
+            0
+        } else {
+            2
+        };
+        let incident = axis + if direction[axis] > 0.0 { 0 } else { 3 };
+        let vertices = vertices(size);
+        let mut result = Vec::new();
+        for corner in (0..4).rev() {
+            let index = self.faces[incident][corner];
+            let g = self.vertex_plane(a, vertices[index], b, [0.0; 3], face)?;
+            if g.distance < -self.overlap_goal {
+                result.push((index, g));
+            }
+        }
+        Ok(result)
+    }
     pub fn load(bundle: &Bundle) -> Result<Self, String> {
         let image = NativeImage::load(bundle)?;
         let data = image.region(0x017a3e68, 96)?;
