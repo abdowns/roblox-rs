@@ -1,5 +1,28 @@
 # MODLOG
 
+## 2026-10-12 Recover native free-fall physics
+
+**Changed:** Added runtime native physics constants, independent SimBody free-fall
+math, native-sign matrix/quaternion conversion and Bevy audit-physics fixture.
+Added timing/gravity/rotation/state-name evidence; public existing signatures stable.
+**Why:** Establish native body motion before contact and Humanoid locomotion forces.
+**Tested how:** Live Ghidra decompilation/instructions/memory; 26 synthetic tests;
+seven original Part frames/velocities through 240 Bevy updates; analytic trajectory
+comparison at every step; formatting/Clippy; whole Contents fingerprint.
+**Result:** Native dt approximately 1/240, kernel dt approximately 1/4560, 19
+subdivisions, damping 0.99621, legacy acceleration -196.20001 and post-step 1e-20
+additions. Maximum position/velocity errors 0.000218649/0.000691672; all 2,606
+original entries unchanged. Run
+`sh tools/cargo.sh run --locked -- audit-physics`; expect `free_fall_pass bodies=7 steps=240`.
+**Still broken / not tested:** A manual PIC address calculation initially selected
+the wrong section; instruction base/offset arithmetic corrected the read before
+implementation. Zero nudge would have been wrong: static initializer establishes
+the observed tiny value. Its anti-denormal purpose is an inference. DynamicGravity
+defaults, contacts, assemblies, sleeping and playable character/native differential
+parity are **not tested**. Parts in this probe are explicitly unconstrained.
+**Next:** Recover native assembly/joint construction and contact/Humanoid force
+paths; integrate those before connecting interactive player motion to rendering.
+
 ## 2026-10-12 Prioritize core client and recover Humanoid commands
 
 **Changed:** Added explicit Humanoid properties, Bevy motion component and

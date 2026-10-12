@@ -55,7 +55,7 @@ Bevy supplies scheduling/storage rather than modern material defaults.
 temporary and build output into this project. The reference guides remain their
 pre-existing independent checkout, excluded from the outer repository.
 
-Twenty-three source-only tests use invented inputs: version-line quirks, raw float words,
+Twenty-six source-only tests use invented inputs: version-line quirks, raw float words,
 malformed layouts/indices, matrix row order, nested referents, mip rules, DXT1
 endpoint branches and surface coordinates. The actual bundle
 diagnostic establishes import. `tools/verify_bundle.py` fingerprints every original
@@ -156,3 +156,26 @@ Degenerate ground frames and non-finite/overflowing vectors are rejected within
 this diagnostic subset. Reflection signals, replication, state transitions,
 locomotion forces, collisions and animation remain separate unrecovered behavior.
 Seven Bevy command updates log these decisions in `audit-player`.
+
+## Physics boundary
+
+`physics::NativePhysics` reads the verified image for free-fall/kernel timesteps,
+kernel subdivisions, angular damping, legacy acceleration and the three equal
+tiny velocity additions. Bounded x86 instruction decoding recovers immediates;
+no native instructions execute. DynamicGravity selection is an explicit input,
+with its original feature-flag default unresolved.
+
+`FreeFallBody` holds a frame, linear/angular velocity and the native-sign quaternion.
+Its step implements only the unconstrained native SimBody branch: damp angular
+velocity, quaternion derivative and normalization, half-gravity position update,
+full velocity update, then tiny additions. Public scene, renderer and import
+signatures remain stable. Matrix/quaternion conversion follows native branch
+choices rather than Bevy defaults.
+
+`audit-physics` reads original Part Velocity/RotVelocity into seven independent
+bodies and runs 240 explicit Bevy updates. It logs positions, velocities and
+quaternions, checks the analytic Y curve at every step, and bounds errors at 0.002.
+It is neither a native differential test nor an assembled character simulation.
+Contact classification, constraints, mass/inertia forces, collisions, sleeping,
+anchored scheduling, Humanoid locomotion and render synchronization are separate
+remaining work. Static render diagnostics continue to render the original pose.

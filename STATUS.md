@@ -13,7 +13,7 @@ remain ignored under `RobloxStudio/analysis`. Rust 1.97.1, Bevy 0.20.0, Ghidra
 
 ## What works (tested)
 
-Twenty-three synthetic tests pass. The runtime verifies the exact executable, reads
+Twenty-six synthetic tests pass. The runtime verifies the exact executable, reads
 37 meshes (10,992 vertices, 12,896 triangles), imports 26 character instances
 including seven Parts and retains hierarchy/Part state through 120 Bevy updates.
 All 2,606 original Contents files/symlinks match the stored fingerprint.
@@ -29,10 +29,13 @@ pass. The final atlas pass changes 5,518 pixels and repeats identically.
 Humanoid properties load explicitly. Seven Bevy command updates verify analog
 fraction, normalized directions, camera projection/full rotation, zero input,
 missing-camera partial writes and detached no-op. This does not yet move a rig.
+Free-fall physics runs seven independent original Parts over 240 updates with
+recovered native timing/gravity, angular damping, quaternion rules and tiny velocity
+additions. Maximum analytic position/velocity errors are 0.000218649/0.000691672.
 
 ## What does not work
 
-No complete graphical client, general geometry dispatch, physics, animation, Lua, interactive camera/input,
+No complete graphical client, general geometry dispatch, complete physics, animation, Lua, interactive camera/input,
 Studio editing/saving, mesh v1 or binary-place loading. Only explicit Part fields
 are typed; other classes do not execute behavior. Native execution and full
 pixel/behavior parity are **not tested**. General decals, surface subdivisions,
@@ -82,12 +85,14 @@ its public README was checked, with no copied code or dependency.
 ```sh
 sh tools/cargo.sh test --locked
 sh tools/cargo.sh run --locked -- audit-player
+sh tools/cargo.sh run --locked -- audit-physics
 sh tools/cargo.sh run --locked -- audit-render
 sh tools/cargo.sh run --locked -- audit-runtime
 python3 tools/verify_bundle.py check
 ```
 
-Expected: twenty-three passing tests, `player_command_pass updates=7`,
+Expected: twenty-six passing tests, `player_command_pass updates=7`,
+`free_fall_pass bodies=7 steps=240`,
 `render_probe_pass`, `gpu_contract_pass`,
 `gpu_decal_contract_pass`, `gpu_plastic_contract_pass`,
 `plastic_render_pass changed_pixels=5518 repeat_identical=true`,
@@ -97,8 +102,9 @@ docs/provenance/2016-MESH.md for native addresses and targeted trace commands.
 
 ## Next boundary and important files
 
-Next core boundary is native free-fall integration, followed by assemblies/joints,
-collision and Humanoid locomotion/state forces. Studio UI work is deferred.
+Next core boundaries are assemblies/joints, collision and Humanoid locomotion/state
+forces; unconstrained free-fall is implemented. Player command and physics probes
+are separate, and no playable character is claimed. Studio UI work is deferred.
 Remaining rendering boundaries include high-quality materials, general geometry,
 outlines, lighting/grid/shadows, sky and postprocessing. Native head
 sizing, normal transforms, explicit character block dispatch, head decals and
@@ -118,6 +124,8 @@ The 2015 implementation is not evidence of equality for those functions.
 - `src/scene.rs`: explicit XML v4 Part/instance subset.
 - `src/runtime.rs`: headless import and numerical evidence.
 - `src/player.rs`: explicit Humanoid properties and recovered command math.
+- `src/physics.rs`: native free-fall body math and numeric fixture.
+- `docs/provenance/2016-CORE.md`: core-client addresses and implemented limits.
 - `src/render.rs` / `src/render.wgsl`: recovered low-quality GPU probes.
 - `src/surface.rs` / `src/dds.rs`: character surface UVs and native DXT1 fallback.
 - `docs/DESIGN.md`: implemented architecture/limits.

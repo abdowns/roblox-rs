@@ -1,11 +1,11 @@
 use std::{env, path::PathBuf, process::ExitCode};
-use studio_2016::{bundle::Bundle, geometry::RenderScene, player, render, runtime};
+use studio_2016::{bundle::Bundle, geometry::RenderScene, physics, player, render, runtime};
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|viewport|viewport-smoke> [RobloxStudio directory]\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
+            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|viewport|viewport-smoke> [RobloxStudio directory]\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
         );
         return ExitCode::SUCCESS;
     }
@@ -17,6 +17,7 @@ fn main() -> ExitCode {
                     | "audit-geometry"
                     | "audit-render"
                     | "audit-player"
+                    | "audit-physics"
                     | "viewport"
                     | "viewport-smoke"
             )
@@ -24,7 +25,7 @@ fn main() -> ExitCode {
         || args.len() > 2
     {
         eprintln!(
-            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|viewport|viewport-smoke> [RobloxStudio directory]"
+            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|viewport|viewport-smoke> [RobloxStudio directory]"
         );
         return ExitCode::from(2);
     }
@@ -38,6 +39,7 @@ fn main() -> ExitCode {
             "audit-geometry" => RenderScene::character(&bundle).map(|scene| scene.report),
             "audit-render" => render::audit(&bundle),
             "audit-player" => player::audit(&bundle),
+            "audit-physics" => physics::audit(&bundle),
             "viewport" => render::viewport(&bundle, None),
             "viewport-smoke" => render::viewport(&bundle, Some(120)),
             _ => runtime::audit(&bundle, 120),

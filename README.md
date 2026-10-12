@@ -18,7 +18,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **23 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **26 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -29,6 +29,14 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Native unconstrained free-fall branch. Run
+  `sh tools/cargo.sh run --locked -- audit-physics`; expect
+  `free_fall_pass bodies=7 steps=240`. Reads native timing/gravity/damping values
+  and original Part velocities, preserves quaternion rules and tiny velocity
+  additions. Maximum analytic position error is about 0.000219 studs. This is a
+  fixture of independent Parts; character joints, collision and locomotion forces
+  are not implemented.
 
 - Recovered Humanoid movement command math. Run
   `sh tools/cargo.sh run --locked -- audit-player`; expect the explicit character
@@ -90,7 +98,7 @@ failed smoke attempts are recorded in STATUS.md. A manual test is
 `viewport_frame frame=120` and close. Do not assume this command currently passes.
 
 No full graphical client, general native geometry dispatch, interactive camera/input,
-physics, animation, Lua runtime, Studio ribbon/docks/editing, place saving,
+complete physics, animation, Lua runtime, Studio ribbon/docks/editing, place saving,
 or complete XML/binary-place loader exists yet. Mesh v1.00/v1.01 are not implemented.
 General surface subdivisions/UVs, decals/textures, high-quality materials, outlines,
 dynamic light grid, shadows, sky and postprocessing remain unimplemented. Imported Attachments and
