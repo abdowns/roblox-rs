@@ -1,5 +1,22 @@
 # MODLOG
 
+## 2026-10-12 Execute static rendering on Metal
+
+**Changed:** Direct Metal renderer with Bevy extraction, independently authored
+low-quality WGSL, native shader-pack reader, numeric readback and experimental
+viewport commands. Source whitelist now includes WGSL.
+**Why:** Execute recovered geometry, projection, lighting/fog and depth contracts.
+**Tested how:** 14 source-only tests; actual M3 Metal readback; repeat comparison;
+synthetic depth/fog and RGBA/BGRA checks; Contents fingerprint; formatting/Clippy.
+**Result:** 6,831 covered pixels/292 colors; repeat-identical output; four packs,
+572 records. Depth/fog/format checks pass; 2,606 original entries unchanged.
+**Still broken / not tested:** Initial wgpu API type errors fixed. Window smoke
+failed twice (hidden surface stalled, then warm-up RGBA/BGRA mismatch). Stopped
+GUI retries and recorded STATUS. Offscreen format correction passes; window after
+that fix is **not tested**. Texture/material completeness and native parity are
+**not tested**.
+**Next:** Recover decal resource/sampler/geometry contracts from native calls.
+
 ## 2026-10-12 Recover static geometry and camera
 
 **Changed:** Native-data palette/topology reader, character head/block geometry,

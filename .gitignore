@@ -12,6 +12,7 @@
 !/src/
 !/src/**/
 !/src/**/*.rs
+!/src/**/*.wgsl
 !/tests/
 !/tests/**/
 !/tests/**/*.rs

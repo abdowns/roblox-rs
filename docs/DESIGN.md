@@ -47,11 +47,13 @@ to preserve as implementation grows.
 ## Tooling and verification
 
 Rust 1.97.1 and Bevy 0.20.0 are pinned with a lockfile. Only Bevy's `std` feature
-is enabled; there is no GPU/window backend. `tools/cargo.sh` directs dependency,
+is enabled. Direct wgpu 30.0.1/Metal and winit 0.30.13 provide GPU/window plumbing;
+Bevy supplies scheduling/storage rather than modern material defaults.
+`tools/cargo.sh` directs dependency,
 temporary and build output into this project. The reference guides remain their
 pre-existing independent checkout, excluded from the outer repository.
 
-Eight source-only tests use invented inputs: version-line quirks, raw float words,
+Fourteen source-only tests use invented inputs: version-line quirks, raw float words,
 malformed layouts/indices, matrix row order and nested referents. The actual bundle
 diagnostic establishes import. `tools/verify_bundle.py` fingerprints every original
 Contents file and symlink. Neither establishes original game behavior or pixels.
@@ -68,3 +70,23 @@ explicit XML. Head deformation is recovered; normals rotate without inverse
 scaling. Unsupported shapes and reflectance return errors. Surface UVs/decals
 are not implemented. `camera` supplies recovered view/perspective matrices.
 Diagnostic poses are explicit probe inputs, not recovered historical defaults.
+
+## GPU boundary
+
+`render` extracts Draw components through a Bevy update, uploads world-space
+vertices and uses independently authored WGSL for the recovered low-quality
+lighting/fog equations. Only opaque Plastic is accepted. A linear UNORM target,
+back culling, LEQUAL depth/write and disabled blending follow the native default
+Technique. Grid/shadow are explicit constant probe inputs. No PBR, tone mapping
+or automatic sRGB conversion establishes historical behavior.
+
+`audit-render` executes Metal and reads back aligned rows, compares repeated
+frames, logs coverage/hash and saves a PPM inside analysis. Synthetic overlapping
+triangles check near-over-far, fog, equal fog bounds and RGBA/BGRA equivalence.
+`shader_pack` reads native RBXS headers/96-byte records and borrows payloads;
+range/uniqueness checks are research restrictions, not claims about native malformed
+input acceptance. All four native shader profiles are inventoried.
+
+The winit viewport uses the same shader and fixed probe camera. Two smoke failures
+stopped GUI testing. Offscreen format consistency is fixed and numerically tested;
+surface presentation after that fix is **not tested**. It is not the Studio UI.

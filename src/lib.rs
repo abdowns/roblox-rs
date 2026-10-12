@@ -4,5 +4,7 @@ pub mod camera;
 pub mod geometry;
 pub mod mesh;
 pub mod native_data;
+pub mod render;
 pub mod runtime;
 pub mod scene;
+pub mod shader_pack;

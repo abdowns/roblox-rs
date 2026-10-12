@@ -21,7 +21,10 @@ studio2016/RobloxStudio with GhidraMCP 7.0.0; no native executable was launched.
 | 01191d80 / 0073a94c | Render near=0.5 and far=5000; cull camera separate. | VR/asymmetric projection/culling unimplemented. |
 | 0108d5e0 | View uses transposed rotation and negative rotated translation. | Source-only inverse-frame test passes. |
 | 011c5ab0 | Fog reciprocal=0 if start=end, else 1/(end-start). | Shader uses clip W as depth. |
-| 01206470 | ShaderManager loads packed shaders and shaders.json variant manifest. | Pack loader not yet implemented. |
+| 01206470 | RBXS signature, count, 96-byte records; name64/digest16/absolute offset/length. | Four packs, 572 records read; manifest dispatch incomplete. |
+| 011d7980 | Default Technique: back cull, bias 0, LEQUAL depth/write, blend ONE/ZERO. | Used by opaque probe. |
+| 010294b0 / 010296a0 / 01029570 | GL raster/depth/blend enum tables. | Recovered numeric state mapping; stencil/other states incomplete. |
+| 010ba770 | Transparent flags select SRC_ALPHA/ONE_MINUS_SRC_ALPHA, depth writes off; decal bias -16 gives slope -0.5/units -16. | Transparent/decal GPU paths not implemented at this checkpoint. |
 
 The bundle includes original HLSL and packed GLSL. Default shaders combine
 opposing directional terms, ambient, light grid, shadows, specular and fog with
@@ -33,5 +36,13 @@ with 24 vertices/12 triangles each: 637 vertices, 906 triangles. Fully transpare
 root Part is skipped. Thirteen source-only tests pass. First palette run failed
 at XOR EAX,EAX; instruction evidence explained it and regression/fix passed.
 These checks establish mathematical/data contracts, not native execution.
-Rendering, decals, surface UVs, textures, light grid, shadows, sky, postprocessing
-and Studio UI are unimplemented at this checkpoint. Full parity is **not tested**.
+Headless Metal rendering now executes the independently authored low-quality
+equations with constant grid/shadow inputs. At 640x480 the explicit probe produces
+6,831 covered pixels, 292 colors and repeat-identical RGBA SHA-256
+`2ce85d030db6547e8106aeb47182f90c74c80c584dd612fa16f2fd348c79d4da`.
+Synthetic near red/far green triangles yield center `[128,0,128,255]` with fog,
+equal fog bounds yield `[0,0,255,255]`, and BGRA/RGBA targets agree.
+Fourteen source-only tests pass. Window presentation failed twice and is **not
+tested** after the format correction. Decals, surface UVs, textures, dynamic light
+grid, shadows, sky, postprocessing and Studio UI remain incomplete. Original
+pixel/behavior parity is **not tested**.

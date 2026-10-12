@@ -15,7 +15,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **13 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **14 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -26,6 +26,14 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Headless Metal rendering on this M3. Run
+  `sh tools/cargo.sh run --locked -- audit-render`; expect
+  `render_probe_pass`, `repeat_identical=true`, and `gpu_contract_pass` with
+  `bgra_matches_rgba=true`. This renders the static character with explicit probe
+  lighting/camera; checks depth and fog numerically; inventories 572 shader records
+  across four native packs. Logs and a PPM capture stay in RobloxStudio/analysis.
+  It covers opaque Plastic low-quality shading with constant grid/shadow inputs.
 
 - Recovered static character geometry and palette import. Run
   `sh tools/cargo.sh run --locked -- audit-geometry`; expect
@@ -50,11 +58,17 @@ are downloaded on first build; runtime data loading uses no network requests.
 
 ## What does not work / not tested
 
-No graphical client, native geometry dispatch, rendering, camera, input,
+Window presentation is experimental and **not tested** after a format fix. Two
+failed smoke attempts are recorded in STATUS.md. A manual test is
+`sh tools/cargo.sh run --locked -- viewport-smoke`; success would print
+`viewport_frame frame=120` and close. Do not assume this command currently passes.
+
+No full graphical client, general native geometry dispatch, interactive camera/input,
 physics, animation, Lua runtime, Studio ribbon/docks/editing, place saving,
 or complete XML/binary-place loader exists yet. Mesh v1.00/v1.01 are not implemented.
-Imported Attachments, Decals, SpecialMesh and Humanoid do not execute their native
-behavior. Full native execution, behavioral equivalence and visual equivalence
+Surface UVs/studs, decals, textures, high-quality materials, dynamic light grid,
+shadows, sky and postprocessing remain unimplemented. Imported Attachments and
+Humanoid do not execute their native behavior. Full native execution, behavioral equivalence and visual equivalence
 are **not tested**. Do not treat `static_import_pass` as evidence of those.
 
 The Ghidra MCP now connects to the running CodeBrowser in project studio2016.
