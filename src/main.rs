@@ -1,4 +1,5 @@
 use std::{env, path::PathBuf, process::ExitCode};
+use studio_2016::collision;
 use studio_2016::{
     animation, bundle::Bundle, geometry::RenderScene, locomotion, physics, player, render, rig,
     runtime,
@@ -11,7 +12,7 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
+            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
         );
         return ExitCode::SUCCESS;
     }
@@ -29,6 +30,7 @@ fn main() -> ExitCode {
                     | "audit-animation"
                     | "audit-animation-render"
                     | "audit-locomotion"
+                    | "audit-collision"
                     | "viewport-animation-smoke"
                     | "viewport"
                     | "viewport-smoke"
@@ -38,7 +40,7 @@ fn main() -> ExitCode {
         || args.len() > 2
     {
         eprintln!(
-            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
+            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
         );
         return ExitCode::from(2);
     }
@@ -58,6 +60,7 @@ fn main() -> ExitCode {
             "audit-animation" => animation::audit(&bundle),
             "audit-animation-render" => render::audit_animation(&bundle),
             "audit-locomotion" => locomotion::audit(&bundle),
+            "audit-collision" => collision::audit(&bundle),
             "viewport-animation-smoke" => render::viewport_animation_smoke(&bundle),
             "viewport" => render::viewport(&bundle, None),
             "viewport-smoke" => render::viewport(&bundle, Some(120)),

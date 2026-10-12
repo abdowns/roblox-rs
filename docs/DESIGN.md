@@ -300,3 +300,25 @@ radial rather than independent-axis limiting. Native floor queries, body assembl
 mass/inertia, vertical spring and balancing, force integration, reaction forces
 and full state scheduling remain pending. This calculation is not yet connected
 to the viewport and does not establish a playable walking client.
+
+## Contact persistence and velocity boundary
+
+The collision module ports native btPersistentManifold::refreshContactPoints
+0040294a: transform all cached local points first; recompute signed separation;
+increment lifetimes; reject normal separation strictly above the threshold; reject
+orthogonal drift strictly above factor-squared times threshold-squared. The old
+distance chooses the activation factor only on a positive-to-negative transition.
+Normals stay in world space. Removal copies the last point into the removed slot
+(00402b88); reverse iteration avoids reprocessing it. File-default factors are
+read at runtime from 01ca8d98/01ca8d9c; native runtime overrides are not tested.
+Breaking threshold is explicit, not assumed to be a universal 0.02 for all shapes.
+
+Roblox connector 00a929f6 computes each contact-point velocity as angular velocity
+cross displacement from the body's center plus linear velocity, then B minus A
+and its normal/tangent projection. 00a92bd6 negates the scalar normal projection.
+Tests cover boundary equality, penetration, separation, lateral drift, activation
+selection, reverse swap removal, rotation of local points and angular velocity.
+Callback side effects, cached impulses, contact generation, broadphase/narrowphase,
+friction/restitution impulses and the native assembly solver are not implemented.
+No floor clamp or guessed modern collision engine is used. Neither contact module
+nor horizontal-force calculation is yet wired to the viewport's root integrator.

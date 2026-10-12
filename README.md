@@ -48,7 +48,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **30 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **33 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -59,6 +59,11 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Native contact-cache refresh and angular contact-point velocity math. Run
+  `sh tools/cargo.sh run --locked -- audit-collision`; expect
+  `contact_pass refresh_cases=5 angular_velocity=true`. This does not yet generate
+  collisions or solve impulses in the viewport.
 
 - RunningBase horizontal-force math, with explicit root/floor masses, solver
   selection, velocity and friction inputs. Run
@@ -98,8 +103,8 @@ are downloaded on first build; runtime data loading uses no network requests.
   `free_fall_pass bodies=7 steps=240`. Reads native timing/gravity/damping values
   and original Part velocities, preserves quaternion rules and tiny velocity
   additions. Maximum analytic position error is about 0.000219 studs. This is a
-  fixture of independent Parts; character joints, collision and locomotion forces
-  are not implemented.
+  fixture of independent Parts. R6 joints and horizontal locomotion forces are
+  audited separately; complete assembly/contact integration is pending.
 
 - Recovered Humanoid movement command math. Run
   `sh tools/cargo.sh run --locked -- audit-player`; expect the explicit character

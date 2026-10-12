@@ -2,6 +2,7 @@
 pub mod animation;
 pub mod bundle;
 pub mod camera;
+pub mod collision;
 pub mod dds;
 pub mod geometry;
 pub mod locomotion;

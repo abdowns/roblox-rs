@@ -13,7 +13,8 @@ remain ignored under `RobloxStudio/analysis`. Rust 1.97.1, Bevy 0.20.0, Ghidra
 
 ## What works (tested)
 
-Twenty-seven synthetic tests pass. The runtime verifies the exact executable, reads
+The current source has 33 passing synthetic tests; the following counts describe
+earlier checkpoints, with current changes detailed below. The runtime verifies the exact executable, reads
 37 meshes (10,992 vertices, 12,896 triangles), imports 26 character instances
 including seven Parts and retains hierarchy/Part state through 120 Bevy updates.
 All 2,606 original Contents files/symlinks match the stored fingerprint.
@@ -224,3 +225,24 @@ constructor passes. Native default keyframe playback, Lua scheduling, callback
 cadence, tool animations, walking displacement and collisions remain incomplete.
 Manual A/R/Space events and full parity are not tested. Reproduce with
 `sh tools/cargo.sh run --locked -- viewport-animation-smoke`.
+
+## Current walking/contact boundaries and remaining work
+
+Live Ghidra recovered RunningBase horizontal feedback and contact-cache/velocity
+contracts. audit-locomotion passes six explicit mass/floor/solver/friction cases;
+audit-collision passes five threshold cases plus angular contact velocity. New
+tests check radial limiting, activation selection, rotated contact positions and
+reverse swap removal. Total tests: 33; Clippy passes. Original inputs remain
+read-only. Raw evidence is in running-*-native/asm and collision-refresh-* JSON
+files under ignored RobloxStudio/analysis.
+
+These modules are not connected to an assembly/contact solver. Playable walking
+translation and collision response are unfinished. Next dependency is native
+assembly mass/inertia and broadphase/narrowphase/contact creation, then force
+integration/vertical spring/balancing/state transitions. Native kernel timing and
+remote Animator clip data also need recovery before default full animation parity.
+The visible diagnostic now has original R6 meshes and joints with an explicit
+procedural animation profile. Full native rendering (character texture atlas,
+lighting/shadows/sky/material quality paths) and 1:1 equivalence are not tested.
+All earlier failed routes remain recorded above. This is a progress checkpoint,
+not completion of the entire player/physics/rendering rewrite.

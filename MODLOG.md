@@ -1,5 +1,27 @@
 # MODLOG
 
+## 2026-10-12 Recover native contact persistence and velocity
+
+**Changed:** Bullet cached-contact refresh/removal, runtime native orthogonal
+factors, signed normal/tangent velocity including angular motion, audit-collision.
+Existing public signatures and source whitelist are unchanged.
+**Why:** Collision solving depends on native contact lifetime/separation rules
+and point velocities rather than part-center velocities alone.
+**Tested how:** Live Ghidra 0040294a/00402b88/00a929f6/00a92bd6 plus assembly
+checks; five numeric threshold cases, rotation/removal/activation tests; 33 passing
+tests, Clippy and bundle fingerprint.
+**Result:** Strict threshold boundaries retain contacts; separated/drifting points
+are removed; angular relative velocity fixture equals [1,1,0]. Test:
+`sh tools/cargo.sh run --locked -- audit-collision`; expect
+`contact_pass refresh_cases=5 angular_velocity=true`.
+**Still broken / not tested:** Contact creation, shape-pair detection, native
+impulse/warm-start callbacks and assembly integration remain pending. Native
+differential behavior and runtime factor overrides are **not tested**. Contact
+refresh does not establish playable collision response.
+**Next:** Recover native assembly mass/inertia, contact generation and solver
+integration; then connect floor-aware Humanoid forces to the client.
+
+
 ## 2026-10-12 Recover RunningBase horizontal force math
 
 **Changed:** Runtime-loaded native feedback gains and ground/air limits; original
