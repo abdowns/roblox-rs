@@ -95,6 +95,22 @@ impl NativeImage {
         }
         Ok(rows)
     }
+
+    /// First four vectors copied by HumanoidIdentifier's static initializer
+    /// (012a1132..012a1155). The fifth vector is three immediate 1.0 writes.
+    pub fn humanoid_mesh_sizes(&self) -> Result<[[f32; 3]; 4], String> {
+        let bytes = self.region(0x018363c0, 48)?;
+        let sizes: [[f32; 3]; 4] = std::array::from_fn(|part| {
+            std::array::from_fn(|axis| {
+                let at = (part * 3 + axis) * 4;
+                f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+            })
+        });
+        if sizes.iter().flatten().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err("invalid native Humanoid mesh sizes".into());
+        }
+        Ok(sizes)
+    }
 }
 
 fn decode_colors(code: &[u8], base: u64, setter: u64) -> Result<BTreeMap<u32, [u8; 3]>, String> {

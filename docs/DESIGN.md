@@ -209,3 +209,23 @@ and reset pixels. The viewport's Space trigger uses an elapsed-time accumulator
 with native dt, stopping at 60 steps; R resets. The quarter-second stop is a
 research limit while contacts and rig construction are incomplete. Native remote
 interpolation, assembly classification and locomotion are not implied.
+
+## R6 body mesh selection (2026-10-12)
+
+Live Ghidra: fetchResources 010d4260 selects fonts/leftarm.mesh, rightarm.mesh,
+leftleg.mesh, rightleg.mesh and torso.mesh when FastCluster's material flag 0x20
+is set. HumanoidIdentifier 012a02c4 recognizes Parts in the Humanoid's parent;
+012a09ba accepts the supplied opaque Plastic Parts at zero reflectance. These
+are not the Composit*Base meshes. Mesh scale 010cabd0 divides Part.size by
+getBodyPartScale 012a0814. Its initializer 012a10d9 copies the first four vectors
+from file-backed 018363c0: head unit scale, torso 2x2x1, legs/arms 1x2x1.
+These vectors are read from the verified binary at runtime.
+
+The renderer now imports the five native files, keeps normals unscaled, retains
+source UVs and builds both world/local geometry through the existing signatures.
+addFileMesh 010c9d90 clears specular under flag 0x40 and emits no stud coordinates.
+A private GPU attribute sentinel selects this branch without changing public
+native vertex fields. The bare fixture retains per-Part color and the separate
+face pass; native texture-atlas composition, UV remapping, clothing and all quality
+variants are not tested or fully implemented. No visual/native differential parity
+is claimed. Raw traces stay ignored in RobloxStudio/analysis/body-*.json.

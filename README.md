@@ -14,7 +14,7 @@ sh tools/cargo.sh run --locked
 ```
 
 A window shows the supplied 2016 character, including its original head mesh,
-face decal, colors and Plastic stud surfaces. **Space** starts a quarter-second
+face decal, colors, and built-in torso/limb meshes. **Space** starts a quarter-second
 free-fall probe; **R** restores the original pose; **Escape** closes the window.
 This is the current core rendering probe, with explicit fixture camera/lighting;
 playable character movement and collisions are still incomplete.
@@ -25,7 +25,7 @@ For an automatic presentation test:
 sh tools/cargo.sh run --locked -- viewport-smoke
 ```
 
-Expected: `viewport_readback_pass covered_pixels=61363` on this 1920×1440 M3
+Expected: `viewport_readback_pass covered_pixels=` with a nonzero count on this M3
 window, `viewport_frame frame=120`, then exit. Coverage depends on window size.
 For the automatic visible motion test, run
 `sh tools/cargo.sh run --locked -- viewport-motion-smoke`. Expect
@@ -58,6 +58,12 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Native R6 body-mesh selection and scaling: six draws, 727 vertices and 1,066
+  triangles. Run `sh tools/cargo.sh run --locked -- audit-render`; expect
+  `plastic_render_pass changed_pixels=0` because composited body meshes bypass
+  studs. Face rendering changes 120 pixels at 640×480. Full native character
+  atlas composition and clothing are **not tested** and remain incomplete.
 
 - Physics frames update base geometry and its face decal. Run
   `sh tools/cargo.sh run --locked -- audit-motion`; expect

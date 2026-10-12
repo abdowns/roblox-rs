@@ -150,6 +150,7 @@ impl RenderScene {
         let image = NativeImage::load(bundle)?;
         let colors = image.brick_colors()?;
         let faces = image.block_faces()?;
+        let body_sizes = image.humanoid_mesh_sizes()?;
         let data = bundle.read(
             "Contents/Resources/content/fonts/character3.rbxm",
             16 * 1024 * 1024,
@@ -183,6 +184,24 @@ impl RenderScene {
                 continue;
             }
             let item = items[instance.referent.as_str()];
+            // HumanoidIdentifier scans the Humanoid's model children, rather
+            // than recognizing similarly named Parts elsewhere in the scene.
+            let humanoid_sibling = scene
+                .instances
+                .iter()
+                .any(|other| other.class == "Humanoid" && other.parent == instance.parent);
+            let body_mesh = if humanoid_sibling {
+                match instance.name.as_str() {
+                    "Torso" => Some(("torso.mesh", 1)),
+                    "Left Leg" => Some(("leftleg.mesh", 2)),
+                    "Right Leg" => Some(("rightleg.mesh", 2)),
+                    "Left Arm" => Some(("leftarm.mesh", 3)),
+                    "Right Arm" => Some(("rightarm.mesh", 3)),
+                    _ => None,
+                }
+            } else {
+                None
+            };
             let material = number(item, "Material")?;
             let reflectance: f32 = number(item, "Reflectance")?;
             if reflectance != 0.0 {
@@ -239,6 +258,29 @@ impl RenderScene {
                 }
                 draw.indices = mesh.triangles.into_iter().flatten().collect();
                 draw.geometry = "special_head".into();
+            } else if let Some((path, kind)) = body_mesh {
+                if part.shape != 1 || !matches!(material, 0x100 | 0x110) {
+                    return Err("unsupported Humanoid body composition predicate".into());
+                }
+                let mesh = MeshData::parse(&bundle.read(
+                    &format!("Contents/Resources/content/fonts/{path}"),
+                    64 * 1024 * 1024,
+                )?)?;
+                mesh.finite_bounds()?;
+                let scale: [f32; 3] = std::array::from_fn(|a| part.size[a] / body_sizes[kind][a]);
+                for v in mesh.vertices {
+                    draw.vertices.push(vertex(
+                        &geometry_part,
+                        std::array::from_fn(|a| v.position[a] * scale[a]),
+                        v.normal,
+                        [v.uv[0], v.uv[1]],
+                        color,
+                        material,
+                    )?);
+                }
+                draw.indices = mesh.triangles.into_iter().flatten().collect();
+                draw.geometry = "humanoid_body_mesh".into();
+                writeln!(report, "body_mesh_selected name={:?} path={path} native_size={:?} scale={scale:?} flags=0x64", instance.name, body_sizes[kind]).unwrap();
             } else {
                 if part.shape != 1 {
                     return Err(format!("unsupported Part shape {}", part.shape));
@@ -276,6 +318,18 @@ impl RenderScene {
                         .extend([base, base + 1, base + 2, base + 2, base + 1, base + 3]);
                 }
                 draw.geometry = "block".into();
+            }
+            // isBodyPartComposited accepts these opaque Plastic R6 parts at
+            // zero reflectance. addFileMesh's 0x40 branch clears specular data.
+            if humanoid_sibling
+                && matches!(
+                    draw.geometry.as_str(),
+                    "special_head" | "humanoid_body_mesh"
+                )
+            {
+                for v in &mut draw.vertices {
+                    v.specular = [0.0; 2];
+                }
             }
             let low: [f32; 3] = std::array::from_fn(|axis| {
                 draw.vertices

@@ -116,8 +116,18 @@ pub fn character(bundle: &Bundle, scene: &RenderScene) -> Result<SurfaceScene, S
                 )
                 .unwrap();
             }
-        } else if draw.geometry != "special_head" {
+        } else if !matches!(
+            draw.geometry.as_str(),
+            "special_head" | "humanoid_body_mesh"
+        ) {
             return Err("unsupported stud geometry".into());
+        } else {
+            writeln!(
+                result.report,
+                "stud_skip name={:?} reason=composited_file_mesh",
+                draw.name
+            )
+            .unwrap();
         }
         if result
             .coordinates

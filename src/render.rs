@@ -787,7 +787,17 @@ fn draw_bytes_with_studs(
                 }
                 vertices.extend(f.to_le_bytes());
             }
-            for f in uvs.map_or([0.0; 2], |uvs| uvs[index]) {
+            // Private adapter sentinel selects the recovered no-studs body
+            // branch without changing public native geometry/UV structures.
+            let studs = if matches!(
+                draw.geometry.as_str(),
+                "special_head" | "humanoid_body_mesh"
+            ) {
+                [-1.0; 2]
+            } else {
+                uvs.map_or([0.0; 2], |uvs| uvs[index])
+            };
+            for f in studs {
                 if !f.is_finite() {
                     return Err("non-finite stud coordinate".into());
                 }
@@ -889,10 +899,10 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
         .zip(plastic.chunks_exact(4))
         .filter(|(a, b)| a != b)
         .count();
-    if changes == 0 {
-        return Err("stud atlas produced no pixel changes".into());
+    if changes != 0 {
+        return Err("composited character incorrectly sampled stud atlas".into());
     }
-    writeln!(report,"plastic_render_pass changed_pixels={changes} repeat_identical=true rgba_sha256={:x} studs=original_dds outlines=probe_disabled compressed_decode=native_fallback",Sha256::digest(&plastic)).unwrap();
+    writeln!(report,"plastic_render_pass changed_pixels={changes} repeat_identical=true rgba_sha256={:x} studs=composited_body_disabled outlines=probe_disabled compressed_decode=native_fallback",Sha256::digest(&plastic)).unwrap();
     writeln!(report,"shader_path=static_low_quality_plastic_and_decal probe_light_grid=constant probe_shadow=constant native_visual_parity=not_tested").unwrap();
     let path = runtime::save_log(bundle, &report)?;
     let frame_path = path.with_extension("ppm");

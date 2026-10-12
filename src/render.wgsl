@@ -50,7 +50,8 @@ struct Output {
 }
 @fragment fn fragment_plastic(input: Output) -> @location(0) vec4<f32> {
     let atlas = textureSample(decal_texture, decal_sampler, input.studs);
-    let albedo = input.color.xyz * (atlas.r * 2.0);
+    let modulation = select(1.0, atlas.r * 2.0, input.studs.x >= 0.0);
+    let albedo = input.color.xyz * modulation;
     let lighting = g.ambient.xyz + input.diffuse * g.grid_shadow.w + g.grid_shadow.xyz;
     let lit_color = lighting * albedo + g.lamp0.xyz * (input.specular * g.grid_shadow.w);
     return vec4<f32>(mix(g.fog_color.xyz, lit_color, clamp(input.fog, 0.0, 1.0)), input.color.a);

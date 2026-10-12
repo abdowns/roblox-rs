@@ -1,5 +1,26 @@
 # MODLOG
 
+## 2026-10-12 Correct the R6 body mesh and material branch
+
+**Changed:** Native torso/arm/leg mesh dispatch, runtime native scale table,
+unscaled normals, zero body specular, and body stud bypass. Public signatures
+remain stable. Original source data remains read-only.
+**Why:** Ghidra fetchResources/Identifier/material traces show the supplied
+Humanoid uses these five file meshes, rather than unmeshed blocks.
+**Tested how:** Live Ghidra traces; 27 tests; static Metal and motion readbacks;
+synthetic depth/blend/Plastic/BGRA regression checks; Clippy and bundle fingerprint.
+**Result:** Six draws, 727 vertices, 1,066 triangles; 6,613 covered pixels at
+640x480, 120 face pixels; 11,781 motion pixels change. Repeat/fresh/reset comparisons
+pass and all 2,606 original entries are unchanged. Test:
+`sh tools/cargo.sh run --locked -- audit-render`; expect geometry totals above
+and `plastic_render_pass changed_pixels=0`. Motion:
+`sh tools/cargo.sh run --locked -- audit-motion`; expect reset/fresh identical.
+**Still broken / not tested:** Full character texture-atlas composition, clothing,
+native differential/visual parity, joints and locomotion are **not tested**.
+Bare fixture colors/face use the existing separate draw path.
+**Next:** Native six-joint construction and Motor6D motion.
+
+
 ## 2026-10-12 Connect native physics frames to visible character geometry
 
 **Changed:** Immutable Part-space geometry, seven Bevy body bindings, ordered
