@@ -1,4 +1,4 @@
-//! Numeric GPU probes and a viewport with recovered free-fall pose updates.
+//! Numeric GPU probes and a viewport with recovered R6 joint pose updates.
 //! Bevy owns/extracts draw components;
 //! wgpu supplies Metal without modern PBR, tone mapping or automatic color-space conversion.
 use crate::{
@@ -1167,7 +1167,7 @@ pub fn audit_motion(bundle: &Bundle) -> Result<String, String> {
     if gpu.read_frame(640, 480, &inputs)? != initial {
         return Err("motion reset did not restore original pixels".into());
     }
-    writeln!(report,"motion_render_pass steps=60 initial_world_bytes_identical=true decal_parent_checks=60 moved_decal_pixels={decal_changed} fresh_upload_identical=true reset_pixels_identical=true fixture=independent_unconstrained_parts native_visual_parity=not_tested").unwrap();
+    writeln!(report,"motion_render_pass steps=60 initial_world_bytes_identical=true decal_parent_checks=60 moved_decal_pixels={decal_changed} fresh_upload_identical=true reset_pixels_identical=true fixture=unconstrained_root_with_r6_links native_visual_parity=not_tested").unwrap();
     Ok(report)
 }
 

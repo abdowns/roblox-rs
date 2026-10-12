@@ -47,7 +47,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **27 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **29 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -59,6 +59,12 @@ are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
 
+- Native R6 six-joint construction and the zero-offset Motor6D angle branch. Run
+  `sh tools/cargo.sh run --locked -- audit-rig`; expect `rest_error=0`,
+  `pivot_error=0` and `reset_identical=true`. The visible free-fall probe now
+  integrates one root and poses its linked children. Contact forces and physical
+  assembly mass/inertia remain incomplete.
+
 - Native R6 body-mesh selection and scaling: six draws, 727 vertices and 1,066
   triangles. Run `sh tools/cargo.sh run --locked -- audit-render`; expect
   `plastic_render_pass changed_pixels=0` because composited body meshes bypass
@@ -68,7 +74,7 @@ are downloaded on first build; runtime data loading uses no network requests.
 - Physics frames update base geometry and its face decal. Run
   `sh tools/cargo.sh run --locked -- audit-motion`; expect
   `motion_render_pass steps=60`, `fresh_upload_identical=true`, and
-  `reset_pixels_identical=true`. Moved frames change 12,205 pixels at 640×480;
+  `reset_pixels_identical=true`. Moved frames change 11,781 pixels at 640×480;
   the moved face contributes 101 pixels. This is explicitly independent,
   unconstrained Part motion; no playable rig or contacts are claimed.
 

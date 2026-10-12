@@ -198,3 +198,17 @@ The quarter-second stop, explicit legacy gravity and Space/R controls are diagno
 inputs. No floor, collisions, joints, animation or native locomotion is implied.
 All prior static GPU/physics/player regressions pass and all 2,606 original bundle
 entries remain unchanged. Studio editor/GUI remains deferred.
+
+## Current R6 mesh and rig correction
+
+The earlier block-body/stud counts above describe earlier checkpoints. Current
+character geometry is six draws, 727 vertices, 1,066 triangles from the original
+head, torso and four limb files. Composited body geometry disables studs/specular.
+Native full texture composition remains incomplete. New audit-rig passes six
+joints/seven Parts with zero rest and pivot error. Free-fall now integrates one
+root and poses the native links, rather than seven independent rendered Parts.
+The independent audit-physics diagnostic remains available. Initial rig motion
+setup failed world-byte comparison; preserving imported rest frames until motion
+resolved the second run. Body-mesh motion and linked motion both pass fresh/reset
+pixel comparisons. Child physical velocities, native assembly forces, contacts,
+locomotion and animation are still incomplete. Twenty-nine tests pass.

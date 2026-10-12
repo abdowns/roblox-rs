@@ -1,5 +1,5 @@
 use std::{env, path::PathBuf, process::ExitCode};
-use studio_2016::{bundle::Bundle, geometry::RenderScene, physics, player, render, runtime};
+use studio_2016::{bundle::Bundle, geometry::RenderScene, physics, player, render, rig, runtime};
 
 fn main() -> ExitCode {
     let mut args: Vec<_> = env::args_os().skip(1).collect();
@@ -8,7 +8,7 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
+            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
         );
         return ExitCode::SUCCESS;
     }
@@ -22,6 +22,7 @@ fn main() -> ExitCode {
                     | "audit-player"
                     | "audit-physics"
                     | "audit-motion"
+                    | "audit-rig"
                     | "viewport"
                     | "viewport-smoke"
                     | "viewport-motion-smoke"
@@ -30,7 +31,7 @@ fn main() -> ExitCode {
         || args.len() > 2
     {
         eprintln!(
-            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
+            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
         );
         return ExitCode::from(2);
     }
@@ -46,6 +47,7 @@ fn main() -> ExitCode {
             "audit-player" => player::audit(&bundle),
             "audit-physics" => physics::audit(&bundle),
             "audit-motion" => render::audit_motion(&bundle),
+            "audit-rig" => rig::audit(&bundle),
             "viewport" => render::viewport(&bundle, None),
             "viewport-smoke" => render::viewport(&bundle, Some(120)),
             "viewport-motion-smoke" => render::viewport_motion_smoke(&bundle),

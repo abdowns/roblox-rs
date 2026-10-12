@@ -4,6 +4,7 @@ use crate::{
     bundle::Bundle,
     geometry::{Draw, RenderScene},
     physics::{self, FreeFallBody, GravitySource, NativePhysics},
+    rig::R6Rig,
     scene::CoordinateFrame,
     texture::{self, TexturedDraw},
 };
@@ -14,6 +15,10 @@ use std::collections::BTreeMap;
 pub(crate) struct LocalGeometry(Draw);
 #[derive(Component)]
 struct OriginalBody(FreeFallBody);
+#[derive(Component)]
+pub(crate) struct BodyName(String);
+#[derive(Resource)]
+struct OriginalRig(R6Rig);
 #[derive(Component)]
 pub(crate) struct LocalDecal {
     body: Entity,
@@ -49,6 +54,7 @@ pub(crate) fn pose_draw(local: &Draw, frame: &CoordinateFrame) -> Draw {
 
 pub(crate) fn install(app: &mut App, bundle: &Bundle) -> Result<(), String> {
     let local = RenderScene::character_local(bundle)?;
+    let rig = R6Rig::character(bundle, &local.scene)?;
     let decals = texture::character_decals(bundle, &local)?;
     let mut draws: BTreeMap<_, _> = local
         .draws
@@ -67,12 +73,17 @@ pub(crate) fn install(app: &mut App, bundle: &Bundle) -> Result<(), String> {
             let draw = draws.remove(&name).ok_or("missing local Part geometry")?;
             app.world_mut()
                 .entity_mut(*entity)
-                .insert((LocalGeometry(draw), body.clone(), OriginalBody(body)))
+                .insert((
+                    LocalGeometry(draw),
+                    body.clone(),
+                    OriginalBody(body),
+                    BodyName(name.clone()),
+                ))
                 .id()
         } else {
             // Retain the transparent root as a physics body without drawing it.
             app.world_mut()
-                .spawn((body.clone(), OriginalBody(body)))
+                .spawn((body.clone(), OriginalBody(body), BodyName(name.clone())))
                 .id()
         };
         if bodies.insert(name, entity).is_some() {
@@ -104,10 +115,16 @@ pub(crate) fn install(app: &mut App, bundle: &Bundle) -> Result<(), String> {
         steps: 0,
         error: None,
     });
+    app.insert_resource(OriginalRig(rig.clone()));
+    app.insert_resource(rig);
     Ok(())
 }
 
-pub(crate) fn advance(mut bodies: Query<&mut FreeFallBody>, mut control: ResMut<MotionControl>) {
+pub(crate) fn advance(
+    mut bodies: Query<(&BodyName, &mut FreeFallBody)>,
+    mut control: ResMut<MotionControl>,
+    rig: Res<R6Rig>,
+) {
     if control.error.is_some() {
         return;
     }
@@ -117,13 +134,40 @@ pub(crate) fn advance(mut bodies: Query<&mut FreeFallBody>, mut control: ResMut<
         return;
     }
     for _ in 0..steps {
-        for mut body in &mut bodies {
-            if let Err(error) = body.step(&control.profile, GravitySource::Legacy) {
+        for (name, mut body) in &mut bodies {
+            if name.0 == "HumanoidRootPart"
+                && let Err(error) = body.step(&control.profile, GravitySource::Legacy)
+            {
                 control.error = Some(error);
                 return;
             }
         }
         control.steps += 1;
+    }
+    if control.steps == 0 {
+        // Keep the serialized rest-frame bits until a root step is requested.
+        // Native preset composition has equivalent but differently signed zeros.
+        return;
+    }
+    // Integrate one unconstrained root, then pose the recovered native links.
+    // This does not substitute kinematic posing for an unrecovered contact solver.
+    let Some(root) = bodies
+        .iter()
+        .find(|(name, _)| name.0 == "HumanoidRootPart")
+        .map(|(_, body)| body.frame.clone())
+    else {
+        control.error = Some("missing rig motion root".into());
+        return;
+    };
+    match rig.pose(&root) {
+        Ok(frames) => {
+            for (name, mut body) in &mut bodies {
+                if let Some(frame) = frames.get(&name.0) {
+                    body.frame = frame.clone();
+                }
+            }
+        }
+        Err(error) => control.error = Some(error),
     }
 }
 
@@ -147,6 +191,8 @@ pub(crate) fn sync_decals(
 }
 
 pub(crate) fn reset(world: &mut World) {
+    let rig = world.resource::<OriginalRig>().0.clone();
+    *world.resource_mut::<R6Rig>() = rig;
     for (original, mut body) in world
         .query::<(&OriginalBody, &mut FreeFallBody)>()
         .iter_mut(world)

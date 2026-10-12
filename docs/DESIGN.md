@@ -229,3 +229,30 @@ native vertex fields. The bare fixture retains per-Part color and the separate
 face pass; native texture-atlas composition, UV remapping, clothing and all quality
 variants are not tested or fully implemented. No visual/native differential parity
 is claimed. Raw traces stay ignored in RobloxStudio/analysis/body-*.json.
+
+## Native R6 links and Motor6D
+
+Humanoid builder 00bdb2dc creates RootJoint, shoulders, hips and Neck as Motor6D
+instances via 00bdaa52, with MaxVelocity=0.1. Its ten C0/C1 globals are populated
+by 00bf9a9a, not stored in BSS on disk. The new rig module decodes the traced
+initializer translation writes and NormalId arguments at runtime. NormalId
+006b6c54/006b714c produces the corresponding rotations. C0/C1 preserve native
+pivot offsets, including the differing shoulder and hip offsets. Incomplete
+R6 sets are rejected; R15, custom joints and alternate root selection are pending.
+
+Motor6D SetDesiredAngle 00923e7a uses (abs(value)+1)*threshold < abs(delta);
+threshold is read from 01767c14. Step 00b3717c limits the angle change to
+abs(MaxVelocity) per callback, without multiplying by dt. Only its constructor
+zero-offset/unit-weight branch is implemented; offset decay and animator blend
+inputs are not implemented. The link relation is Part0*C0*Transform*inverse(C1)
+(00b370ec, 00a9d39a, 00b36fde). Root integration and the kinematic pose bridge
+use existing render entities and public signatures. Native assembly classification,
+force distribution, child velocity propagation and contact solving remain pending.
+
+The rest pose matches all seven imported frames numerically with zero residual.
+An animated shoulder maintains its pivot exactly. Reset restores identical
+frames/pixels. Initial motion setup first failed the existing byte comparison
+because rest-frame recomposition changes signed-zero arithmetic; serialized
+rest frames are now preserved until a motion step. The second run passes initial
+bytes, fresh uploads and pixel reset. Evidence is rig-motion*.log in the ignored
+analysis directory. Callback cadence and native differential parity are not tested.

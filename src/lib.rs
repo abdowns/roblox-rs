@@ -9,6 +9,7 @@ pub mod native_data;
 pub mod physics;
 pub mod player;
 pub mod render;
+pub mod rig;
 pub mod runtime;
 pub mod scene;
 pub mod shader_pack;

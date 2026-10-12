@@ -1,5 +1,24 @@
 # MODLOG
 
+## 2026-10-12 Recover and bind six native R6 joints
+
+**Changed:** Runtime decoding of native joint presets, Motor6D desired-angle dead
+zone and per-callback speed limit, audit-rig, and root-to-linked-Part pose updates.
+Public signatures remain stable; all original inputs stay read-only.
+**Why:** The native Humanoid constructs joints absent from the serialized model.
+**Tested how:** Live Ghidra builder/initializer/NormalId/Motor/link traces; 29 tests;
+rig rest/pivot/reset audit; linked Metal motion fresh/reset comparisons; Clippy.
+**Result:** Six joints/seven Parts, rest_error=0, pivot_error=0. Linked motion
+changes 11,781 pixels, with the face attached; fresh/reset pixels match. Test:
+`sh tools/cargo.sh run --locked -- audit-rig`; expect `rig_pass joints=6`.
+`sh tools/cargo.sh run --locked -- audit-motion`; expect fresh/reset identical.
+**Still broken / not tested:** First linked motion attempt failed the initial
+byte-roundtrip check; preserving serialized rest frames until motion fixed the
+second attempt. Native callback cadence, Animator blending/offset decay, physical
+assembly mass/inertia/velocities and contact forces are **not tested** or pending.
+**Next:** Bundled procedural animation and native walking/contact paths.
+
+
 ## 2026-10-12 Correct the R6 body mesh and material branch
 
 **Changed:** Native torso/arm/leg mesh dispatch, runtime native scale table,
