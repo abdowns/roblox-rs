@@ -255,3 +255,15 @@ the same final SHA-256 as the preceding run:
 Evidence: RobloxStudio/analysis/viewport-r6-motion-logfix-20261012.log. Reproduce:
 `sh tools/cargo.sh run --locked -- viewport-motion-smoke`; expect paused step=60,
 frame=120, viewport_final_readback_pass, exit success. No visual inspection.
+
+
+## Assembly checkpoint
+
+Native Block mass/inertia and recursive R6 Cofm math now pass audit-assembly with
+seven Parts, mass 9.9 and conserved translation inertia (error 6.74063e-8).
+The root's builder override is 0.1; Flying's separate mass=10 branch is recorded,
+not selected. Thirty-five tests and Clippy pass. Native assembly selection and
+state-dependent overrides remain not tested. Constrained integration/contact
+forces and playable walking are next dependencies. Clippy initially rejected
+parentheses/native addend order; the formatting/targeted annotations resolve it.
+A README patch context mismatch was corrected; no original game data changed.

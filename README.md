@@ -48,7 +48,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **33 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **35 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -59,6 +59,13 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Native block mass/inertia and recursive R6 assembly aggregation. Run
+  `sh tools/cargo.sh run --locked -- audit-assembly`; expect
+  `assembly_pass parts=7 mass_conserved=true`. The explicit builder branch uses
+  root mass 0.1 and total mass 9.9. Native block inertia follows its recovered
+  surface-weighted polynomial. State-dependent mass overrides and complete
+  constrained-body integration remain pending.
 
 - Native contact-cache refresh and angular contact-point velocity math. Run
   `sh tools/cargo.sh run --locked -- audit-collision`; expect

@@ -1,5 +1,26 @@
 # MODLOG
 
+## 2026-10-12 Recover R6 assembly mass and inertia
+
+**Changed:** Runtime-loaded Plastic density/root mass, native block inertia
+polynomial, recursive Cofm aggregation and SimBody diagonal inverse-inertia path;
+added audit-assembly. Existing public signatures remain stable.
+**Why:** Native blocks use a surface-weighted inertia polynomial; the R6 builder
+sets root mass to 0.1, so modern box formulas/default masses would differ.
+**Tested how:** Live Ghidra factory/shape/mass/Cofm/SimBody decompilation and SSE
+instructions; independent face-integral and rotated parallel-axis tests; 35 tests,
+Clippy and original-character diagnostic.
+**Result:** Seven Parts, mass 9.9, mass conserved, translation inertia error
+0.0000000674063. Test: `sh tools/cargo.sh run --locked -- audit-assembly`;
+expect `assembly_pass parts=7 mass_conserved=true`.
+**Still broken / not tested:** First Clippy flagged parentheses and native operand
+order; parentheses removed and targeted annotations preserve observed addends.
+One README patch missed wrapped context; corrected. Leaf Cofm initially used a
+multiply/divide roundtrip; the recovered copy branch is now retained. State-based
+mass overrides, root classification and native differential behavior are **not tested**.
+**Next:** Native contact force and constrained-body integration.
+
+
 ## 2026-10-12 Verify the final linked window probe
 
 **Changed:** Corrected the automatic free-fall startup log to report six active

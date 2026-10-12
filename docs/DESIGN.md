@@ -322,3 +322,31 @@ Callback side effects, cached impulses, contact generation, broadphase/narrowpha
 friction/restitution impulses and the native assembly solver are not implemented.
 No floor clamp or guessed modern collision engine is used. Neither contact module
 nor horizontal-force calculation is yet wired to the viewport's root integrator.
+
+
+## R6 assembly mass and inertia
+
+New assembly.rs recovers the explicit R6 builder branch. Legacy XML shape=1 maps
+to internal Block=2 (00708d58); the factory's internal shape=1 is Ball. Block
+volume is size.x*size.y*size.z (00adf1e0), density is queried from custom properties
+or MaterialProperties (00a44226/00a4346a). Plastic density is read from 01782284.
+RootJoint construction sets its Part0 mass to 0.1 (00bdb6a6); this immediate is
+decoded from the verified executable. Another Flying branch sets mass to 10;
+that branch is not selected by this explicit fixture.
+
+Block inertia 00adf960 calls 00adee8a. Its surface-weighted face polynomial is
+implemented in observed SSE order, using the native divisor at 01834cd8. It is
+not uniform-solid m/12 inertia. The seven-body tree follows recovered R6 joints;
+Cofm 00a90502 copies leaf properties, sums child mass/weighted world centers,
+adds rotated inertias and parallel-axis matrices (006b0140), then rotates the
+result into body space. Signed off-diagonal terms remain. SimBody 00ab16aa takes
+the local diagonal, reciprocates it and rotates it into world space; a general
+matrix inverse would substitute a different contract.
+
+Audit logs per-Part tensors, aggregate mass/center/tensor and inverse inertia.
+Independent thin-shell integrals, rotated child offsets and translation checks
+pass. Child ordering is the explicit constructed R6 order; native assembly root
+selection, flags/state-dependent mass overrides and runtime differential parity
+remain untested. This step does not yet integrate collisions or move the viewport.
+Raw evidence stays in ignored RobloxStudio/analysis/assembly-*, *mass* and
+block-inertia-asm JSON files.
