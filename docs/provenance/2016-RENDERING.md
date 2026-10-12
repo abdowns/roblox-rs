@@ -73,3 +73,46 @@ original running-client visual parity remains **not tested**.
 General decals, surface subdivisions, textures, outlines, dynamic light
 grid, shadows, sky, postprocessing and Studio UI remain incomplete. Original
 pixel/behavior parity is **not tested**.
+
+## Physics frame to geometry — 2026-10-12
+
+Live Ghidra MCP supplied the following frame path. Raw decompilation remains
+ignored in `RobloxStudio/analysis/pose-native-*.json`.
+
+| Address | Observed contract | Current boundary |
+|---|---|---|
+| 0116aa20 | FastCluster::updateCoordinateFrame refreshes each live bone using 0098074a; transformed bounds are combined; movement can invalidate lighting occupancy. | Physics pose consumption implemented for the explicit offline fixture. Native clustering/culling/lighting invalidation are incomplete. |
+| 0098074a | Render frame getter selects interpolation/character-root adjustments when native assembly and flags require them. | Those branches are not guessed; current fixture is explicitly unconstrained/local. |
+| 009885d8 | With no interpolated assembly branch, copies the full physical CFrame returned by 00b63ccc. | Direct-frame subset implemented. |
+| 00b63ccc / 00b6489a | Resolves physical body, locks/refreshes it and returns the CFrame at body+0xb4. | Rust-owned frame read, no native execution. |
+| 0116b6a0 | Part and its Decal enter geometry generation with the same bone index. | Rendered face and head share the same FreeFallBody entity. |
+| 0066d93e | Rotated bounds use transformed center and absolute rotation times half-extents. | Numerical vertex bounds logged; native culling not implemented. |
+
+Local geometry is generated again from original mesh/size/offset inputs with an
+identity frame, rather than inverting rounded world vertices. Reapplying the
+original Part frames produces identical serialized world vertex/index bytes.
+Positions retain the recovered translation/Y/X/Z arithmetic order; normals are
+rotated without inverse scale. UVs, surface atlas coordinates, colors and indices
+remain unchanged. This CPU update adapter does not establish floating-point parity
+with native GPU bone transforms.
+
+`audit-motion` steps the seven independent original bodies 60 times. The head
+minimum Y moves from 18.898788 to 12.767532. Final pixels differ at 12,205 pixels;
+the moved face contributes 101 pixels. Parent geometry is checked each update,
+repeat frames are identical, updated buffers match fresh GPU uploads, and reset
+restores identical initial pixels. Final 640×480 RGBA SHA-256:
+`6e2d181d1ed34c904034e0651ff10d7d85f8f212e779a5973846c4ce6f466801`.
+
+The visible fall driver accumulates wall time into recovered free-fall dt and
+pauses after 60 steps (0.250000013 seconds). This bound and Space/R keys are
+research controls, not original game behavior. No floor, joints, collision,
+Humanoid force or native assembly classification is fabricated. Full native
+visual/behavioral equivalence remains **not tested**.
+
+The automatic window motion smoke now completes 120 presentations, with 60
+physics steps and a final 1920×1440 readback covering 48,475 pixels. Its first
+attempt timed out before any presentation. Pinned wgpu's Metal surface checks
+native occlusion; winit's set_visible orders the window forward while focus_window
+also activates the app. Explicit activation, acquisition logs and first-frame
+motion gating resolved the second bounded run. Startup transient Occluded remains
+visible in the evidence; broader lifecycle parity is **not tested**.

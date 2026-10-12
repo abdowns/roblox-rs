@@ -8,7 +8,7 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|viewport|viewport-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
+            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
         );
         return ExitCode::SUCCESS;
     }
@@ -21,14 +21,16 @@ fn main() -> ExitCode {
                     | "audit-render"
                     | "audit-player"
                     | "audit-physics"
+                    | "audit-motion"
                     | "viewport"
                     | "viewport-smoke"
+                    | "viewport-motion-smoke"
             )
         )
         || args.len() > 2
     {
         eprintln!(
-            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|viewport|viewport-smoke> [RobloxStudio directory]"
+            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
         );
         return ExitCode::from(2);
     }
@@ -43,8 +45,10 @@ fn main() -> ExitCode {
             "audit-render" => render::audit(&bundle),
             "audit-player" => player::audit(&bundle),
             "audit-physics" => physics::audit(&bundle),
+            "audit-motion" => render::audit_motion(&bundle),
             "viewport" => render::viewport(&bundle, None),
             "viewport-smoke" => render::viewport(&bundle, Some(120)),
+            "viewport-motion-smoke" => render::viewport_motion_smoke(&bundle),
             _ => runtime::audit(&bundle, 120),
         };
         let report = match result {

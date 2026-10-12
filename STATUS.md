@@ -13,7 +13,7 @@ remain ignored under `RobloxStudio/analysis`. Rust 1.97.1, Bevy 0.20.0, Ghidra
 
 ## What works (tested)
 
-Twenty-six synthetic tests pass. The runtime verifies the exact executable, reads
+Twenty-seven synthetic tests pass. The runtime verifies the exact executable, reads
 37 meshes (10,992 vertices, 12,896 triangles), imports 26 character instances
 including seven Parts and retains hierarchy/Part state through 120 Bevy updates.
 All 2,606 original Contents files/symlinks match the stored fingerprint.
@@ -102,8 +102,8 @@ docs/provenance/2016-MESH.md for native addresses and targeted trace commands.
 ## Next boundary and important files
 
 Next core boundaries are assemblies/joints, collision and Humanoid locomotion/state
-forces; unconstrained free-fall is implemented. Player command and physics probes
-are separate, and no playable character is claimed. Studio UI work is deferred.
+forces; unconstrained free-fall and physics-to-render synchronization are implemented.
+Player commands do not yet drive body forces, and no playable character is claimed. Studio UI work is deferred.
 Remaining rendering boundaries include high-quality materials, general geometry,
 outlines, lighting/grid/shadows, sky and postprocessing. Native head
 sizing, normal transforms, explicit character block dispatch, head decals and
@@ -164,3 +164,37 @@ inspection. Launch defaults to the visible viewport; incremental frame/startup
 logs flush to an ignored analysis file while it runs. Tests: 26 pass.
 Reproduce: `sh tools/cargo.sh run --locked -- viewport-smoke`.
 Expected: `viewport_readback_pass`, `viewport_frame frame=120`, exit success.
+
+## Physics now updates visible geometry
+
+`motion` binds local original geometry to the seven recovered free-fall bodies;
+the face shares its Head body. Initial world bytes match, parent positions/normals
+are checked for 60 updates, dynamic GPU uploads match fresh posed uploads, and
+reset restores identical pixels. At step 60, head minimum Y=12.767532349;
+12,205 pixels change at 640×480, with 101 contributed by the moved face.
+Reproduce: `sh tools/cargo.sh run --locked -- audit-motion`;
+expect `motion_render_pass steps=60 fresh_upload_identical=true` (other fields
+occur between the markers), plus `reset_pixels_identical=true`.
+
+Window motion attempt 1 timed out at 45 seconds without frame 1, although warm-up
+and physics progress were logged. Evidence is
+`RobloxStudio/analysis/viewport-motion-console-20261012.log`.
+The pinned Metal implementation returns Occluded for invisible native occlusion
+state; showing a winit window does not itself activate the app. Added explicit
+focus after warm-up, logged acquisition states and held automatic physics until
+the first presentation. The second bounded run succeeded: an initial Occluded
+retry with window_visible=true/window_focused=false, then frame 1 at step 0,
+60 physics steps, 120 presentations, final coverage=48,475 pixels. Final
+1920×1440 RGBA SHA-256:
+`875f59fb89d4f7045f9c1102adc9708318403f40c53c596f2957fbb94edc554c`.
+Evidence: `RobloxStudio/analysis/viewport-motion-focus-20261012.log`.
+Focus/first-frame handling resolves this observed run; broader macOS lifecycle
+behavior and manual Space/R/Escape interaction are **not tested**.
+Reproduce: `sh tools/cargo.sh run --locked -- viewport-motion-smoke`;
+expect `motion_probe_paused step=60`, frame 120 at physics_step=60,
+`viewport_final_readback_pass`, exit success.
+
+The quarter-second stop, explicit legacy gravity and Space/R controls are diagnostic
+inputs. No floor, collisions, joints, animation or native locomotion is implied.
+All prior static GPU/physics/player regressions pass and all 2,606 original bundle
+entries remain unchanged. Studio editor/GUI remains deferred.

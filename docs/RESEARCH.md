@@ -60,3 +60,13 @@ joint and input behavior remains unverified for 2016 and must be traced before r
 The local guide index, Rust rewrite guide, IW4L case study and supplied decompile
 system map informed the workflow. No installation patching, online services,
 authentication or community client loader execution was needed for this step.
+
+## Window lifecycle check — same pinned releases
+
+The cached primary source for wgpu-hal 30.0.1 Metal surface acquisition checks
+NSWindow occlusion before acquiring a drawable. winit 0.30.13 set_visible orders
+the window forward; focus_window also activates NSApplication. These APIs were
+verified against the dependency sources actually built here. Online access to
+the linked wgpu issue and versioned winit docs was unavailable during this check;
+no system tool or dependency was changed. Numeric motion smoke confirms recovery
+from a startup Occluded result, not complete macOS lifecycle equivalence.

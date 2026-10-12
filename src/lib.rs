@@ -4,6 +4,7 @@ pub mod camera;
 pub mod dds;
 pub mod geometry;
 pub mod mesh;
+mod motion;
 pub mod native_data;
 pub mod physics;
 pub mod player;

@@ -137,6 +137,16 @@ fn vertex(
 
 impl RenderScene {
     pub fn character(bundle: &Bundle) -> Result<Self, String> {
+        Self::character_geometry(bundle, false)
+    }
+
+    /// Keep source positions in Part space for later frame updates. Building
+    /// these from original inputs avoids a world-to-local rounding round trip.
+    pub(crate) fn character_local(bundle: &Bundle) -> Result<Self, String> {
+        Self::character_geometry(bundle, true)
+    }
+
+    fn character_geometry(bundle: &Bundle, local: bool) -> Result<Self, String> {
         let image = NativeImage::load(bundle)?;
         let colors = image.brick_colors()?;
         let faces = image.block_faces()?;
@@ -158,6 +168,11 @@ impl RenderScene {
             let Some(part) = &instance.part else {
                 continue;
             };
+            let mut geometry_part = part.clone();
+            if local {
+                geometry_part.frame.position = [0.0; 3];
+                geometry_part.frame.rotation = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+            }
             if part.transparency >= 1.0 {
                 writeln!(
                     report,
@@ -214,7 +229,7 @@ impl RenderScene {
                 mesh.finite_bounds()?;
                 for v in mesh.vertices {
                     draw.vertices.push(vertex(
-                        part,
+                        &geometry_part,
                         head_point(v.position, part.size, scale, offset),
                         v.normal,
                         [v.uv[0], v.uv[1]],
@@ -249,7 +264,7 @@ impl RenderScene {
                             .zip([[1.0, 0.0], [0.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
                     {
                         draw.vertices.push(vertex(
-                            part,
+                            &geometry_part,
                             corners[corner],
                             normal,
                             uv,

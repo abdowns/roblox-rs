@@ -1,9 +1,11 @@
-//! Numeric GPU probe and static viewport. Bevy owns/extracts draw components;
+//! Numeric GPU probes and a viewport with recovered free-fall pose updates.
+//! Bevy owns/extracts draw components;
 //! wgpu supplies Metal without modern PBR, tone mapping or automatic color-space conversion.
 use crate::{
     bundle::Bundle,
     camera,
     geometry::{Draw, RenderScene, RenderVertex},
+    motion::{self, MotionControl},
     runtime,
     scene::CoordinateFrame,
     surface::{self, SurfaceScene},
@@ -23,7 +25,7 @@ use std::{
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{Key, NamedKey},
     window::{Window, WindowId},
@@ -150,6 +152,32 @@ fn scene_app(scene: RenderScene) -> App {
     app
 }
 
+fn install_motion(app: &mut App, bundle: &Bundle) -> Result<(), String> {
+    let before = app.world().resource::<Extracted>().0.clone();
+    motion::install(app, bundle)?;
+    app.add_systems(
+        Update,
+        (motion::advance, motion::sync_bodies, motion::sync_decals)
+            .chain()
+            .before(extract),
+    );
+    app.update();
+    if let Some(error) = &app.world().resource::<MotionControl>().error {
+        return Err(error.clone());
+    }
+    let after = &app.world().resource::<Extracted>().0;
+    for draw in before {
+        let posed = after
+            .iter()
+            .find(|posed| posed.name == draw.name)
+            .ok_or("pose setup lost original draw")?;
+        if draw_bytes(std::slice::from_ref(&draw))? != draw_bytes(std::slice::from_ref(posed))? {
+            return Err(format!("local geometry round trip changed {:?}", draw.name));
+        }
+    }
+    Ok(())
+}
+
 struct Gpu {
     format: wgpu::TextureFormat,
     device: wgpu::Device,
@@ -159,6 +187,7 @@ struct Gpu {
     bindings: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
+    topology: Vec<u8>,
     count: u32,
     info: String,
     decals: Option<DecalGpu>,
@@ -184,6 +213,7 @@ struct GpuTextureDraw {
     bindings: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
+    topology: Vec<u8>,
     count: u32,
 }
 
@@ -310,7 +340,7 @@ impl Gpu {
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("world vertices"),
             contents: &vertex_bytes,
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
         let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("native topology"),
@@ -330,6 +360,7 @@ impl Gpu {
                 bindings,
                 vertices,
                 indices,
+                topology: index_bytes,
                 count,
                 info,
                 decals: None,
@@ -437,7 +468,7 @@ impl Gpu {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("native studs UVs"),
                 contents: &vertices,
-                usage: wgpu::BufferUsages::VERTEX,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             });
         if let Some(error) = pollster::block_on(scope.pop()) {
             return Err(format!("stud upload: {error}"));
@@ -493,7 +524,7 @@ impl Gpu {
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: None,
                     contents: &v,
-                    usage: wgpu::BufferUsages::VERTEX,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 });
             let indices = self
                 .device
@@ -506,6 +537,7 @@ impl Gpu {
                 bindings,
                 vertices,
                 indices,
+                topology: i,
                 count,
             });
         }
@@ -517,6 +549,45 @@ impl Gpu {
             globals,
             draws: uploaded,
         });
+        Ok(())
+    }
+
+    fn update_geometry(
+        &self,
+        draws: &[Draw],
+        decals: &[TexturedDraw],
+        surfaces: &SurfaceScene,
+    ) -> Result<(), String> {
+        let (vertices, indices, count) = draw_bytes_with_studs(draws, Some(&surfaces.coordinates))?;
+        if count != self.count
+            || indices != self.topology
+            || vertices.len() as u64 != self.vertices.size()
+        {
+            return Err("pose update changed Part topology".into());
+        }
+        let uploaded = self.decals.as_ref().ok_or("motion requires decal upload")?;
+        if uploaded.draws.len() != decals.len() {
+            return Err("pose update changed decal count".into());
+        }
+        let mut decal_vertices = Vec::new();
+        for (gpu, decal) in uploaded.draws.iter().zip(decals) {
+            let (vertices, indices, count) = draw_bytes(std::slice::from_ref(&decal.draw))?;
+            if count != gpu.count
+                || indices != gpu.topology
+                || vertices.len() as u64 != gpu.vertices.size()
+            {
+                return Err("pose update changed decal topology".into());
+            }
+            decal_vertices.push(vertices);
+        }
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        self.queue.write_buffer(&self.vertices, 0, &vertices);
+        for (gpu, vertices) in uploaded.draws.iter().zip(decal_vertices) {
+            self.queue.write_buffer(&gpu.vertices, 0, &vertices);
+        }
+        if let Some(error) = pollster::block_on(scope.pop()) {
+            return Err(format!("pose vertex upload: {error}"));
+        }
         Ok(())
     }
 
@@ -981,6 +1052,115 @@ fn gpu_contract_probe(instance: &wgpu::Instance) -> Result<String, String> {
     Ok(report)
 }
 
+/// Exercise Bevy pose extraction, dynamic vertex uploads and parented decals
+/// against fresh GPU uploads. No window or visual inspection is needed.
+pub fn audit_motion(bundle: &Bundle) -> Result<String, String> {
+    let scene = RenderScene::character(bundle)?;
+    let mut report = scene.report.clone();
+    let decals = texture::character_decals(bundle, &scene)?;
+    let surfaces = surface::character(bundle, &scene)?;
+    let mut app = scene_app(scene);
+    for decal in decals.draws {
+        app.world_mut().spawn(decal);
+    }
+    app.update();
+    install_motion(&mut app, bundle)?;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let (mut gpu, _) = Gpu::new(
+        &instance,
+        None,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &app.world().resource::<Extracted>().0,
+    )?;
+    gpu.add_studs(&app.world().resource::<Extracted>().0, &surfaces)?;
+    gpu.add_decals(&app.world().resource::<ExtractedDecals>().0)?;
+    let inputs = RenderInputs::character_probe();
+    let initial = gpu.read_frame(640, 480, &inputs)?;
+    let mut final_pixels = Vec::new();
+    for step in 1..=60 {
+        app.world_mut()
+            .resource_mut::<MotionControl>()
+            .requested_steps = 1;
+        app.update();
+        if let Some(error) = &app.world().resource::<MotionControl>().error {
+            return Err(error.clone());
+        }
+        let draws = &app.world().resource::<Extracted>().0;
+        let decals = &app.world().resource::<ExtractedDecals>().0;
+        let head = draws
+            .iter()
+            .find(|draw| draw.name == "Head")
+            .ok_or("missing moved head")?;
+        let face = decals
+            .iter()
+            .find(|draw| draw.draw.name == "Head/face")
+            .ok_or("missing moved face")?;
+        if head.vertices.len() != face.draw.vertices.len()
+            || head
+                .vertices
+                .iter()
+                .zip(&face.draw.vertices)
+                .any(|(a, b)| a.position != b.position || a.normal != b.normal || a.uv != b.uv)
+        {
+            return Err("decal geometry detached from moving head".into());
+        }
+        gpu.update_geometry(draws, decals, &surfaces)?;
+        if step == 1 || step == 15 || step == 30 || step == 60 {
+            let pixels = gpu.read_frame(640, 480, &inputs)?;
+            let repeat = gpu.read_frame(640, 480, &inputs)?;
+            let changed = pixels
+                .chunks_exact(4)
+                .zip(initial.chunks_exact(4))
+                .filter(|(a, b)| a != b)
+                .count();
+            if pixels != repeat || changed == 0 {
+                return Err(format!("motion readback failed at step {step}"));
+            }
+            let low = head
+                .vertices
+                .iter()
+                .map(|v| v.position[1])
+                .fold(f32::INFINITY, f32::min);
+            let high = head
+                .vertices
+                .iter()
+                .map(|v| v.position[1])
+                .fold(f32::NEG_INFINITY, f32::max);
+            writeln!(report,"motion_render_step step={step} head_min_y={low:.9} head_max_y={high:.9} changed_pixels={changed} repeat_identical=true rgba_sha256={:x}",Sha256::digest(&pixels)).unwrap();
+            final_pixels = pixels;
+        }
+    }
+    let draws = &app.world().resource::<Extracted>().0;
+    let decals = &app.world().resource::<ExtractedDecals>().0;
+    let (mut reference, _) = Gpu::new(&instance, None, wgpu::TextureFormat::Rgba8Unorm, draws)?;
+    reference.add_studs(draws, &surfaces)?;
+    let without_decal = reference.read_frame(640, 480, &inputs)?;
+    reference.add_decals(decals)?;
+    if reference.read_frame(640, 480, &inputs)? != final_pixels {
+        return Err("dynamic uploads differ from freshly uploaded posed geometry".into());
+    }
+    let decal_changed = without_decal
+        .chunks_exact(4)
+        .zip(final_pixels.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    if decal_changed == 0 {
+        return Err("moved face has no rasterized contribution".into());
+    }
+    motion::reset(app.world_mut());
+    app.update();
+    gpu.update_geometry(
+        &app.world().resource::<Extracted>().0,
+        &app.world().resource::<ExtractedDecals>().0,
+        &surfaces,
+    )?;
+    if gpu.read_frame(640, 480, &inputs)? != initial {
+        return Err("motion reset did not restore original pixels".into());
+    }
+    writeln!(report,"motion_render_pass steps=60 initial_world_bytes_identical=true decal_parent_checks=60 moved_decal_pixels={decal_changed} fresh_upload_identical=true reset_pixels_identical=true fixture=independent_unconstrained_parts native_visual_parity=not_tested").unwrap();
+    Ok(report)
+}
+
 struct Viewport {
     app: App,
     bundle_root: PathBuf,
@@ -996,6 +1176,11 @@ struct Viewport {
     surfaces: SurfaceScene,
     live_log: std::fs::File,
     started: Instant,
+    motion_active: bool,
+    motion_clock: Instant,
+    motion_remainder: f64,
+    uploaded_step: u32,
+    acquisition_retries: u32,
 }
 impl Viewport {
     fn log_event(&mut self, event: String) -> Result<(), String> {
@@ -1021,7 +1206,7 @@ impl ApplicationHandler for Viewport {
                 event_loop
                     .create_window(
                         Window::default_attributes()
-                            .with_title("Roblox 2016 — core client rendering")
+                            .with_title("Roblox 2016 — Space: fall probe | R: reset | Esc: close")
                             .with_inner_size(winit::dpi::LogicalSize::new(960.0, 720.0))
                             .with_visible(false),
                     )
@@ -1067,6 +1252,9 @@ impl ApplicationHandler for Viewport {
                 Sha256::digest(&pixels)
             ))?;
             window.set_visible(true);
+            // A shell-launched macOS application can remain inactive after its
+            // hidden warm-up. This activates the requested visible viewport.
+            window.focus_window();
             self.log_event(format!(
                 "{}\nviewport_open width={} height={} scale_factor={} format={:?}",
                 gpu.info,
@@ -1079,6 +1267,10 @@ impl ApplicationHandler for Viewport {
             self.surface = Some(surface);
             self.gpu = Some(gpu);
             self.config = Some(config);
+            self.motion_clock = Instant::now();
+            if self.motion_active {
+                self.log_event("motion_probe_started limit_steps=60 contacts=false joints=false gravity=explicit_legacy".into())?;
+            }
             self.window.as_ref().unwrap().request_redraw();
             Ok(())
         })();
@@ -1093,9 +1285,31 @@ impl ApplicationHandler for Viewport {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. }
-                if event.logical_key == Key::Named(NamedKey::Escape) =>
+                if event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(NamedKey::Escape) =>
             {
                 event_loop.exit()
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed && !event.repeat =>
+            {
+                let reset = matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("r"));
+                let start = event.logical_key == Key::Named(NamedKey::Space);
+                if start || reset {
+                    motion::reset(self.app.world_mut());
+                    self.motion_active = start;
+                    self.motion_remainder = 0.0;
+                    self.motion_clock = Instant::now();
+                    if let Err(error) = self.log_event(if start {
+                        "motion_probe_started limit_steps=60 contacts=false joints=false gravity=explicit_legacy".into()
+                    } else {
+                        "motion_probe_reset step=0".into()
+                    }) {
+                        self.fail(event_loop, error);
+                        return;
+                    }
+                    self.window.as_ref().unwrap().request_redraw();
+                }
             }
             WindowEvent::Resized(size) => {
                 if size.width == 0 || size.height == 0 {
@@ -1119,15 +1333,73 @@ impl ApplicationHandler for Viewport {
             }
             WindowEvent::RedrawRequested => {
                 let result = (|| -> Result<(), String> {
+                    if self.motion_active && self.frames > 0 {
+                        let now = Instant::now();
+                        self.motion_remainder +=
+                            now.duration_since(self.motion_clock).as_secs_f64();
+                        self.motion_clock = now;
+                        let dt = motion::timestep(self.app.world());
+                        let remaining = 60 - self.app.world().resource::<MotionControl>().steps;
+                        let steps = (self.motion_remainder / dt)
+                            .floor()
+                            .min(f64::from(remaining)) as u32;
+                        self.motion_remainder -= f64::from(steps) * dt;
+                        self.app
+                            .world_mut()
+                            .resource_mut::<MotionControl>()
+                            .requested_steps = steps;
+                    }
                     self.app.update();
+                    let control = self.app.world().resource::<MotionControl>();
+                    if let Some(error) = &control.error {
+                        return Err(error.clone());
+                    }
+                    let step = control.steps;
+                    if self.motion_active && step == 60 {
+                        self.motion_active = false;
+                        let head = self
+                            .app
+                            .world()
+                            .resource::<Extracted>()
+                            .0
+                            .iter()
+                            .find(|d| d.name == "Head")
+                            .ok_or("missing rendered motion head")?;
+                        let min_y = head
+                            .vertices
+                            .iter()
+                            .map(|v| v.position[1])
+                            .fold(f32::INFINITY, f32::min);
+                        self.log_event(format!("motion_probe_paused step={step} simulated_seconds={:.9} head_min_y={min_y:.9} reason=unconstrained_probe_limit", f64::from(step) * motion::timestep(self.app.world())))?;
+                    }
                     let config = self.config.as_ref().unwrap();
                     let gpu = self.gpu.as_ref().unwrap();
+                    if self.uploaded_step != step {
+                        gpu.update_geometry(
+                            &self.app.world().resource::<Extracted>().0,
+                            &self.app.world().resource::<ExtractedDecals>().0,
+                            &self.surfaces,
+                        )?;
+                        self.uploaded_step = step;
+                    }
                     let surface = self.surface.as_ref().unwrap();
                     let frame = match surface.get_current_texture() {
                         wgpu::CurrentSurfaceTexture::Success(frame)
                         | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-                        wgpu::CurrentSurfaceTexture::Timeout
-                        | wgpu::CurrentSurfaceTexture::Occluded => {
+                        state @ (wgpu::CurrentSurfaceTexture::Timeout
+                        | wgpu::CurrentSurfaceTexture::Occluded) => {
+                            self.acquisition_retries += 1;
+                            if self.acquisition_retries == 1 {
+                                self.log_event(format!("viewport_acquisition_retry state={state:?} frame={} physics_step={step} window_visible={:?} window_focused={}", self.frames, self.window.as_ref().unwrap().is_visible(), self.window.as_ref().unwrap().has_focus()))?;
+                            }
+                            if self.frame_limit.is_some()
+                                && self.started.elapsed() > Duration::from_secs(30)
+                            {
+                                return Err(format!(
+                                    "surface acquisition timed out after {} retries: {state:?}",
+                                    self.acquisition_retries
+                                ));
+                            }
                             self.window.as_ref().unwrap().request_redraw();
                             return Ok(());
                         }
@@ -1158,12 +1430,29 @@ impl ApplicationHandler for Viewport {
                     gpu.queue.submit([encoder.finish()]);
                     gpu.queue.present(frame);
                     self.frames += 1;
+                    let final_readback = if self.frame_limit == Some(self.frames) {
+                        let pixels = gpu.read_frame(config.width, config.height, &self.inputs)?;
+                        let covered = pixels
+                            .chunks_exact(4)
+                            .filter(|p| *p != &pixels[..4])
+                            .count();
+                        if covered == 0 {
+                            return Err("final viewport frame rendered no geometry".into());
+                        }
+                        Some(format!(
+                            "viewport_final_readback_pass physics_step={step} covered_pixels={covered} rgba_sha256={:x}",
+                            Sha256::digest(&pixels)
+                        ))
+                    } else {
+                        None
+                    };
                     if self.frames == 1 {
                         self.window.as_ref().unwrap().set_visible(true);
+                        self.motion_clock = Instant::now();
                     }
                     if self.frames == 1 || self.frames.is_multiple_of(60) {
                         self.log_event(format!(
-                            "viewport_frame frame={} draws={} indices={} elapsed_ms={:.3}",
+                            "viewport_frame frame={} draws={} indices={} physics_step={step} elapsed_ms={:.3}",
                             self.frames,
                             self.app.world().resource::<Extracted>().0.len(),
                             gpu.count,
@@ -1171,8 +1460,11 @@ impl ApplicationHandler for Viewport {
                         ))?;
                     }
                     if self.frame_limit.is_some_and(|limit| self.frames >= limit) {
+                        if let Some(event) = final_readback {
+                            self.log_event(event)?;
+                        }
                         event_loop.exit();
-                    } else if self.frame_limit.is_some() {
+                    } else if self.frame_limit.is_some() || self.motion_active {
                         self.window.as_ref().unwrap().request_redraw();
                     }
                     Ok(())
@@ -1188,6 +1480,19 @@ impl ApplicationHandler for Viewport {
 
 /// Open a diagnostic viewport. Optional frame limit supports numeric smoke tests.
 pub fn viewport(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, String> {
+    run_viewport(bundle, frame_limit, false)
+}
+
+/// Automatic surface smoke with the same bounded free-fall trigger as Space.
+pub fn viewport_motion_smoke(bundle: &Bundle) -> Result<String, String> {
+    run_viewport(bundle, Some(120), true)
+}
+
+fn run_viewport(
+    bundle: &Bundle,
+    frame_limit: Option<u32>,
+    auto_motion: bool,
+) -> Result<String, String> {
     if frame_limit.is_some_and(|n| n == 0 || n > 10000) {
         return Err("viewport frame limit must be 1..=10000".into());
     }
@@ -1202,6 +1507,13 @@ pub fn viewport(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, Str
         app.world_mut().spawn(draw);
     }
     app.update();
+    install_motion(&mut app, bundle)?;
+    let bodies = app
+        .world_mut()
+        .query::<&crate::physics::FreeFallBody>()
+        .iter(app.world())
+        .count();
+    writeln!(report, "motion_binding_pass bodies={bodies} draws={} decals={} initial_world_bytes_identical=true contacts=false joints=false", app.world().resource::<Extracted>().0.len(), app.world().resource::<ExtractedDecals>().0.len()).unwrap();
     let live_path = runtime::save_log(bundle, &report)?;
     let live_log = OpenOptions::new()
         .append(true)
@@ -1223,6 +1535,11 @@ pub fn viewport(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, Str
         surfaces,
         live_log,
         started: Instant::now(),
+        motion_active: auto_motion,
+        motion_clock: Instant::now(),
+        motion_remainder: 0.0,
+        uploaded_step: 0,
+        acquisition_retries: 0,
     };
     EventLoop::new()
         .map_err(|e| e.to_string())?

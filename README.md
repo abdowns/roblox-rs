@@ -14,7 +14,8 @@ sh tools/cargo.sh run --locked
 ```
 
 A window shows the supplied 2016 character, including its original head mesh,
-face decal, colors and Plastic stud surfaces. Escape or closing the window exits.
+face decal, colors and Plastic stud surfaces. **Space** starts a quarter-second
+free-fall probe; **R** restores the original pose; **Escape** closes the window.
 This is the current core rendering probe, with explicit fixture camera/lighting;
 playable character movement and collisions are still incomplete.
 
@@ -26,6 +27,11 @@ sh tools/cargo.sh run --locked -- viewport-smoke
 
 Expected: `viewport_readback_pass covered_pixels=61363` on this 1920×1440 M3
 window, `viewport_frame frame=120`, then exit. Coverage depends on window size.
+For the automatic visible motion test, run
+`sh tools/cargo.sh run --locked -- viewport-motion-smoke`. Expect
+`motion_probe_paused step=60`, a frame-120 line with `physics_step=60`,
+and `viewport_final_readback_pass`.
+
 `viewport_live_log` identifies a file flushed during execution, so startup and
 presentation progress remain available even before closing the window. No game
 assets leave RobloxStudio. No visual inspection was performed.
@@ -41,7 +47,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **26 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **27 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -52,6 +58,13 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Physics frames update base geometry and its face decal. Run
+  `sh tools/cargo.sh run --locked -- audit-motion`; expect
+  `motion_render_pass steps=60`, `fresh_upload_identical=true`, and
+  `reset_pixels_identical=true`. Moved frames change 12,205 pixels at 640×480;
+  the moved face contributes 101 pixels. This is explicitly independent,
+  unconstrained Part motion; no playable rig or contacts are claimed.
 
 - Native unconstrained free-fall branch. Run
   `sh tools/cargo.sh run --locked -- audit-physics`; expect

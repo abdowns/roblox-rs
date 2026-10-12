@@ -1,5 +1,37 @@
 # MODLOG
 
+## 2026-10-12 Connect native physics frames to visible character geometry
+
+**Changed:** Immutable Part-space geometry, seven Bevy body bindings, ordered
+physics/geometry/decal extraction, guarded dynamic GPU uploads, audit-motion and
+viewport-motion-smoke. Space runs 60 native free-fall steps; R resets. Added window
+focus/acquisition evidence and a bounded smoke acquisition timeout. Original public
+signatures/data fields remain stable; explicit body loading is shared with the
+existing physics audit.
+**Why:** Exercise recovered body motion through the renderer while preserving
+original geometry and parented face behavior.
+**Tested how:** Live Ghidra frame/bone/geometry traces; 27 synthetic tests; 60-step
+GPU readback, parent checks, fresh-upload differential and exact pixel reset;
+static GPU, 240-step physics and player regression diagnostics; Metal motion
+window smoke; formatting/Clippy; original Contents fingerprint.
+**Result:** 12,205 changed pixels and 101 moved face pixels at 640×480. Updated
+uploads match fresh uploads; reset restores identical pixels. Visible motion
+smoke reaches 120 frames with 60 physics steps, 48,475 final covered pixels at
+1920×1440. All 2,606 original entries unchanged. Run
+`sh tools/cargo.sh run --locked -- audit-motion`; expect `motion_render_pass steps=60`
+and `reset_pixels_identical=true`. Run
+`sh tools/cargo.sh run --locked -- viewport-motion-smoke`; expect
+`motion_probe_paused step=60`, frame 120 at physics_step=60 and final readback pass.
+**Still broken / not tested:** Initial compile required crate-visible internal
+component types. First window motion run timed out before presentation. Cached
+Metal/winit sources supported adding activation/occlusion logs and holding physics
+until first presentation; the second bounded run passed. Manual key events,
+remote interpolation, native GPU bone precision, joints/contacts/locomotion,
+full native rendering and behavioral parity are **not tested**. Quarter-second
+pause and research controls are explicit fixture behavior, not historical defaults.
+**Next:** Recover native rig/assembly construction and contacts/Humanoid forces;
+add native camera/input paths before claiming a playable client.
+
 ## 2026-10-12 Present the character in the default visible build
 
 **Changed:** Default launch opens the recovered character viewport; startup GPU

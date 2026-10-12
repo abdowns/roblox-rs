@@ -177,8 +177,9 @@ bodies and runs 240 explicit Bevy updates. It logs positions, velocities and
 quaternions, checks the analytic Y curve at every step, and bounds errors at 0.002.
 It is neither a native differential test nor an assembled character simulation.
 Contact classification, constraints, mass/inertia forces, collisions, sleeping,
-anchored scheduling, Humanoid locomotion and render synchronization are separate
-remaining work. Static render diagnostics continue to render the original pose.
+anchored scheduling and Humanoid locomotion remain separate work. The new
+unconstrained motion probe connects physical frames to rendered geometry; static
+render diagnostics continue to render the original pose.
 
 ## Visible launch and live evidence
 
@@ -189,3 +190,22 @@ surface and explicit probe camera/lighting. An incremental log created through
 the confined runtime logger flushes startup, resize, presented-frame counts and
 timing while the app runs. The frame-limited smoke command exits after 120
 presentations; normal launch stays open until Escape/window close.
+
+## Physics to render bridge
+
+The private `motion` module adds seven FreeFallBody entities to the character
+viewport, six with local geometry and one transparent root. Original source
+geometry is rebuilt in Part space once at setup; original world bytes are checked
+before accepting the binding. Bevy orders native free-fall updates, Part geometry
+updates, parented decal updates and extraction. The original scene/render public
+function signatures and data fields remain stable.
+
+GPU vertex buffers accept pose updates; topology/count/size checks guard every
+upload. Textures, samplers, indices and stud UVs remain bound. Decals follow the
+same body entity as their parent. Reset restores the imported body states and
+recomputes from immutable local geometry, preventing transform accumulation.
+`audit-motion` compares dynamic buffers to fresh GPU uploads and verifies repeat
+and reset pixels. The viewport's Space trigger uses an elapsed-time accumulator
+with native dt, stopping at 60 steps; R resets. The quarter-second stop is a
+research limit while contacts and rig construction are incomplete. Native remote
+interpolation, assembly classification and locomotion are not implied.

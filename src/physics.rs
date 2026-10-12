@@ -270,8 +270,7 @@ fn step_probe(
     }
 }
 
-pub fn audit(bundle: &Bundle) -> Result<String, String> {
-    let profile = NativePhysics::load(bundle)?;
+pub(crate) fn character_bodies(bundle: &Bundle) -> Result<Vec<(String, FreeFallBody)>, String> {
     let bytes = bundle.read(
         "Contents/Resources/content/fonts/character3.rbxm",
         16 * 1024 * 1024,
@@ -279,12 +278,7 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     let xml = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
     let scene = Scene::parse(xml)?;
     let doc = roxmltree::Document::parse(xml).map_err(|e| e.to_string())?;
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins);
-    app.insert_resource(profile.clone());
-    app.init_resource::<Probe>();
-    app.add_systems(Update, step_probe);
-    let mut initial = Vec::new();
+    let mut bodies = Vec::new();
     for instance in &scene.instances {
         let Some(part) = &instance.part else {
             continue;
@@ -329,10 +323,21 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
             vector("Velocity")?,
             vector("RotVelocity")?,
         )?;
-        let entity = app
-            .world_mut()
-            .spawn((Name::new(instance.name.clone()), body.clone()))
-            .id();
+        bodies.push((instance.name.clone(), body));
+    }
+    Ok(bodies)
+}
+
+pub fn audit(bundle: &Bundle) -> Result<String, String> {
+    let profile = NativePhysics::load(bundle)?;
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.insert_resource(profile.clone());
+    app.init_resource::<Probe>();
+    app.add_systems(Update, step_probe);
+    let mut initial = Vec::new();
+    for (name, body) in character_bodies(bundle)? {
+        let entity = app.world_mut().spawn((Name::new(name), body.clone())).id();
         initial.push((entity, body));
     }
     if initial.is_empty() {
