@@ -1,5 +1,23 @@
 # MODLOG
 
+## 2026-10-12 Recover RunningBase horizontal force math
+
+**Changed:** Runtime-loaded native feedback gains and ground/air limits; original
+velocity-error, force-cancellation, radial cap, effective mass and friction order.
+Added audit-locomotion. Existing public signatures remain stable.
+**Why:** Walking uses native force feedback rather than directly assigning speed.
+**Tested how:** Live Ghidra 00c09632 and gain/accessor traces; six numeric cases;
+radial-cap synthetic test, 30 total passing tests and Clippy.
+**Result:** Legacy/PGS gains 1250/150; ground/air limits 500/143. Test:
+`sh tools/cargo.sh run --locked -- audit-locomotion`; expect
+`running_force_pass cases=6` and cancellation force [0,0].
+**Still broken / not tested:** Assembly inputs are explicit fixtures. Walking
+translation, floor discovery, vertical/balancing forces, mass/inertia recovery
+and complete force/contact integration remain pending; native differential
+behavior is **not tested**.
+**Next:** Native contact refresh and contact-point velocity math.
+
+
 ## 2026-10-12 Animate the recovered R6 rig
 
 **Changed:** Runtime-loaded procedural animation literals, six no-tool poses,

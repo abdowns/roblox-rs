@@ -283,3 +283,20 @@ The visible smoke completes 60 callbacks/120 presentations and final readback.
 Manual key events and native visual/sine parity are not tested. GPU audit's first
 compile attempted a nonexistent InstanceDescriptor Default; using the existing
 pinned constructor fixed the second compile.
+
+## RunningBase horizontal force boundary
+
+Ghidra RunningBase 00c09632 establishes velocity-error feedback, cancellation of
+accumulated force divided by root mass, radial XZ acceleration limiting, effective
+mass multiplication and floor friction. Gain accessors 00bfd990/00bfd9a2 read
+1250/150 from 017af5a0/017af5a4. Ground/air limits are read from 017acbf8/017b05c4
+(500/143). The new locomotion module reads these verified binary values at runtime.
+Solver choice, desired/floor velocities, material friction, root mass and selected
+effective mass are explicit inputs; no modern defaults or guessed floor is used.
+
+Six numeric cases cover start, moving-floor matching, air limiting, friction,
+small PGS error and cancellation of an existing force. A diagonal test checks
+radial rather than independent-axis limiting. Native floor queries, body assembly
+mass/inertia, vertical spring and balancing, force integration, reaction forces
+and full state scheduling remain pending. This calculation is not yet connected
+to the viewport and does not establish a playable walking client.

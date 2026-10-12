@@ -48,7 +48,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **29 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **30 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -59,6 +59,11 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- RunningBase horizontal-force math, with explicit root/floor masses, solver
+  selection, velocity and friction inputs. Run
+  `sh tools/cargo.sh run --locked -- audit-locomotion`; expect
+  `running_force_pass cases=6`. This is not yet integrated walking.
 
 - Bundled procedural no-tool animation: Standing, Running, Jumping, FreeFall,
   Climbing and Seated. Run `sh tools/cargo.sh run --locked -- audit-animation`;
