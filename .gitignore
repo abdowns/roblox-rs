@@ -1,0 +1,24 @@
+# Source whitelist: installed data, extracts, caches, logs and build products stay ignored.
+*
+!/.gitignore
+!/AGENTS.md
+!/README.md
+!/MODLOG.md
+!/STATUS.md
+!/decompile-system-map.md
+!/Cargo.toml
+!/Cargo.lock
+!/rust-toolchain.toml
+!/src/
+!/src/**/
+!/src/**/*.rs
+!/tests/
+!/tests/**/
+!/tests/**/*.rs
+!/tools/
+!/tools/**/
+!/tools/**/*.py
+!/tools/**/*.sh
+!/docs/
+!/docs/**/
+!/docs/**/*.md
