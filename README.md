@@ -15,7 +15,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **8 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **13 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -26,6 +26,13 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Recovered static character geometry and palette import. Run
+  `sh tools/cargo.sh run --locked -- audit-geometry`; expect
+  `native_palette_loaded colors=208` and
+  `geometry_pass draws=6 vertices=637 triangles=906`. Includes native head
+  deformation, block face ordering, material specular quantization and camera math.
+  See [rendering evidence](docs/provenance/2016-RENDERING.md).
 
 - Exact bundle version, little-endian i386 Mach-O header and executable SHA-256
   validation against the supplied build.
@@ -50,9 +57,9 @@ Imported Attachments, Decals, SpecialMesh and Humanoid do not execute their nati
 behavior. Full native execution, behavioral equivalence and visual equivalence
 are **not tested**. Do not treat `static_import_pass` as evidence of those.
 
-The Ghidra MCP currently has inconsistent project/open-program state. Targeted
-headless Ghidra analysis succeeded; broad auto-analysis hit its 180-second budget
-and remains partial. [STATUS.md](STATUS.md) records the attempts and evidence.
+The Ghidra MCP now connects to the running CodeBrowser in project studio2016.
+Targeted live decompilation succeeds. Earlier broad auto-analysis hit its
+180-second budget and remains partial. [STATUS.md](STATUS.md) records evidence.
 
 ## Data and rollback
 

@@ -24,7 +24,7 @@ Studio editing/saving, mesh v1 or binary-place loading. Only explicit Part field
 are typed; other classes do not execute behavior. Native execution and full
 pixel/behavior parity are **not tested**.
 
-## Ghidra MCP problem and two attempts
+## Earlier Ghidra MCP problem and two attempts
 
 Initially no programs/project were open. A headless import successfully created
 `RobloxStudio/analysis/ghidra/studio2016` without changing the executable.
@@ -42,6 +42,15 @@ headless CLI with a separate `studio2016-batch` database under the same analysis
 directory and succeeded. MCP active-project/CodeBrowser state remains unresolved.
 Its frontend tool binding and loaded extension/version may need inspection.
 No unrelated Ghidra project or system setting was changed to attempt a fix.
+
+## Current live Ghidra and rendering progress
+
+The user launched Ghidra. Instance metadata reports studio2016/RobloxStudio,
+GhidraMCP 7.0.0, port 8089. The bridge retained a deleted socket; list_instances
+and connect_instance restored live decompilation. No system setting changed.
+Static geometry produces six draws, 637 vertices, 906 triangles with 208 native
+colors. Thirteen tests pass. Camera and head deformation are recovered.
+GPU rendering is not yet implemented at this checkpoint.
 
 ## Other failures and limits
 

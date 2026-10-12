@@ -1,5 +1,20 @@
 # MODLOG
 
+## 2026-10-12 Recover static geometry and camera
+
+**Changed:** Native-data palette/topology reader, character head/block geometry,
+material specular quantization, camera matrices, audit-geometry CLI and evidence.
+**Why:** Establish the 2016 geometry/projection contract before GPU rendering.
+**Tested how:** Live MCP decompilation/instructions, 13 source-only tests, actual
+character diagnostic, formatting and Clippy with warnings denied.
+**Result:** Live MCP restored through instance discovery. 208 native colors; six
+draws, 637 vertices, 906 triangles.
+**Still broken / not tested:** First palette run omitted XOR-zero; native
+instructions identified the cause and regression/fix passed. First Clippy run
+requested rfind; corrected. Surface UVs, decals and rendering remain absent.
+Original execution and full parity are **not tested**.
+**Next:** Connect static geometry to a bounded GPU probe.
+
 ## 2026-10-12 Verified 2016 mesh and character import
 
 **Changed:** Added pinned Rust/Bevy package and lockfile; confined bundle access,

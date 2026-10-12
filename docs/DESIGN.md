@@ -56,3 +56,15 @@ malformed layouts/indices, matrix row order and nested referents. The actual bun
 diagnostic establishes import. `tools/verify_bundle.py` fingerprints every original
 Contents file and symlink. Neither establishes original game behavior or pixels.
 Compatible reference execution and differential comparisons remain necessary.
+
+## Recovered static rendering data
+
+`native_data::NativeImage` reads file-backed Mach-O regions from the verified
+binary. A bounded x86 constant-argument decoder recovers 208 historical colors;
+it never executes code and refuses unresolved arguments/count changes. Block
+face topology is read at runtime. No extracted tables are embedded in source.
+`geometry::RenderScene` produces world-space character head/block draws from
+explicit XML. Head deformation is recovered; normals rotate without inverse
+scaling. Unsupported shapes and reflectance return errors. Surface UVs/decals
+are not implemented. `camera` supplies recovered view/perspective matrices.
+Diagnostic poses are explicit probe inputs, not recovered historical defaults.

@@ -10,6 +10,7 @@ description = "Offline research runtime for Roblox Studio macOS 0.255.0.82159"
 bevy = { version = "=0.20.0", default-features = false, features = ["std"] }
 roxmltree = "=0.21.1"
 sha2 = "=0.10.9"
+iced-x86 = { version = "=1.21.0", default-features = false, features = ["std", "decoder"] }
 
 [lints.rust]
 unsafe_code = "forbid"
