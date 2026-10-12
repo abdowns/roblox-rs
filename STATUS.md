@@ -246,3 +246,12 @@ procedural animation profile. Full native rendering (character texture atlas,
 lighting/shadows/sky/material quality paths) and 1:1 equivalence are not tested.
 All earlier failed routes remain recorded above. This is a progress checkpoint,
 not completion of the entire player/physics/rendering rewrite.
+
+Final linked free-fall window regression also passes: 120 presentations/60 steps,
+head_min_y=12.767534256, final coverage=46,558 at 1920x1440. A stale automatic
+startup joints=false log was corrected to joints=6; the rebuilt smoke passes with
+the same final SHA-256 as the preceding run:
+`930e15216f3e3edd139a20d437bdc45d896a9d841e9b915fbd22147101f7dff9`.
+Evidence: RobloxStudio/analysis/viewport-r6-motion-logfix-20261012.log. Reproduce:
+`sh tools/cargo.sh run --locked -- viewport-motion-smoke`; expect paused step=60,
+frame=120, viewport_final_readback_pass, exit success. No visual inspection.

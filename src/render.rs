@@ -1361,7 +1361,7 @@ impl ApplicationHandler for Viewport {
             self.config = Some(config);
             self.motion_clock = Instant::now();
             if self.motion_active {
-                self.log_event("motion_probe_started limit_steps=60 contacts=false joints=false gravity=explicit_legacy".into())?;
+                self.log_event("motion_probe_started limit_steps=60 contacts=false joints=6 gravity=explicit_legacy".into())?;
             }
             self.window.as_ref().unwrap().request_redraw();
             Ok(())

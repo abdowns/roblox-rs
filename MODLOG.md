@@ -1,5 +1,22 @@
 # MODLOG
 
+## 2026-10-12 Verify the final linked window probe
+
+**Changed:** Corrected the automatic free-fall startup log to report six active
+R6 joints; recorded final window regression evidence.
+**Why:** The stale joints=false label contradicted the recovered linked pose path.
+**Tested how:** Two bounded Metal viewport-motion-smoke runs, including a rebuilt
+run after the log correction; numeric readback only; formatting check.
+**Result:** 120 presentations and 60 steps; head_min_y=12.767534256; 46,558 covered
+pixels at 1920x1440. Both final frames have SHA-256
+`930e15216f3e3edd139a20d437bdc45d896a9d841e9b915fbd22147101f7dff9`.
+Evidence: RobloxStudio/analysis/viewport-r6-motion-logfix-20261012.log. Test:
+`sh tools/cargo.sh run --locked -- viewport-motion-smoke`; expect joints=6,
+paused step=60, frame=120, viewport_final_readback_pass and successful exit.
+**Still broken / not tested:** Manual keys and visual/native equivalence are
+**not tested**. Full walking/contact response and rendering remain incomplete.
+**Next:** Native assembly mass/inertia and contact generation/solver integration.
+
 ## 2026-10-12 Recover native contact persistence and velocity
 
 **Changed:** Bullet cached-contact refresh/removal, runtime native orthogonal
