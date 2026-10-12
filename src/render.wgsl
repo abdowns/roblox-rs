@@ -20,6 +20,7 @@ struct Input {
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
     @location(4) specular: vec2<f32>,
+    @location(5) studs: vec2<f32>,
 };
 struct Output {
     @builtin(position) position: vec4<f32>,
@@ -28,12 +29,14 @@ struct Output {
     @location(2) specular: f32,
     @location(3) fog: f32,
     @location(4) uv: vec2<f32>,
+    @location(5) studs: vec2<f32>,
 };
 @vertex fn vertex(input: Input) -> Output {
     var o: Output;
     o.position = g.vp * vec4<f32>(input.position, 1.0);
     o.color = input.color;
     o.uv = input.uv;
+    o.studs = input.studs;
     let n_dot_l = dot(input.normal, -g.lamp_dir.xyz);
     let h = normalize(-g.lamp_dir.xyz + normalize(g.camera.xyz - input.position));
     var highlight = 0.0;
@@ -44,6 +47,13 @@ struct Output {
     o.specular = highlight * input.specular.x;
     o.fog = (g.fog.z - o.position.w) * g.fog.w;
     return o;
+}
+@fragment fn fragment_plastic(input: Output) -> @location(0) vec4<f32> {
+    let atlas = textureSample(decal_texture, decal_sampler, input.studs);
+    let albedo = input.color.xyz * (atlas.r * 2.0);
+    let lighting = g.ambient.xyz + input.diffuse * g.grid_shadow.w + g.grid_shadow.xyz;
+    let lit_color = lighting * albedo + g.lamp0.xyz * (input.specular * g.grid_shadow.w);
+    return vec4<f32>(mix(g.fog_color.xyz, lit_color, clamp(input.fog, 0.0, 1.0)), input.color.a);
 }
 @fragment fn fragment(input: Output) -> @location(0) vec4<f32> {
     let lighting = g.ambient.xyz + input.diffuse * g.grid_shadow.w + g.grid_shadow.xyz;

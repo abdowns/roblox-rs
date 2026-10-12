@@ -53,8 +53,9 @@ Bevy supplies scheduling/storage rather than modern material defaults.
 temporary and build output into this project. The reference guides remain their
 pre-existing independent checkout, excluded from the outer repository.
 
-Fifteen source-only tests use invented inputs: version-line quirks, raw float words,
-malformed layouts/indices, matrix row order and nested referents. The actual bundle
+Eighteen source-only tests use invented inputs: version-line quirks, raw float words,
+malformed layouts/indices, matrix row order, nested referents, mip rules, DXT1
+endpoint branches and surface coordinates. The actual bundle
 diagnostic establishes import. `tools/verify_bundle.py` fingerprints every original
 Contents file and symlink. Neither establishes original game behavior or pixels.
 Compatible reference execution and differential comparisons remain necessary.
@@ -67,8 +68,8 @@ it never executes code and refuses unresolved arguments/count changes. Block
 face topology is read at runtime. No extracted tables are embedded in source.
 `geometry::RenderScene` produces world-space character head/block draws from
 explicit XML. Head deformation is recovered; normals rotate without inverse
-scaling. Unsupported shapes and reflectance return errors. Surface UVs are not
-implemented. `camera` supplies recovered view/perspective matrices.
+scaling. Unsupported shapes and reflectance return errors. Surface UVs are supplied
+by a separate stage. `camera` supplies recovered view/perspective matrices.
 Diagnostic poses are explicit probe inputs, not recovered historical defaults.
 
 ## GPU boundary
@@ -112,3 +113,26 @@ The original character rotates its face toward +Z. The probe camera now faces
 that side. A failed back-side probe changed zero pixels; corrected probe changes
 120 pixels. Synthetic textures verify row orientation/clamp, straight-alpha
 blending and absence of decal depth writes. Full original pixels remain **not tested**.
+
+## Plastic surface boundary
+
+`surface::character` reads explicit XML face surface values and the six native
+atlas rows from the verified executable. For character blocks, face U extends
+half the face width and V extends one thirty-second of the face height. Smooth
+surfaces and the file head use zero coordinates. Unsupported surface values and
+faces needing eight-stud subdivisions return errors instead of approximations.
+
+`dds` borrows bounded legacy DXT1 mip records and implements the recovered native
+squish fallback: RGB565 bit replication, floor-weighted thirds or the transparent
+fourth-color branch. All twelve original 128x2048 stud atlas mips upload as linear
+RGBA8. The native compressed GPU path is **not tested**; this explicitly selects
+its recovered uncompressed fallback. DDS parsing restrictions are research bounds,
+not claims about the native malformed-input contract.
+
+Existing public Draw/RenderVertex signatures stay stable. A private 64-byte GPU
+adapter appends separate stud UVs. Low-quality Plastic samples with repeat and
+trilinear filtering, multiplying vertex color by twice the atlas red channel;
+atlas alpha is ignored. Outlines are an explicit disabled probe option, with no
+edge/tangent geometry or high-quality normal perturbation implied. A synthetic
+texture gives `[32,64,96,255]`; the real atlas changes 5,518 pixels with identical
+repeat output. Full original lighting and visual parity remain **not tested**.

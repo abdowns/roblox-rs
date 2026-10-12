@@ -285,7 +285,7 @@ impl RenderScene {
             draws.iter().map(|d| d.indices.len() / 3).sum::<usize>()
         )
         .unwrap();
-        writeln!(report,"surface_uvs=not_implemented decals=not_implemented native_behavior_parity=not_tested visual_parity=not_tested").unwrap();
+        writeln!(report,"geometry_only_audit surface_uvs=separate_surface_stage decals=separate_texture_stage native_behavior_parity=not_tested visual_parity=not_tested").unwrap();
         Ok(Self {
             scene,
             draws,

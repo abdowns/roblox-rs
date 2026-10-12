@@ -1,5 +1,30 @@
 # MODLOG
 
+## 2026-10-12 Render Plastic stud surfaces from native evidence
+
+**Changed:** DXT1/DDS software decoder, runtime native atlas-row lookup, explicit
+character surface UV stage and low-quality Plastic atlas shader. Private GPU
+vertex adapter adds stud coordinates while public function/data signatures stay
+stable. Updated rendering evidence, design, README and STATUS.
+**Why:** Render the provided stud atlas using recovered geometry, sampler and
+shader rules rather than modern engine defaults.
+**Tested how:** Live native decompilation, 18 synthetic tests, actual M3 Metal
+readback, repeat/red-channel/alpha contract probe, formatting and Clippy with
+warnings denied; Contents fingerprint check.
+**Result:** Original 128x2048 atlas, twelve mips; six draws/637 stud-coordinate
+vertices. Atlas changes 5,518 pixels; final frames repeat identically with SHA-256
+`95e162d2e69e72c48a74ef2060a8b0f7418717006b9537805d7b459f6f15d015`.
+All 2,606 original entries unchanged. Run
+`sh tools/cargo.sh run --locked -- audit-render`; expect `gpu_plastic_contract_pass`
+and `plastic_render_pass changed_pixels=5518 repeat_identical=true`.
+**Still broken / not tested:** First Clippy requested an iterator and removal of
+a redundant borrow; fixed and checks passed. This explicitly uses native software
+DXT1 decoding; original compressed GPU pixels, subdivisions, outlines, high-quality
+materials and complete native parity are **not tested**. Window retries remain
+stopped after the two failures recorded in STATUS; no further GUI attempt made.
+**Next:** Recover the remaining rendering paths and resolve window presentation
+from the recorded evidence before claiming a graphical client.
+
 ## 2026-10-12 Render the native character face decal
 
 **Changed:** Confined RGBA8 PNG loader, recovered byte mipmap rule, separate Bevy

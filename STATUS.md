@@ -11,7 +11,7 @@ remain ignored under `RobloxStudio/analysis`. Rust 1.97.1, Bevy 0.20.0, Ghidra
 
 ## What works (tested)
 
-Fifteen synthetic tests pass. The runtime verifies the exact executable, reads
+Eighteen synthetic tests pass. The runtime verifies the exact executable, reads
 37 meshes (10,992 vertices, 12,896 triangles), imports 26 character instances
 including seven Parts and retains hierarchy/Part state through 120 Bevy updates.
 All 2,606 original Contents files/symlinks match the stored fingerprint.
@@ -20,15 +20,19 @@ Live Ghidra MCP works. Native palette/head/block/projection contracts are recove
 six draws/637 vertices/906 triangles render offscreen. Repeat pixels, depth, fog
 and RGBA/BGRA checks pass. Four shader packs contain 572 records. Head face decal
 loads eight native-rule mips and changes 120 pixels; synthetic blend/clamp/row
-order/no-depth-write checks pass. Empty torso texture is skipped.
+order/no-depth-write checks pass. Empty torso texture is skipped. The original
+128x2048 Plastic stud atlas loads all twelve mips with the native DXT1 software
+fallback. Character surface UVs and synthetic repeat/red-channel/alpha checks
+pass. The final atlas pass changes 5,518 pixels and repeats identically.
 
 ## What does not work
 
 No complete graphical client, general geometry dispatch, physics, animation, Lua, interactive camera/input,
 Studio editing/saving, mesh v1 or binary-place loading. Only explicit Part fields
 are typed; other classes do not execute behavior. Native execution and full
-pixel/behavior parity are **not tested**. General decals, surface textures, dynamic light
-grid/shadows and full material paths are incomplete. Window presentation after
+pixel/behavior parity are **not tested**. General decals, surface subdivisions,
+outlines, dynamic light grid/shadows and full material paths are incomplete.
+Native compressed GPU decoding is **not tested**. Window presentation after
 the format fix is **not tested** (two failed attempts below).
 
 ## Earlier Ghidra MCP problem and two attempts
@@ -46,8 +50,8 @@ Initially no programs/project were open. A headless import successfully created
 
 The MCP route was stopped after two attempts. Independent work used the installed
 headless CLI with a separate `studio2016-batch` database under the same analysis
-directory and succeeded. MCP active-project/CodeBrowser state remains unresolved.
-Its frontend tool binding and loaded extension/version may need inspection.
+directory and succeeded. This was the earlier state; live instance reconnection
+later restored the active project as described below.
 No unrelated Ghidra project or system setting was changed to attempt a fix.
 
 ## Current live Ghidra and rendering progress
@@ -72,19 +76,27 @@ its public README was checked, with no copied code or dependency.
 
 ```sh
 sh tools/cargo.sh test --locked
+sh tools/cargo.sh run --locked -- audit-render
 sh tools/cargo.sh run --locked -- audit-runtime
 python3 tools/verify_bundle.py check
 ```
 
-Expected: fifteen passing tests, `static_import_pass updates=120`, and
-`bundle_unchanged entries=2606`. The runtime prints the new log path. See
+Expected: eighteen passing tests, `render_probe_pass`, `gpu_contract_pass`,
+`gpu_decal_contract_pass`, `gpu_plastic_contract_pass`,
+`plastic_render_pass changed_pixels=5518 repeat_identical=true`,
+`static_import_pass updates=120`, and `bundle_unchanged entries=2606`.
+The diagnostics print new log paths. See
 docs/provenance/2016-MESH.md for native addresses and targeted trace commands.
 
 ## Next boundary and important files
 
-Continue the recovered decal/material and surface paths. Native head sizing,
-normal transforms and explicit character block dispatch are implemented. General
-clothing/mesh selection and Attachment transforms remain unimplemented.
+Remaining rendering boundaries include high-quality materials, general geometry,
+outlines, lighting/grid/shadows, sky, postprocessing and Studio UI. Native head
+sizing, normal transforms, explicit character block dispatch, head decals and
+Plastic stud surfaces are implemented. General clothing/mesh selection and
+Attachment transforms remain unimplemented. Window troubleshooting is stopped
+after two real attempts under AGENTS.md; the rendering milestone does not establish
+surface presentation or a full graphical client.
 
 The first textured character probe changed zero pixels. Numeric CFrame evidence
 showed R00=R22=-1, turning the face toward +Z. Changing the explicit probe camera
@@ -96,6 +108,8 @@ The 2015 implementation is not evidence of equality for those functions.
 - `src/mesh.rs`: observed mesh v2 contract.
 - `src/scene.rs`: explicit XML v4 Part/instance subset.
 - `src/runtime.rs`: headless import and numerical evidence.
+- `src/render.rs` / `src/render.wgsl`: recovered low-quality GPU probes.
+- `src/surface.rs` / `src/dds.rs`: character surface UVs and native DXT1 fallback.
 - `docs/DESIGN.md`: implemented architecture/limits.
 - `docs/provenance/2016-MESH.md`: native findings and local evidence paths.
 - `docs/RESEARCH.md`: current tool/reference checks.
@@ -113,3 +127,9 @@ Stop GUI retries per AGENTS.md. Fix/verify the format handling through an
 independent offscreen BGRA contract probe: now passes and agrees with RGBA.
 Window presentation after that fix
 is **not tested** until a later explicit test; do not claim it works.
+
+Latest numeric rendering evidence is in
+`RobloxStudio/analysis/render-console-studs-20261012.log` and the new audit log
+printed by that command. Final RGBA SHA-256:
+`95e162d2e69e72c48a74ef2060a8b0f7418717006b9537805d7b459f6f15d015`.
+No visual inspection or original client execution was performed.

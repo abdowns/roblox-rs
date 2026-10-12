@@ -6,6 +6,7 @@ use crate::{
     geometry::{Draw, RenderScene, RenderVertex},
     runtime,
     scene::CoordinateFrame,
+    surface::{self, SurfaceScene},
     texture::{self, PngTexture, TexturedDraw},
 };
 use bevy::prelude::*;
@@ -161,6 +162,18 @@ struct Gpu {
     count: u32,
     info: String,
     decals: Option<DecalGpu>,
+    studs: Option<StudGpu>,
+}
+struct StudGpu {
+    pipeline: wgpu::RenderPipeline,
+    globals: wgpu::BindGroup,
+    bindings: wgpu::BindGroup,
+}
+#[derive(Clone, Copy, PartialEq)]
+enum ShaderKind {
+    Untextured,
+    Plastic,
+    Decal,
 }
 struct DecalGpu {
     pipeline: wgpu::RenderPipeline,
@@ -178,10 +191,10 @@ fn pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     format: wgpu::TextureFormat,
-    decal: bool,
+    kind: ShaderKind,
 ) -> wgpu::RenderPipeline {
-    let attributes =
-        wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2,3=>Float32x4,4=>Float32x2];
+    let decal = kind == ShaderKind::Decal;
+    let attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2,3=>Float32x4,4=>Float32x2,5=>Float32x2];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(if decal {
             "recovered decal pass"
@@ -194,7 +207,7 @@ fn pipeline(
             entry_point: Some("vertex"),
             compilation_options: Default::default(),
             buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: 56,
+                array_stride: 64,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &attributes,
             })],
@@ -221,7 +234,11 @@ fn pipeline(
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some(if decal { "fragment_decal" } else { "fragment" }),
+            entry_point: Some(match kind {
+                ShaderKind::Untextured => "fragment",
+                ShaderKind::Plastic => "fragment_plastic",
+                ShaderKind::Decal => "fragment_decal",
+            }),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -274,7 +291,7 @@ impl Gpu {
             label: Some("recovered low-quality equations"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(SHADER)),
         });
-        let pipeline = pipeline(&device, &shader, format, false);
+        let pipeline = pipeline(&device, &shader, format, ShaderKind::Untextured);
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("explicit probe globals"),
             size: 192,
@@ -316,9 +333,122 @@ impl Gpu {
                 count,
                 info,
                 decals: None,
+                studs: None,
             },
             adapter,
         ))
+    }
+
+    fn texture_bindings(
+        &self,
+        pipeline: &wgpu::RenderPipeline,
+        data: &PngTexture,
+        sampler: &wgpu::Sampler,
+    ) -> Result<wgpu::BindGroup, String> {
+        let first = data.mips.first().ok_or("empty texture")?;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("original PNG and native mips"),
+            size: wgpu::Extent3d {
+                width: first.width,
+                height: first.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: data.mips.len() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (level, mip) in data.mips.iter().enumerate() {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &mip.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(mip.width * 4),
+                    rows_per_image: Some(mip.height),
+                },
+                wgpu::Extent3d {
+                    width: mip.width,
+                    height: mip.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let bindings = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(1),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(
+                        &texture.create_view(&Default::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        Ok(bindings)
+    }
+
+    fn add_studs(&mut self, draws: &[Draw], surface: &SurfaceScene) -> Result<(), String> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(SHADER)),
+            });
+        let pipeline = pipeline(&self.device, &shader, self.format, ShaderKind::Plastic);
+        let globals = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.uniform.as_entire_binding(),
+            }],
+        });
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("native low-quality studs repeat/trilinear"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let bindings = self.texture_bindings(&pipeline, &surface.atlas, &sampler)?;
+        let (vertices, _, count) = draw_bytes_with_studs(draws, Some(&surface.coordinates))?;
+        if count != self.count {
+            return Err("stud upload changed topology".into());
+        }
+        let vertices = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("native studs UVs"),
+                contents: &vertices,
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        if let Some(error) = pollster::block_on(scope.pop()) {
+            return Err(format!("stud upload: {error}"));
+        }
+        self.vertices = vertices;
+        self.studs = Some(StudGpu {
+            pipeline,
+            globals,
+            bindings,
+        });
+        Ok(())
     }
 
     fn add_decals(&mut self, draws: &[TexturedDraw]) -> Result<(), String> {
@@ -332,7 +462,7 @@ impl Gpu {
                 label: None,
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(SHADER)),
             });
-        let pipeline = pipeline(&self.device, &shader, self.format, true);
+        let pipeline = pipeline(&self.device, &shader, self.format, ShaderKind::Decal);
         let globals = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &pipeline.get_bind_group_layout(0),
@@ -356,58 +486,7 @@ impl Gpu {
         });
         let mut uploaded = Vec::new();
         for draw in draws {
-            let first = draw.texture.mips.first().ok_or("empty texture")?;
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("original PNG and native mips"),
-                size: wgpu::Extent3d {
-                    width: first.width,
-                    height: first.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: draw.texture.mips.len() as u32,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            for (level, mip) in draw.texture.mips.iter().enumerate() {
-                self.queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &texture,
-                        mip_level: level as u32,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &mip.rgba,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(mip.width * 4),
-                        rows_per_image: Some(mip.height),
-                    },
-                    wgpu::Extent3d {
-                        width: mip.width,
-                        height: mip.height,
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-            let bindings = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &pipeline.get_bind_group_layout(1),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            &texture.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                ],
-            });
+            let bindings = self.texture_bindings(&pipeline, &draw.texture, &sampler)?;
             let (v, i, count) = draw_bytes(std::slice::from_ref(&draw.draw))?;
             let vertices = self
                 .device
@@ -490,8 +569,14 @@ impl Gpu {
             }),
             ..Default::default()
         });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bindings, &[]);
+        if let Some(studs) = &self.studs {
+            pass.set_pipeline(&studs.pipeline);
+            pass.set_bind_group(0, &studs.globals, &[]);
+            pass.set_bind_group(1, &studs.bindings, &[]);
+        } else {
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bindings, &[]);
+        }
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..self.count, 0, 0..1);
@@ -601,11 +686,23 @@ impl Gpu {
 }
 
 fn draw_bytes(draws: &[Draw]) -> Result<(Vec<u8>, Vec<u8>, u32), String> {
+    draw_bytes_with_studs(draws, None)
+}
+fn draw_bytes_with_studs(
+    draws: &[Draw],
+    coordinates: Option<&std::collections::BTreeMap<String, Vec<[f32; 2]>>>,
+) -> Result<(Vec<u8>, Vec<u8>, u32), String> {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     let mut base = 0u32;
     for draw in draws {
-        for v in &draw.vertices {
+        let uvs = coordinates
+            .map(|map| map.get(&draw.name).ok_or("missing stud coordinates"))
+            .transpose()?;
+        if uvs.is_some_and(|uv| uv.len() != draw.vertices.len()) {
+            return Err("stud coordinate count mismatch".into());
+        }
+        for (index, v) in draw.vertices.iter().enumerate() {
             for f in v
                 .position
                 .iter()
@@ -616,6 +713,12 @@ fn draw_bytes(draws: &[Draw]) -> Result<(Vec<u8>, Vec<u8>, u32), String> {
             {
                 if !f.is_finite() {
                     return Err("non-finite vertex upload".into());
+                }
+                vertices.extend(f.to_le_bytes());
+            }
+            for f in uvs.map_or([0.0; 2], |uvs| uvs[index]) {
+                if !f.is_finite() {
+                    return Err("non-finite stud coordinate".into());
                 }
                 vertices.extend(f.to_le_bytes());
             }
@@ -648,7 +751,9 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     let mut report = scene.report.clone();
     report.push_str(&crate::shader_pack::inventory(bundle)?);
     let decals = texture::character_decals(bundle, &scene)?;
+    let surfaces = surface::character(bundle, &scene)?;
     report.push_str(&decals.report);
+    report.push_str(&surfaces.report);
     let mut app = scene_app(scene);
     for draw in decals.draws {
         app.world_mut().spawn(draw);
@@ -703,7 +808,21 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
         ));
     }
     writeln!(report,"decal_render_pass draws={} changed_pixels={changed} repeat_identical=true rgba_sha256={:x} mip_filter=trilinear anisotropy=probe_1",app.world().resource::<ExtractedDecals>().0.len(),Sha256::digest(&textured)).unwrap();
-    writeln!(report,"shader_path=static_low_quality_untextured probe_light_grid=constant probe_shadow=constant native_visual_parity=not_tested").unwrap();
+    gpu.add_studs(draws, &surfaces)?;
+    let plastic = gpu.read_frame(640, 480, &inputs)?;
+    if plastic != gpu.read_frame(640, 480, &inputs)? {
+        return Err("Plastic repeat render differs".into());
+    }
+    let changes = textured
+        .chunks_exact(4)
+        .zip(plastic.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    if changes == 0 {
+        return Err("stud atlas produced no pixel changes".into());
+    }
+    writeln!(report,"plastic_render_pass changed_pixels={changes} repeat_identical=true rgba_sha256={:x} studs=original_dds outlines=probe_disabled compressed_decode=native_fallback",Sha256::digest(&plastic)).unwrap();
+    writeln!(report,"shader_path=static_low_quality_plastic_and_decal probe_light_grid=constant probe_shadow=constant native_visual_parity=not_tested").unwrap();
     let path = runtime::save_log(bundle, &report)?;
     let frame_path = path.with_extension("ppm");
     let mut file = OpenOptions::new()
@@ -713,7 +832,7 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     file.write_all(b"P6\n640 480\n255\n")
         .map_err(|e| e.to_string())?;
-    for p in textured.chunks_exact(4) {
+    for p in plastic.chunks_exact(4) {
         file.write_all(&p[..3]).map_err(|e| e.to_string())?;
     }
     writeln!(
@@ -830,6 +949,35 @@ fn gpu_contract_probe(instance: &wgpu::Instance) -> Result<String, String> {
         return Err(format!("decal depth-write contract mismatch: {depth:?}"));
     }
     writeln!(report,"gpu_decal_contract_pass clamp=true uv_row_order=true straight_alpha_rgba={blended:?} depth_write_disabled=true later_far_rgba={depth:?}").unwrap();
+    let draw = triangle(-2.0, [0.25, 0.5, 0.75, 1.0]);
+    let fixture = SurfaceScene {
+        coordinates: std::collections::BTreeMap::from([(draw.name.clone(), vec![[1.25, 0.25]; 3])]),
+        atlas: PngTexture::from_rgba(
+            2,
+            2,
+            vec![64, 0, 0, 0, 192, 0, 0, 255, 192, 0, 0, 255, 192, 0, 0, 255],
+        )?,
+        report: String::new(),
+    };
+    let (mut stud_gpu, _) = Gpu::new(
+        instance,
+        None,
+        wgpu::TextureFormat::Rgba8Unorm,
+        std::slice::from_ref(&draw),
+    )?;
+    stud_gpu.add_studs(&[draw], &fixture)?;
+    let image = stud_gpu.read_frame(65, 65, &inputs)?;
+    let sampled = &image[(32 * 65 + 32) * 4..(32 * 65 + 32) * 4 + 4];
+    if sampled
+        .iter()
+        .zip([32i32, 64, 96, 255])
+        .any(|(a, b)| (*a as i32 - b).abs() > 1)
+    {
+        return Err(format!(
+            "Plastic repeat/red-times-two contract mismatch: {sampled:?}"
+        ));
+    }
+    writeln!(report,"gpu_plastic_contract_pass repeat_uv=true red_times_two=true atlas_alpha_ignored=true center_rgba={sampled:?}").unwrap();
     Ok(report)
 }
 
@@ -845,6 +993,7 @@ struct Viewport {
     error: Option<String>,
     frames: u32,
     frame_limit: Option<u32>,
+    surfaces: SurfaceScene,
 }
 impl Viewport {
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: String) {
@@ -879,6 +1028,7 @@ impl ApplicationHandler for Viewport {
                 wgpu::TextureFormat::Bgra8Unorm,
                 &self.app.world().resource::<Extracted>().0,
             )?;
+            gpu.add_studs(&self.app.world().resource::<Extracted>().0, &self.surfaces)?;
             gpu.add_decals(&self.app.world().resource::<ExtractedDecals>().0)?;
             let size = window.inner_size();
             let mut config = surface
@@ -1027,7 +1177,9 @@ pub fn viewport(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, Str
     let scene = RenderScene::character(bundle)?;
     let mut report = scene.report.clone();
     let decals = texture::character_decals(bundle, &scene)?;
+    let surfaces = surface::character(bundle, &scene)?;
     report.push_str(&decals.report);
+    report.push_str(&surfaces.report);
     let mut app = scene_app(scene);
     for draw in decals.draws {
         app.world_mut().spawn(draw);
@@ -1045,6 +1197,7 @@ pub fn viewport(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, Str
         error: None,
         frames: 0,
         frame_limit,
+        surfaces,
     };
     EventLoop::new()
         .map_err(|e| e.to_string())?

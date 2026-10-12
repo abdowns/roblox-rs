@@ -81,6 +81,20 @@ impl NativeImage {
         }
         Ok(faces)
     }
+
+    pub fn surface_rows(&self) -> Result<[f32; 6], String> {
+        let bytes = self.region(0x017f045c, 24)?;
+        let rows = std::array::from_fn(|i| {
+            f32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
+        });
+        if rows
+            .iter()
+            .any(|v| !v.is_finite() || !(0.0..1.0).contains(v))
+        {
+            return Err("invalid native surface row table".into());
+        }
+        Ok(rows)
+    }
 }
 
 fn decode_colors(code: &[u8], base: u64, setter: u64) -> Result<BTreeMap<u32, [u8; 3]>, String> {
