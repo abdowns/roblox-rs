@@ -350,3 +350,36 @@ selection, flags/state-dependent mass overrides and runtime differential parity
 remain untested. This step does not yet integrate collisions or move the viewport.
 Raw evidence stays in ignored RobloxStudio/analysis/assembly-*, *mass* and
 block-inertia-asm JSON files.
+
+
+## Constrained kernel and contact spring
+
+kernel.rs adds the legacy SimBody constrained substep (00ab1d44), separate from
+its free-fall branch. Initialization (00ab16aa/00ab1c28) moves velocity to Cofm,
+builds angular momentum from the rotated local inertia diagonal, and retains the
+body-to-center offset. Each substep applies torque/impulses to momentum, damps it
+with 017a1f70, rotates diagonal inverse inertia, updates/normalizes the quaternion,
+then integrates center velocity and position semi-implicitly. Force resets to
+gravity; torque and impulses reset to zero. Tiny additions happen after motion.
+Body publication (00ab13e8) subtracts the rotated Cofm offset and corrects linear
+velocity back to the body origin. Existing free-fall public signatures are stable.
+
+ContactSpring ports 00a93074 with explicit shape/material stiffness parameters,
+unit normal, signed distance, point and both body states. Tangent displacement is
+integrated over kernelDt and limited with the PREVIOUS normal force. Compression
+and decompression histories decay toward -0.01; the normal-speed sign chooses
+stiffness. First penetration stores its depth and produces zero normal force.
+Separation clears depths/normal force but retains tangent displacement. The 1e-8
+comparison constant at 0179fcb8 is a double, not a float. Returned force applies
+to B and its negative to A; apply_force also accumulates contact-arm torque.
+
+The assembly diagnostic performs 19 substeps per 1/240-second interval for one
+second under gravity plus a constant center force. Independent discrete constant-
+acceleration equations check center position/velocity; the rig retains seven
+poses. This explicitly exercises the constrained branch without claiming native
+classification. Native 00a9768c first performs adaptive contact impulses, then
+separate connector passes and 19 constrained steps. That scheduler and impulse
+pass are not yet integrated. BlockBlockContact's native SAT (00ae3de4), face
+selection (00ae4974), up-to-eight face contacts (00ae533e), vertex-plane overlap
+threshold (00ae3bd4) and geometry (00aa1d78) are now traced; porting is pending.
+Raw kernel/contact evidence remains in ignored RobloxStudio/analysis JSON files.

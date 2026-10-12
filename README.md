@@ -48,7 +48,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **35 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **39 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -59,6 +59,13 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Native constrained SimBody substeps and contact spring/friction history. Run
+  `sh tools/cargo.sh run --locked -- audit-kernel`; expect
+  `kernel_pass parts=7 mass=9.9 constrained_steps=4560`. The diagnostic integrates
+  the R6 assembly under an explicit constant force and tests two contact-history
+  samples. Contact generation, the iterative impulse pass and viewport walking
+  are still pending; this is not the full collision solver.
 
 - Native block mass/inertia and recursive R6 assembly aggregation. Run
   `sh tools/cargo.sh run --locked -- audit-assembly`; expect

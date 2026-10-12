@@ -1,5 +1,23 @@
 # MODLOG
 
+## 2026-10-12 Integrate native constrained assembly and contact spring math
+
+**Changed:** Added kernel.rs, audit-kernel, constrained Cofm integration and native
+ContactConnector force-history branch. Existing public signatures stay stable.
+**Why:** The constrained native branch uses momentum damping and semi-implicit
+position, distinct from free fall; contact friction depends on the previous force.
+**Tested how:** Live Ghidra decompilation/constants; 39 tests; one-second original
+R6 assembly diagnostic; source formatting and Clippy with warnings denied.
+**Result:** 4,560 substeps, seven posed bodies, position error 0.003243974 and
+velocity error 0.010204064. Initial contact force zero, next sample -37.5 on B.
+Test: `sh tools/cargo.sh run --locked -- audit-kernel`; expect `kernel_pass`.
+**Still broken / not tested:** First Clippy flagged the explicit native contact
+arguments; a targeted annotation documents the boundary. Native scheduling,
+contact generation, iterative impulse response, walking and differential parity
+are **not tested**. Viewport continues using its existing bounded probes.
+**Next:** Port the traced native vertex/plane contact generation and impulse pass.
+
+
 ## 2026-10-12 Recover R6 assembly mass and inertia
 
 **Changed:** Runtime-loaded Plastic density/root mass, native block inertia

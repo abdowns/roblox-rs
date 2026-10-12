@@ -6,6 +6,7 @@ pub mod camera;
 pub mod collision;
 pub mod dds;
 pub mod geometry;
+pub mod kernel;
 pub mod locomotion;
 pub mod mesh;
 mod motion;

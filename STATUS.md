@@ -267,3 +267,17 @@ state-dependent overrides remain not tested. Constrained integration/contact
 forces and playable walking are next dependencies. Clippy initially rejected
 parentheses/native addend order; the formatting/targeted annotations resolve it.
 A README patch context mismatch was corrected; no original game data changed.
+
+
+## Current constrained-kernel checkpoint (2026-10-12)
+
+39 tests pass. audit-kernel now integrates the recovered R6 assembly with native
+constrained SimBody timing, momentum, Cofm offsets, impulses/force accumulators
+and reset order. Constant-force discrete analytic errors are 0.003243974 position
+and 0.010204064 velocity after 4,560 steps. ContactSpring implements recovered
+compression/decompression/tangent histories with explicit material parameters.
+First Clippy failure was excessive argument count; targeted native-boundary
+annotation fixes it. Full native impulse pass, scheduler classification, contact
+generation, playable walking/default keyframes and full rendering are incomplete.
+Block SAT/face/vertex-plane generation is traced and raw evidence saved inside
+RobloxStudio/analysis. No native differential execution or visual inspection.

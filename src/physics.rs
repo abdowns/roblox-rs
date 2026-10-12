@@ -93,7 +93,7 @@ pub struct FreeFallBody {
     pub quaternion: [f32; 4],
 }
 
-fn normalize(mut q: [f32; 4]) -> Result<[f32; 4], String> {
+pub(crate) fn normalize(mut q: [f32; 4]) -> Result<[f32; 4], String> {
     let squared = q[3] * q[3] + q[2] * q[2] + q[1] * q[1] + q[0] * q[0];
     if !q.iter().all(|v| v.is_finite()) || !squared.is_finite() || squared == 0.0 {
         return Err("invalid physics quaternion".into());
@@ -103,7 +103,7 @@ fn normalize(mut q: [f32; 4]) -> Result<[f32; 4], String> {
     Ok(q)
 }
 
-fn matrix_quaternion(m: [[f32; 3]; 3]) -> Result<[f32; 4], String> {
+pub(crate) fn matrix_quaternion(m: [[f32; 3]; 3]) -> Result<[f32; 4], String> {
     let [a, b, c] = [m[0][0], m[1][1], m[2][2]];
     let trace = a + b + c;
     let q = if trace > 0.0 {
@@ -146,7 +146,7 @@ fn matrix_quaternion(m: [[f32; 3]; 3]) -> Result<[f32; 4], String> {
     normalize(q)
 }
 
-fn quaternion_matrix([x, y, z, w]: [f32; 4]) -> [[f32; 3]; 3] {
+pub(crate) fn quaternion_matrix([x, y, z, w]: [f32; 4]) -> [[f32; 3]; 3] {
     let xx = x * (x + x);
     let yy = y + y;
     let zz = z + z;
