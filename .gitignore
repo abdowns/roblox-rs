@@ -19,6 +19,7 @@
 !/tools/**/
 !/tools/**/*.py
 !/tools/**/*.sh
+!/tools/**/*.java
 !/docs/
 !/docs/**/
 !/docs/**/*.md

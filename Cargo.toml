@@ -1,0 +1,15 @@
+[package]
+name = "studio-2016"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+description = "Offline research runtime for Roblox Studio macOS 0.255.0.82159"
+
+[dependencies]
+bevy = { version = "=0.20.0", default-features = false, features = ["std"] }
+roxmltree = "=0.21.1"
+sha2 = "=0.10.9"
+
+[lints.rust]
+unsafe_code = "forbid"
