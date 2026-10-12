@@ -66,7 +66,10 @@ The actual character atlas pass changes 5,518 pixels; repeat-identical final RGB
 SHA-256 is `95e162d2e69e72c48a74ef2060a8b0f7418717006b9537805d7b459f6f15d015`.
 This uses the recovered software DXT1 fallback uploaded as RGBA8; original hardware
 compressed pixels are **not tested**. Eighteen source-only tests pass.
-Window presentation failed twice and is **not tested** after the format correction.
+Window presentation failed twice earlier. After the BGRA format correction and
+the user's renewed visible-build request, two bounded smoke runs now complete
+120 presented Metal frames at 1920×1440. Warm-up readback covers 61,363 pixels;
+original running-client visual parity remains **not tested**.
 General decals, surface subdivisions, textures, outlines, dynamic light
 grid, shadows, sky, postprocessing and Studio UI remain incomplete. Original
 pixel/behavior parity is **not tested**.

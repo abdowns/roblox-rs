@@ -179,3 +179,13 @@ It is neither a native differential test nor an assembled character simulation.
 Contact classification, constraints, mass/inertia forces, collisions, sleeping,
 anchored scheduling, Humanoid locomotion and render synchronization are separate
 remaining work. Static render diagnostics continue to render the original pose.
+
+## Visible launch and live evidence
+
+No-argument launch opens the existing recovered renderer in a winit window.
+Before showing it, a BGRA offscreen warm-up checks that geometry covers nonzero
+pixels. The window uses the same low-quality Plastic/decal passes, linear BGRA
+surface and explicit probe camera/lighting. An incremental log created through
+the confined runtime logger flushes startup, resize, presented-frame counts and
+timing while the app runs. The frame-limited smoke command exits after 120
+presentations; normal launch stays open until Escape/window close.

@@ -7,6 +7,29 @@ beginning of the project and no equivalence is claimed. Unaffiliated with Roblox
 Current priority is the offline core Roblox client: rendering, player/Humanoid,
 physics, camera and appearance. Studio editor and editor GUI work is deferred.
 
+## Open the rendered client viewport
+
+```sh
+sh tools/cargo.sh run --locked
+```
+
+A window shows the supplied 2016 character, including its original head mesh,
+face decal, colors and Plastic stud surfaces. Escape or closing the window exits.
+This is the current core rendering probe, with explicit fixture camera/lighting;
+playable character movement and collisions are still incomplete.
+
+For an automatic presentation test:
+
+```sh
+sh tools/cargo.sh run --locked -- viewport-smoke
+```
+
+Expected: `viewport_readback_pass covered_pixels=61363` on this 1920×1440 M3
+window, `viewport_frame frame=120`, then exit. Coverage depends on window size.
+`viewport_live_log` identifies a file flushed during execution, so startup and
+presentation progress remain available even before closing the window. No game
+assets leave RobloxStudio. No visual inspection was performed.
+
 ## Run the first offline diagnostic
 
 From this project directory:
@@ -92,10 +115,9 @@ are downloaded on first build; runtime data loading uses no network requests.
 
 ## What does not work / not tested
 
-Window presentation is experimental and **not tested** after a format fix. Two
-failed smoke attempts are recorded in STATUS.md. A manual test is
-`sh tools/cargo.sh run --locked -- viewport-smoke`; success would print
-`viewport_frame frame=120` and close. Do not assume this command currently passes.
+Window presentation now passes a 120-frame Metal smoke test after the BGRA
+format fix. Earlier failures remain recorded in STATUS.md. Pixel equivalence
+with the original running client is **not tested**.
 
 No full graphical client, general native geometry dispatch, interactive camera/input,
 complete physics, animation, Lua runtime, Studio ribbon/docks/editing, place saving,

@@ -1,5 +1,24 @@
 # MODLOG
 
+## 2026-10-12 Present the character in the default visible build
+
+**Changed:** Default launch opens the recovered character viewport; startup GPU
+coverage/hash checks, visible title and flushed live frame/timing logs. Existing
+public signatures are stable. Updated the earlier window-failure status.
+**Why:** The user requested something rendered in the next build.
+**Tested how:** Retested the previously verified BGRA fix; instrumented Metal
+window smoke completed 120 presentations, six draws/2,718 indices at 1920×1440.
+Twenty-six tests pass; formatting and Clippy checks. No visual inspection.
+**Result:** Warm-up coverage=61,363 pixels, SHA-256
+`02f0e0ea751d7e783789f455e8836a2da79d769c080f01ddd186c8d0ad902521`.
+Run `sh tools/cargo.sh run --locked -- viewport-smoke`; expect
+`viewport_readback_pass`, `viewport_frame frame=120`, then close. Run
+`sh tools/cargo.sh run --locked` to keep the viewport open.
+**Still broken / not tested:** The two earlier failed attempts remain documented.
+This checkpoint does not yet animate geometry. Native visual parity, playable
+character locomotion/contacts and manual Escape interaction are **not tested**.
+**Next:** Connect recovered physics frames to geometry and decal uploads.
+
 ## 2026-10-12 Recover native free-fall physics
 
 **Changed:** Added runtime native physics constants, independent SimBody free-fall

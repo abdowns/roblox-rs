@@ -4,7 +4,7 @@
 
 Reimplement the offline Studio macOS 0.255.0.82159 client in Rust/Bevy, ultimately
 matching behavior and appearance. The current result includes a tested headless
-static Metal renderer, not the full client. Project: `/Users/abd/Programming/roblox-rs`.
+Metal renderer with tested window presentation, not the full client. Project: `/Users/abd/Programming/roblox-rs`.
 The user has prioritized the core client: rendering, player, physics and camera.
 Studio editor and editor GUI functionality are deferred.
 Original `RobloxStudio/Contents` is read-only. Raw evidence and Ghidra databases
@@ -40,8 +40,7 @@ Studio editing/saving, mesh v1 or binary-place loading. Only explicit Part field
 are typed; other classes do not execute behavior. Native execution and full
 pixel/behavior parity are **not tested**. General decals, surface subdivisions,
 outlines, dynamic light grid/shadows and full material paths are incomplete.
-Native compressed GPU decoding is **not tested**. Window presentation after
-the format fix is **not tested** (two failed attempts below).
+Native compressed GPU decoding is **not tested**. Window presentation now passes after the format fix; earlier failures are preserved below.
 
 ## Earlier Ghidra MCP problem and two attempts
 
@@ -109,9 +108,9 @@ Remaining rendering boundaries include high-quality materials, general geometry,
 outlines, lighting/grid/shadows, sky and postprocessing. Native head
 sizing, normal transforms, explicit character block dispatch, head decals and
 Plastic stud surfaces are implemented. General clothing/mesh selection and
-Attachment transforms remain unimplemented. Window troubleshooting is stopped
-after two real attempts under AGENTS.md; the rendering milestone does not establish
-surface presentation or a full graphical client.
+Attachment transforms remain unimplemented. The user explicitly requested a visible next build, authorizing a new bounded test
+of the independently verified BGRA fix. It completed 120 presented frames. This
+establishes surface presentation, not a full graphical client.
 
 The first textured character probe changed zero pixels. Numeric CFrame evidence
 showed R00=R22=-1, turning the face toward +Z. Changing the explicit probe camera
@@ -133,7 +132,7 @@ The 2015 implementation is not evidence of equality for those functions.
 - `docs/RESEARCH.md`: current tool/reference checks.
 - `MODLOG.md`: successes and failures by step.
 
-## Window smoke failures — stopped after two attempts
+## Earlier window smoke failures — stopped after two attempts
 
 1. Hidden surface never completed viewport-smoke; interrupted after no frame
    progress. Offscreen Metal rendering still passed.
@@ -151,3 +150,17 @@ Latest numeric rendering evidence is in
 printed by that command. Final RGBA SHA-256:
 `95e162d2e69e72c48a74ef2060a8b0f7418717006b9537805d7b459f6f15d015`.
 No visual inspection or original client execution was performed.
+
+## Window presentation recovered — current request
+
+The user's explicit visible-build request resumed testing after the independently
+verified BGRA fix. Both the unchanged renderer retest and the instrumented build
+completed 120 frames at 1920×1440, six draws, 2,718 indices. Warm-up GPU readback
+contains 61,363 covered pixels, SHA-256
+`02f0e0ea751d7e783789f455e8836a2da79d769c080f01ddd186c8d0ad902521`.
+Evidence: `RobloxStudio/analysis/viewport-retest-20261012.log` and
+`RobloxStudio/analysis/viewport-live-20261012.log`. No screenshots or visual
+inspection. Launch defaults to the visible viewport; incremental frame/startup
+logs flush to an ignored analysis file while it runs. Tests: 26 pass.
+Reproduce: `sh tools/cargo.sh run --locked -- viewport-smoke`.
+Expected: `viewport_readback_pass`, `viewport_frame frame=120`, exit success.

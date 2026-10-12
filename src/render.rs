@@ -994,9 +994,19 @@ struct Viewport {
     frames: u32,
     frame_limit: Option<u32>,
     surfaces: SurfaceScene,
+    live_log: std::fs::File,
+    started: Instant,
 }
 impl Viewport {
+    fn log_event(&mut self, event: String) -> Result<(), String> {
+        writeln!(self.live_log, "{event}").map_err(|e| e.to_string())?;
+        self.live_log.flush().map_err(|e| e.to_string())?;
+        writeln!(self.report, "{event}").unwrap();
+        println!("{event}");
+        Ok(())
+    }
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: String) {
+        let _ = self.log_event(format!("viewport_failed={error}"));
         self.error = Some(error);
         event_loop.exit();
     }
@@ -1011,7 +1021,7 @@ impl ApplicationHandler for Viewport {
                 event_loop
                     .create_window(
                         Window::default_attributes()
-                            .with_title("Studio 2016 — static rendering probe")
+                            .with_title("Roblox 2016 — core client rendering")
                             .with_inner_size(winit::dpi::LogicalSize::new(960.0, 720.0))
                             .with_visible(false),
                     )
@@ -1046,18 +1056,25 @@ impl ApplicationHandler for Viewport {
             surface.configure(&gpu.device, &config);
             // Metal can report an invisible surface as occluded. Warm up an
             // offscreen frame before showing the window, then acquire its surface.
-            gpu.read_frame(config.width, config.height, &self.inputs)?;
+            let pixels = gpu.read_frame(config.width, config.height, &self.inputs)?;
+            let background = &pixels[..4];
+            let covered = pixels.chunks_exact(4).filter(|p| *p != background).count();
+            if covered == 0 {
+                return Err("viewport warm-up rendered no geometry".into());
+            }
+            self.log_event(format!(
+                "viewport_readback_pass covered_pixels={covered} rgba_sha256={:x}",
+                Sha256::digest(&pixels)
+            ))?;
             window.set_visible(true);
-            writeln!(
-                self.report,
+            self.log_event(format!(
                 "{}\nviewport_open width={} height={} scale_factor={} format={:?}",
                 gpu.info,
                 size.width,
                 size.height,
                 window.scale_factor(),
                 config.format
-            )
-            .unwrap();
+            ))?;
             self.window = Some(window);
             self.surface = Some(surface);
             self.gpu = Some(gpu);
@@ -1091,12 +1108,13 @@ impl ApplicationHandler for Viewport {
                     .as_ref()
                     .unwrap()
                     .configure(&self.gpu.as_ref().unwrap().device, config);
-                writeln!(
-                    self.report,
+                if let Err(error) = self.log_event(format!(
                     "viewport_resize width={} height={}",
                     size.width, size.height
-                )
-                .unwrap();
+                )) {
+                    self.fail(event_loop, error);
+                    return;
+                }
                 self.window.as_ref().unwrap().request_redraw();
             }
             WindowEvent::RedrawRequested => {
@@ -1144,14 +1162,13 @@ impl ApplicationHandler for Viewport {
                         self.window.as_ref().unwrap().set_visible(true);
                     }
                     if self.frames == 1 || self.frames.is_multiple_of(60) {
-                        writeln!(
-                            self.report,
-                            "viewport_frame frame={} draws={} indices={}",
+                        self.log_event(format!(
+                            "viewport_frame frame={} draws={} indices={} elapsed_ms={:.3}",
                             self.frames,
                             self.app.world().resource::<Extracted>().0.len(),
-                            gpu.count
-                        )
-                        .unwrap();
+                            gpu.count,
+                            self.started.elapsed().as_secs_f64() * 1000.0
+                        ))?;
                     }
                     if self.frame_limit.is_some_and(|limit| self.frames >= limit) {
                         event_loop.exit();
@@ -1185,6 +1202,12 @@ pub fn viewport(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, Str
         app.world_mut().spawn(draw);
     }
     app.update();
+    let live_path = runtime::save_log(bundle, &report)?;
+    let live_log = OpenOptions::new()
+        .append(true)
+        .open(&live_path)
+        .map_err(|e| e.to_string())?;
+    println!("viewport_live_log={}", live_path.display());
     let mut viewport = Viewport {
         app,
         bundle_root: bundle.root().to_path_buf(),
@@ -1198,17 +1221,17 @@ pub fn viewport(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, Str
         frames: 0,
         frame_limit,
         surfaces,
+        live_log,
+        started: Instant::now(),
     };
     EventLoop::new()
         .map_err(|e| e.to_string())?
         .run_app(&mut viewport)
         .map_err(|e| e.to_string())?;
-    writeln!(
-        viewport.report,
+    viewport.log_event(format!(
         "viewport_closed frames={} native_visual_parity=not_tested",
         viewport.frames
-    )
-    .unwrap();
+    ))?;
     if let Some(error) = &viewport.error {
         writeln!(viewport.report, "viewport_failed={error}").unwrap();
     }

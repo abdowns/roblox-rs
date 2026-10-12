@@ -2,10 +2,13 @@ use std::{env, path::PathBuf, process::ExitCode};
 use studio_2016::{bundle::Bundle, geometry::RenderScene, physics, player, render, runtime};
 
 fn main() -> ExitCode {
-    let args: Vec<_> = env::args_os().skip(1).collect();
+    let mut args: Vec<_> = env::args_os().skip(1).collect();
+    if args.is_empty() {
+        args.push("viewport".into());
+    }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|viewport|viewport-smoke> [RobloxStudio directory]\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
+            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|viewport|viewport-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
         );
         return ExitCode::SUCCESS;
     }
