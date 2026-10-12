@@ -16,7 +16,8 @@ sh tools/cargo.sh run --locked
 A window shows the supplied 2016 character, including its original head mesh,
 face decal, colors, and built-in torso/limb meshes. **Space** starts a quarter-second
 free-fall probe; **R** restores the original pose; **Escape** closes the window.
-This is the current core rendering probe, with explicit fixture camera/lighting;
+**A** runs the bundled procedural Running animation for one second, with its root
+held in place and explicitly chosen 60 Hz joint callbacks. This is the current core rendering probe, with explicit fixture camera/lighting;
 playable character movement and collisions are still incomplete.
 
 For an automatic presentation test:
@@ -58,6 +59,15 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Bundled procedural no-tool animation: Standing, Running, Jumping, FreeFall,
+  Climbing and Seated. Run `sh tools/cargo.sh run --locked -- audit-animation`;
+  expect six poses/360 callbacks with zero pivot error. Run
+  `sh tools/cargo.sh run --locked -- audit-animation-render`; expect 60 callbacks,
+  3,950 final changed pixels and exact fresh/reset pixel comparisons.
+  `sh tools/cargo.sh run --locked -- viewport-animation-smoke` opens the automatic
+  one-second animation probe and exits at frame 120. Default keyframe clips,
+  script-selection flags and native callback scheduling remain **not tested**.
 
 - Native R6 six-joint construction and the zero-offset Motor6D angle branch. Run
   `sh tools/cargo.sh run --locked -- audit-rig`; expect `rest_error=0`,
@@ -109,9 +119,9 @@ are downloaded on first build; runtime data loading uses no network requests.
   The empty torso decal is skipped. Other decal geometry and image formats are
   not implemented.
 
-- Original Plastic stud atlas and character block surface coordinates. The same
+- Original Plastic stud atlas and recovered block surface coordinates. The same
   `audit-render` command reports `stud_atlas_loaded width=128 height=2048 mips=12`,
-  `gpu_plastic_contract_pass`, and `plastic_render_pass changed_pixels=5518`.
+  `gpu_plastic_contract_pass`, and `plastic_render_pass changed_pixels=0` for the corrected R6 body branch.
   DXT1 colors follow the native software fallback; all stored mip levels upload.
   Repeat/trilinear sampling and red-channel modulation pass numeric checks.
   Outlines are disabled for this probe. Original compressed GPU decoding and full
@@ -120,7 +130,7 @@ are downloaded on first build; runtime data loading uses no network requests.
 - Recovered static character geometry and palette import. Run
   `sh tools/cargo.sh run --locked -- audit-geometry`; expect
   `native_palette_loaded colors=208` and
-  `geometry_pass draws=6 vertices=637 triangles=906`. Includes native head
+  `geometry_pass draws=6 vertices=727 triangles=1066`. Includes native head
   deformation, block face ordering, material specular quantization and camera math.
   See [rendering evidence](docs/provenance/2016-RENDERING.md).
 
@@ -145,7 +155,7 @@ format fix. Earlier failures remain recorded in STATUS.md. Pixel equivalence
 with the original running client is **not tested**.
 
 No full graphical client, general native geometry dispatch, interactive camera/input,
-complete physics, animation, Lua runtime, Studio ribbon/docks/editing, place saving,
+complete physics, keyframe animation, Lua runtime, Studio ribbon/docks/editing, place saving,
 or complete XML/binary-place loader exists yet. Mesh v1.00/v1.01 are not implemented.
 General surface subdivisions/UVs, decals/textures, high-quality materials, outlines,
 dynamic light grid, shadows, sky and postprocessing remain unimplemented. Imported Attachments and

@@ -212,3 +212,15 @@ setup failed world-byte comparison; preserving imported rest frames until motion
 resolved the second run. Body-mesh motion and linked motion both pass fresh/reset
 pixel comparisons. Child physical velocities, native assembly forces, contacts,
 locomotion and animation are still incomplete. Twenty-nine tests pass.
+
+## Procedural animation checkpoint
+
+Explicit bundled procedural animation covers six no-tool states. Zero pivot
+error over 360 callbacks; GPU Running probe changes 3,950 pixels and matches
+fresh uploads/exact pixel reset. Animation window smoke presents 120 frames and
+60 callbacks, final coverage 56,346 at 1920x1440. The first new GPU audit compile
+failed because wgpu 30 InstanceDescriptor lacks Default; the corrected existing
+constructor passes. Native default keyframe playback, Lua scheduling, callback
+cadence, tool animations, walking displacement and collisions remain incomplete.
+Manual A/R/Space events and full parity are not tested. Reproduce with
+`sh tools/cargo.sh run --locked -- viewport-animation-smoke`.

@@ -1,5 +1,28 @@
 # MODLOG
 
+## 2026-10-12 Animate the recovered R6 rig
+
+**Changed:** Runtime-loaded procedural animation literals, six no-tool poses,
+Motor6D target updates and a labeled one-second Running viewport probe (A),
+audit-animation, audit-animation-render and viewport-animation-smoke.
+**Why:** Exercise the supplied offline procedural branch through native joints
+and original body meshes while default remote keyframe clips are unavailable.
+**Tested how:** Original bundled Lua + Ghidra Motor6D setter/step traces; 29 tests;
+360 callback pivot checks; four Metal samples, repeat/fresh/reset comparisons;
+120-frame/60-callback visible smoke; Clippy. No visual inspection.
+**Result:** All six poses maintain pivots exactly; final animated frame changes
+3,950 pixels at 640x480. Visible final coverage 56,346 at 1920x1440. Test:
+`sh tools/cargo.sh run --locked -- audit-animation-render`; expect
+`animation_render_pass callbacks=60` with fresh/reset identical. To see it:
+`sh tools/cargo.sh run --locked -- viewport-animation-smoke`; expect frame 120
+and paused step 60 with animation=true.
+**Still broken / not tested:** GPU audit initially failed to compile with a
+nonexistent InstanceDescriptor Default; the corrected constructor passes. Manual
+keys, native default selection, scheduler timing and sine/visual parity are
+**not tested**. Tools, keyframe clips, walking translation and contacts are pending.
+**Next:** Native RunningBase force and contact processing contracts.
+
+
 ## 2026-10-12 Recover and bind six native R6 joints
 
 **Changed:** Runtime decoding of native joint presets, Motor6D desired-angle dead

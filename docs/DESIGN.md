@@ -256,3 +256,30 @@ because rest-frame recomposition changes signed-zero arithmetic; serialized
 rest frames are now preserved until a motion step. The second run passes initial
 bytes, fresh uploads and pixel reset. Evidence is rig-motion*.log in the ignored
 analysis directory. Callback cadence and native differential parity are not tested.
+
+## Bundled procedural animation diagnostic
+
+The no-tool portions of humanoidAnimateLocal.rbxm are ported into Rust, with
+literals read from that source at runtime. Pose events select Standing, Running,
+Jumping, FreeFall, Climbing and Seated. The Lua uses double-precision absolute
+time sine inputs, then the native setter receives float angles. Desired-angle
+dead zones and per-callback Motor6D limits remain active. Shoulders retain their
+MaxVelocity when Standing; hip speed stays at the native constructor value.
+The source uses 3.14, not a substituted mathematical pi. Tools are not implemented.
+
+The script's wait(0.1) requests are modeled as explicitly scheduled samples,
+with a 60 Hz joint-callback research input. This does not claim the native wait
+queue, RunService timing or native joint scheduling has been recovered. The
+keyframe scripts reference remote Animation IDs; clips are not present in the
+read inventory and are not fetched. Native default script-selection/flag behavior
+remains unresolved, so A and viewport-animation-smoke explicitly choose this
+bundled procedural profile. Root translation is disabled for this probe; walking
+forces are separate work. Existing public render signatures remain stable.
+
+Numeric animation audit covers six states, 360 callbacks, pivot invariants and
+reset. Metal animation audit checks four samples, repeated pixels, fresh-upload
+comparison and exact reset. Final Running sample changes 3,950 pixels at 640x480.
+The visible smoke completes 60 callbacks/120 presentations and final readback.
+Manual key events and native visual/sine parity are not tested. GPU audit's first
+compile attempted a nonexistent InstanceDescriptor Default; using the existing
+pinned constructor fixed the second compile.

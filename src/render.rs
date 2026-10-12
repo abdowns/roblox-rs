@@ -1064,6 +1064,88 @@ fn gpu_contract_probe(instance: &wgpu::Instance) -> Result<String, String> {
 
 /// Exercise Bevy pose extraction, dynamic vertex uploads and parented decals
 /// against fresh GPU uploads. No window or visual inspection is needed.
+pub fn audit_animation(bundle: &Bundle) -> Result<String, String> {
+    let scene = RenderScene::character(bundle)?;
+    let surfaces = surface::character(bundle, &scene)?;
+    let decals = texture::character_decals(bundle, &scene)?;
+    let mut app = scene_app(scene);
+    for decal in decals.draws {
+        app.world_mut().spawn(decal);
+    }
+    app.update();
+    install_motion(&mut app, bundle)?;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let inputs = RenderInputs::character_probe();
+    let (mut gpu, _) = Gpu::new(
+        &instance,
+        None,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &app.world().resource::<Extracted>().0,
+    )?;
+    gpu.add_studs(&app.world().resource::<Extracted>().0, &surfaces)?;
+    gpu.add_decals(&app.world().resource::<ExtractedDecals>().0)?;
+    let original = gpu.read_frame(640, 480, &inputs)?;
+    app.world_mut()
+        .resource_mut::<MotionControl>()
+        .animation_probe = true;
+    let mut report = String::from(
+        "animation_render_profile bundled_procedural_running root_translation=false callback_hz=explicit_60 native_selection=not_tested\n",
+    );
+    let mut final_pixels = original.clone();
+    for step in 1..=60 {
+        app.world_mut()
+            .resource_mut::<MotionControl>()
+            .requested_steps = 1;
+        app.update();
+        if let Some(error) = &app.world().resource::<MotionControl>().error {
+            return Err(error.clone());
+        }
+        gpu.update_geometry(
+            &app.world().resource::<Extracted>().0,
+            &app.world().resource::<ExtractedDecals>().0,
+            &surfaces,
+        )?;
+        if [6, 15, 30, 60].contains(&step) {
+            final_pixels = gpu.read_frame(640, 480, &inputs)?;
+            if final_pixels != gpu.read_frame(640, 480, &inputs)? {
+                return Err("animation pixels do not repeat".into());
+            }
+            let changed = original
+                .chunks_exact(4)
+                .zip(final_pixels.chunks_exact(4))
+                .filter(|(a, b)| a != b)
+                .count();
+            if changed < 10 {
+                return Err("animated limbs produced insufficient pixel changes".into());
+            }
+            writeln!(report,"animation_render_step callback={step} changed_pixels={changed} repeat_identical=true").unwrap();
+        }
+    }
+    let (mut fresh, _) = Gpu::new(
+        &instance,
+        None,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &app.world().resource::<Extracted>().0,
+    )?;
+    fresh.add_studs(&app.world().resource::<Extracted>().0, &surfaces)?;
+    fresh.add_decals(&app.world().resource::<ExtractedDecals>().0)?;
+    if fresh.read_frame(640, 480, &inputs)? != final_pixels {
+        return Err("animated upload differs from fresh geometry".into());
+    }
+    motion::reset(app.world_mut());
+    app.update();
+    gpu.update_geometry(
+        &app.world().resource::<Extracted>().0,
+        &app.world().resource::<ExtractedDecals>().0,
+        &surfaces,
+    )?;
+    if gpu.read_frame(640, 480, &inputs)? != original {
+        return Err("animation reset changed original pixels".into());
+    }
+    writeln!(report,"animation_render_pass callbacks=60 fresh_upload_identical=true reset_pixels_identical=true rgba_sha256={:x}",Sha256::digest(&final_pixels)).unwrap();
+    Ok(report)
+}
+
 pub fn audit_motion(bundle: &Bundle) -> Result<String, String> {
     let scene = RenderScene::character(bundle)?;
     let mut report = scene.report.clone();
@@ -1305,13 +1387,20 @@ impl ApplicationHandler for Viewport {
             {
                 let reset = matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("r"));
                 let start = event.logical_key == Key::Named(NamedKey::Space);
-                if start || reset {
+                let animate = matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("a"));
+                if start || reset || animate {
                     motion::reset(self.app.world_mut());
-                    self.motion_active = start;
+                    self.app
+                        .world_mut()
+                        .resource_mut::<MotionControl>()
+                        .animation_probe = animate;
+                    self.motion_active = start || animate;
                     self.motion_remainder = 0.0;
                     self.motion_clock = Instant::now();
-                    if let Err(error) = self.log_event(if start {
-                        "motion_probe_started limit_steps=60 contacts=false joints=false gravity=explicit_legacy".into()
+                    if let Err(error) = self.log_event(if animate {
+                        "animation_probe_started profile=bundled_procedural_running limit_callbacks=60 joint_hz=explicit_60 root_translation=false".into()
+                    } else if start {
+                        "motion_probe_started limit_steps=60 contacts=false joints=6 gravity=explicit_legacy".into()
                     } else {
                         "motion_probe_reset step=0".into()
                     }) {
@@ -1380,7 +1469,8 @@ impl ApplicationHandler for Viewport {
                             .iter()
                             .map(|v| v.position[1])
                             .fold(f32::INFINITY, f32::min);
-                        self.log_event(format!("motion_probe_paused step={step} simulated_seconds={:.9} head_min_y={min_y:.9} reason=unconstrained_probe_limit", f64::from(step) * motion::timestep(self.app.world())))?;
+                        let animation = control.animation_probe;
+                        self.log_event(format!("motion_probe_paused step={step} simulated_seconds={:.9} head_min_y={min_y:.9} animation={animation} reason=research_probe_limit", f64::from(step) * motion::timestep(self.app.world())))?;
                     }
                     let config = self.config.as_ref().unwrap();
                     let gpu = self.gpu.as_ref().unwrap();
@@ -1490,18 +1580,24 @@ impl ApplicationHandler for Viewport {
 
 /// Open a diagnostic viewport. Optional frame limit supports numeric smoke tests.
 pub fn viewport(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, String> {
-    run_viewport(bundle, frame_limit, false)
+    run_viewport(bundle, frame_limit, false, false)
 }
 
 /// Automatic surface smoke with the same bounded free-fall trigger as Space.
 pub fn viewport_motion_smoke(bundle: &Bundle) -> Result<String, String> {
-    run_viewport(bundle, Some(120), true)
+    run_viewport(bundle, Some(120), true, false)
+}
+
+/// Explicit bundled procedural Running profile, with diagnostic 60 Hz callbacks.
+pub fn viewport_animation_smoke(bundle: &Bundle) -> Result<String, String> {
+    run_viewport(bundle, Some(120), true, true)
 }
 
 fn run_viewport(
     bundle: &Bundle,
     frame_limit: Option<u32>,
     auto_motion: bool,
+    animation: bool,
 ) -> Result<String, String> {
     if frame_limit.is_some_and(|n| n == 0 || n > 10000) {
         return Err("viewport frame limit must be 1..=10000".into());
@@ -1518,12 +1614,18 @@ fn run_viewport(
     }
     app.update();
     install_motion(&mut app, bundle)?;
+    app.world_mut()
+        .resource_mut::<MotionControl>()
+        .animation_probe = animation;
+    if animation {
+        report.push_str("animation_probe profile=bundled_procedural_running joint_hz=explicit_60 native_default_selection=not_tested root_translation=false\n");
+    }
     let bodies = app
         .world_mut()
         .query::<&crate::physics::FreeFallBody>()
         .iter(app.world())
         .count();
-    writeln!(report, "motion_binding_pass bodies={bodies} draws={} decals={} initial_world_bytes_identical=true contacts=false joints=false", app.world().resource::<Extracted>().0.len(), app.world().resource::<ExtractedDecals>().0.len()).unwrap();
+    writeln!(report, "motion_binding_pass bodies={bodies} draws={} decals={} initial_world_bytes_identical=true contacts=false joints=6", app.world().resource::<Extracted>().0.len(), app.world().resource::<ExtractedDecals>().0.len()).unwrap();
     let live_path = runtime::save_log(bundle, &report)?;
     let live_log = OpenOptions::new()
         .append(true)

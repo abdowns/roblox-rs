@@ -1,6 +1,7 @@
 //! Part-space geometry to recovered physics frames. The driver is an explicitly
 //! unconstrained diagnostic; it does not classify native assemblies or contacts.
 use crate::{
+    animation::{Pose, ProceduralAnimation},
     bundle::Bundle,
     geometry::{Draw, RenderScene},
     physics::{self, FreeFallBody, GravitySource, NativePhysics},
@@ -31,6 +32,9 @@ pub(crate) struct MotionControl {
     pub requested_steps: u32,
     pub steps: u32,
     pub error: Option<String>,
+    pub animation_probe: bool,
+    animation: ProceduralAnimation,
+    animation_ticks: u32,
 }
 
 pub(crate) fn pose_draw(local: &Draw, frame: &CoordinateFrame) -> Draw {
@@ -114,6 +118,9 @@ pub(crate) fn install(app: &mut App, bundle: &Bundle) -> Result<(), String> {
         requested_steps: 0,
         steps: 0,
         error: None,
+        animation_probe: false,
+        animation: ProceduralAnimation::load(bundle)?,
+        animation_ticks: 0,
     });
     app.insert_resource(OriginalRig(rig.clone()));
     app.insert_resource(rig);
@@ -123,7 +130,7 @@ pub(crate) fn install(app: &mut App, bundle: &Bundle) -> Result<(), String> {
 pub(crate) fn advance(
     mut bodies: Query<(&BodyName, &mut FreeFallBody)>,
     mut control: ResMut<MotionControl>,
-    rig: Res<R6Rig>,
+    mut rig: ResMut<R6Rig>,
 ) {
     if control.error.is_some() {
         return;
@@ -134,12 +141,30 @@ pub(crate) fn advance(
         return;
     }
     for _ in 0..steps {
-        for (name, mut body) in &mut bodies {
-            if name.0 == "HumanoidRootPart"
-                && let Err(error) = body.step(&control.profile, GravitySource::Legacy)
-            {
-                control.error = Some(error);
-                return;
+        if control.animation_probe {
+            let time = f64::from(control.steps + 1) / 60.0;
+            let ticks = (time / control.animation.wait_seconds + 1e-9).floor() as u32;
+            if ticks > control.animation_ticks {
+                if let Err(error) = control.animation.apply(&mut rig, Pose::Running, time) {
+                    control.error = Some(error);
+                    return;
+                }
+                control.animation_ticks = ticks;
+            }
+            for joint in &mut rig.joints {
+                if let Err(error) = joint.step() {
+                    control.error = Some(error);
+                    return;
+                }
+            }
+        } else {
+            for (name, mut body) in &mut bodies {
+                if name.0 == "HumanoidRootPart"
+                    && let Err(error) = body.step(&control.profile, GravitySource::Legacy)
+                {
+                    control.error = Some(error);
+                    return;
+                }
             }
         }
         control.steps += 1;
@@ -203,10 +228,17 @@ pub(crate) fn reset(world: &mut World) {
     control.steps = 0;
     control.requested_steps = 0;
     control.error = None;
+    control.animation_probe = false;
+    control.animation_ticks = 0;
 }
 
 pub(crate) fn timestep(world: &World) -> f64 {
-    f64::from(world.resource::<MotionControl>().profile.free_fall_dt)
+    let control = world.resource::<MotionControl>();
+    if control.animation_probe {
+        1.0 / 60.0
+    } else {
+        f64::from(control.profile.free_fall_dt)
+    }
 }
 
 #[cfg(test)]

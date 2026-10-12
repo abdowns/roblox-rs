@@ -1,4 +1,5 @@
 //! Version-specific, offline data boundaries. Original data is read at runtime.
+pub mod animation;
 pub mod bundle;
 pub mod camera;
 pub mod dds;
