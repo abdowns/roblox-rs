@@ -7,6 +7,7 @@ pub mod collision;
 pub mod dds;
 pub mod geometry;
 pub mod kernel;
+pub mod legacy_contact;
 pub mod locomotion;
 pub mod mesh;
 mod motion;

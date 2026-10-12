@@ -281,3 +281,16 @@ annotation fixes it. Full native impulse pass, scheduler classification, contact
 generation, playable walking/default keyframes and full rendering are incomplete.
 Block SAT/face/vertex-plane generation is traced and raw evidence saved inside
 RobloxStudio/analysis. No native differential execution or visual inspection.
+
+
+## Current legacy-contact checkpoint (2026-10-12)
+
+42 tests pass. audit-legacy-contact generates four native-rule vertex/plane
+connectors in a shared-rotation/contained-face fixture, applies awake impulse
+response through assembly inertia and integrates spring force. Central zero/half
+restitution and two-body momentum checks pass. Native relative rotation/edge
+clipping, sleeping, broadphase, scheduling and reference-impulse accumulation are
+not yet integrated. Four corner impulses remove all approach speeds but produce
+some linear/angular rebound even with zero restitution; that observed fixture
+result is logged and has not been compared with native execution. No visual
+inspection. A patch context failure was corrected before any mutation.

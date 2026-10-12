@@ -48,7 +48,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **39 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **42 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -59,6 +59,14 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Legacy block vertex/plane contact generation for shared box orientation and
+  complete face containment, plus awake impulse response through assembly mass,
+  inertia, angular momentum, restitution and friction. Run
+  `sh tools/cargo.sh run --locked -- audit-legacy-contact`; expect
+  `legacy_contact_pass generated=4`, `momentum_conserved=true` and
+  `spring_integrated=true`. Relative rotation, partial face clipping, sleeping,
+  broadphase and complete kernel scheduling remain pending.
 
 - Native constrained SimBody substeps and contact spring/friction history. Run
   `sh tools/cargo.sh run --locked -- audit-kernel`; expect

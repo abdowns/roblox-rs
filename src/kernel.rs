@@ -169,6 +169,37 @@ impl KernelBody {
     pub fn inverse_inertia_world(&self) -> Tensor {
         rotate_tensor(diagonal(self.inverse_diagonal), self.frame.rotation)
     }
+    pub fn inverse_mass(&self) -> f32 {
+        self.inverse_mass
+    }
+    /// FUN_00ab267c: momentum damping occurs on each contact impulse.
+    pub fn contact_impulse(
+        &mut self,
+        impulse: [f32; 3],
+        point: [f32; 3],
+        profile: &KernelProfile,
+    ) -> Result<(), String> {
+        if impulse.iter().chain(&point).any(|v| !v.is_finite()) {
+            return Err("invalid contact impulse".into());
+        }
+        let angular = cross(std::array::from_fn(|a| point[a] - self.center[a]), impulse);
+        self.angular_momentum = std::array::from_fn(|a| {
+            self.angular_momentum[a] * profile.angular_damping + angular[a]
+        });
+        let m = self.inverse_inertia_world();
+        self.angular_velocity = std::array::from_fn(|a| {
+            m[a][2] * self.angular_momentum[2]
+                + (m[a][1] * self.angular_momentum[1] + m[a][0] * self.angular_momentum[0])
+                + profile.physics.anti_denormal
+        });
+        self.velocity = std::array::from_fn(|a| {
+            (impulse[a] * self.inverse_mass + profile.physics.anti_denormal) + self.velocity[a]
+        });
+        self.angular_momentum = self
+            .angular_momentum
+            .map(|v| v + profile.physics.anti_denormal);
+        self.validate()
+    }
     /// FUN_00ab1d44: one constrained substep; semi-implicit center position,
     /// momentum damping, quaternion Euler update, then native accumulator reset.
     pub fn step(&mut self, profile: &KernelProfile) -> Result<(), String> {

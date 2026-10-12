@@ -383,3 +383,37 @@ pass are not yet integrated. BlockBlockContact's native SAT (00ae3de4), face
 selection (00ae4974), up-to-eight face contacts (00ae533e), vertex-plane overlap
 threshold (00ae3bd4) and geometry (00aa1d78) are now traced; porting is pending.
 Raw kernel/contact evidence remains in ignored RobloxStudio/analysis JSON files.
+
+
+## Legacy block connectors and awake impulse response
+
+legacy_contact.rs implements a separate boundary from Bullet's cached manifold.
+Block vertex order comes from 00ae07f2; collision face indices are read at runtime
+from 017a3e68. GeoPair's vertex-plane path (00aa1d78) transforms the original
+vertex into the world contact point, negates the plane face's outward normal and
+computes signed separation. New connectors require separation strictly below
+-0.01 (00ae3bd4). contained_faces limits the native SAT face path to identical
+box rotations and one fully contained face rectangle. Native 00ae533e emits
+incident corners in reverse order and returns immediately if all four are inside;
+otherwise the reference corners emit forward. Partial clipping/edge pairs and
+relative box rotations are explicitly rejected, not silently approximated.
+
+AwakeContact recovers 00a936d0's awake-body branch. Effective contact mass is
+inverse mass times identity minus each arm-skew/inverse-inertia/arm-skew product.
+Its inverse follows 01255ab2's cofactor/determinant order and strict 1e-20
+threshold. Explicit reference impulses supply the native +0xf0 correction;
+restitution uses the decompression/compression ratio, incoming speed and iteration
+count. Penetration target uses -0.02, freeFallDt and 0.1. Friction first uses the
+unconstrained impulse; when it exceeds the cone, direction uses friction*1.2 and
+the native branch enforces a minimum correction magnitude. Those constants are
+read from the exact binary. Body application 00ab267c also damps angular momentum,
+updates linear/angular velocity and adds the native tiny values. Public signatures
+of previous steps remain stable. Native invalidation/sleep/throttling/adaptive
+iteration scheduling and geometry-displacement corrections are still pending.
+
+The audit generates four contained face contacts, applies iterative awake impulses,
+checks no approaching contact remains, then sends a contact spring force through
+the constrained body. Separate central collisions verify zero restitution,
+0.5 restitution and equal-mass momentum conservation. Forty iterations and
+material coefficients are explicit synthetic fixtures, not recovered defaults.
+No complete collision world or native execution parity is claimed.

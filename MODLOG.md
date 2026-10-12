@@ -1,5 +1,28 @@
 # MODLOG
 
+## 2026-10-12 Generate legacy contained-face contacts and solve awake impulses
+
+**Changed:** Added legacy_contact.rs, runtime collision face table, native
+vertex/plane geometry, awake effective-mass/restitution/friction impulse branch,
+contact impulse application, and audit-legacy-contact.
+**Why:** Legacy BlockBlockContact differs from Bullet's four-point manifold and
+requires angular assembly response and native friction/rebound calculations.
+**Tested how:** Live Ghidra geometry/face/impulse/matrix inverse tracing; 42 tests;
+generated-contact diagnostic; central restitution and two-body momentum checks;
+formatting and Clippy with warnings denied.
+**Result:** Four generated connectors; four impulse applications; no approaching
+contact remains. Two center collision cases and equal-mass momentum pass. Spring
+force integrates through SimBody. Test:
+`sh tools/cargo.sh run --locked -- audit-legacy-contact`; expect
+`legacy_contact_pass generated=4` and `momentum_conserved=true`.
+**Still broken / not tested:** First multi-file patch missed formatted main import
+context; no edits were applied, then corrected. Relative rotations, partial face
+clipping/edge pairs, sleep, broadphase, native invalidation/adaptive iteration
+scheduling and differential parity are **not tested**. The fixture uses explicit
+material coefficients and iteration bound. Viewport walking remains incomplete.
+**Next:** Couple RunningBase forces to the assembly and rendered input path.
+
+
 ## 2026-10-12 Integrate native constrained assembly and contact spring math
 
 **Changed:** Added kernel.rs, audit-kernel, constrained Cofm integration and native
