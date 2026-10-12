@@ -17,8 +17,14 @@ identifies our exact input; it does not establish archive authenticity.
   this image with language/compiler x86:LE:32:default:gcc.
 - [ghidra-mcp releases](https://github.com/bethington/ghidra-mcp/releases) mark
   6.0.0 stable/latest and 7.0.0 prerelease when checked. The configured MCP's
-  installed version was not established. STATUS records its project-state failure.
+  running extension now reports 7.0.0. Instance discovery/reconnection restored
+  live CodeBrowser access; STATUS preserves the earlier project-state failure.
   No system tool or extension was installed or upgraded.
+- [wgpu 30.0.1](https://docs.rs/wgpu/30.0.1/wgpu/),
+  [winit 0.30.13](https://docs.rs/winit/0.30.13/winit/), and
+  [image 0.25.10](https://docs.rs/image/latest/image/) were checked against current
+  official API/release documentation and pinned. Direct Metal execution and
+  bounded PNG decoding pass locally; native historical parity remains separate.
 
 ## Community file tools
 

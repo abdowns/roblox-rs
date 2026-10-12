@@ -24,7 +24,13 @@ studio2016/RobloxStudio with GhidraMCP 7.0.0; no native executable was launched.
 | 01206470 | RBXS signature, count, 96-byte records; name64/digest16/absolute offset/length. | Four packs, 572 records read; manifest dispatch incomplete. |
 | 011d7980 | Default Technique: back cull, bias 0, LEQUAL depth/write, blend ONE/ZERO. | Used by opaque probe. |
 | 010294b0 / 010296a0 / 01029570 | GL raster/depth/blend enum tables. | Recovered numeric state mapping; stencil/other states incomplete. |
-| 010ba770 | Transparent flags select SRC_ALPHA/ONE_MINUS_SRC_ALPHA, depth writes off; decal bias -16 gives slope -0.5/units -16. | Transparent/decal GPU paths not implemented at this checkpoint. |
+| 010ba770 | Transparent flags select SRC_ALPHA/ONE_MINUS_SRC_ALPHA; alpha ONE_MINUS_DST_ALPHA/ONE; depth writes off; decal bias -16 gives slope -0.5/units -16. | Decal probe implemented; GL/Metal bias precision **not tested**. |
+| 0116a2a0 | FastCluster decal flags=(part flags & 1) OR 2; fully transparent decals skipped. | Confirms blending/no depth-write selection. |
+| 010c3460 | Instructions OR 0x8 for Decal, 0x10 for Texture subclass. | Decompiled text omitted this register logic. |
+| 010c3150 / 010c09a0 | Empty URL skips material; diffuse stage 5, identity atlas, filter 2/address 1 for Decal. | Explicit head/empty torso paths implemented. |
+| 010278a0 / 017eeff8 | Filter 2: linear mag, linear-mipmap-linear min; address 1=CLAMP_TO_EDGE. | Probe anisotropy fixed at 1. |
+| 0128e602 | Native libpng 1.2.40, row order retained; no gamma or alpha premultiplication calls. | Independent RGBA8 PNG decoder. Other formats unimplemented. |
+| 01131ff0 / 01134190 | Full PNG mip chain; pairwise byte average rounds up horizontally then vertically. | Implemented for square power-of-two images. |
 
 The bundle includes original HLSL and packed GLSL. Default shaders combine
 opposing directional terms, ambient, light grid, shadows, specular and fog with
@@ -37,12 +43,16 @@ root Part is skipped. Thirteen source-only tests pass. First palette run failed
 at XOR EAX,EAX; instruction evidence explained it and regression/fix passed.
 These checks establish mathematical/data contracts, not native execution.
 Headless Metal rendering now executes the independently authored low-quality
-equations with constant grid/shadow inputs. At 640x480 the explicit probe produces
+equations with constant grid/shadow inputs. The initial back-side probe produced
 6,831 covered pixels, 292 colors and repeat-identical RGBA SHA-256
 `2ce85d030db6547e8106aeb47182f90c74c80c584dd612fa16f2fd348c79d4da`.
 Synthetic near red/far green triangles yield center `[128,0,128,255]` with fog,
 equal fog bounds yield `[0,0,255,255]`, and BGRA/RGBA targets agree.
-Fourteen source-only tests pass. Window presentation failed twice and is **not
-tested** after the format correction. Decals, surface UVs, textures, dynamic light
+The front-side probe retains 6,831 covered pixels with 369 colors before decals;
+the bundled face changes 120 pixels and repeated textured output is identical.
+Synthetic straight-alpha blending gives `[128,127,0,255]`; a later, farther blue
+decal appears, verifying depth writes are disabled. Fifteen source-only tests pass.
+Window presentation failed twice and is **not tested** after the format correction.
+General decals, surface UVs, textures, dynamic light
 grid, shadows, sky, postprocessing and Studio UI remain incomplete. Original
 pixel/behavior parity is **not tested**.

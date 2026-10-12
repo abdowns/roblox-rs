@@ -53,7 +53,7 @@ Bevy supplies scheduling/storage rather than modern material defaults.
 temporary and build output into this project. The reference guides remain their
 pre-existing independent checkout, excluded from the outer repository.
 
-Fourteen source-only tests use invented inputs: version-line quirks, raw float words,
+Fifteen source-only tests use invented inputs: version-line quirks, raw float words,
 malformed layouts/indices, matrix row order and nested referents. The actual bundle
 diagnostic establishes import. `tools/verify_bundle.py` fingerprints every original
 Contents file and symlink. Neither establishes original game behavior or pixels.
@@ -67,8 +67,8 @@ it never executes code and refuses unresolved arguments/count changes. Block
 face topology is read at runtime. No extracted tables are embedded in source.
 `geometry::RenderScene` produces world-space character head/block draws from
 explicit XML. Head deformation is recovered; normals rotate without inverse
-scaling. Unsupported shapes and reflectance return errors. Surface UVs/decals
-are not implemented. `camera` supplies recovered view/perspective matrices.
+scaling. Unsupported shapes and reflectance return errors. Surface UVs are not
+implemented. `camera` supplies recovered view/perspective matrices.
 Diagnostic poses are explicit probe inputs, not recovered historical defaults.
 
 ## GPU boundary
@@ -90,3 +90,25 @@ input acceptance. All four native shader profiles are inventoried.
 The winit viewport uses the same shader and fixed probe camera. Two smoke failures
 stopped GUI testing. Offscreen format consistency is fixed and numerically tested;
 surface presentation after that fix is **not tested**. It is not the Studio UI.
+
+## Decal boundary
+
+`texture` independently decodes bounded square power-of-two RGBA8 PNGs with
+image 0.25.10. Native libpng 1.2.40 uses straight alpha and no gamma conversion.
+Mips follow the recovered horizontal/vertical rounded-up pair averages, including
+alpha; hardware mip generation would not establish the same bytes. Other image
+formats/resizing remain unsupported. The original PNG is read only at runtime.
+
+`character_decals` follows explicit XML: empty texture creates no material,
+SpecialMesh Head uses the full existing mesh/UVs and white decal color. It assumes
+probe LocalTransparencyModifier=0; generic block decal UVs are unsupported.
+TexturedDraw is a separate Bevy component; existing Draw/RenderVertex signatures
+stay stable. The low-quality decal shader follows the bundle's DefaultFS albedo
+equation, SRC_ALPHA color blending, separate alpha blending, LEQUAL/no depth writes,
+and bias -16/slope -0.5. Metal versus original GL bias precision is **not tested**.
+Anisotropy=1 is explicit probe input, not a recovered quality default.
+
+The original character rotates its face toward +Z. The probe camera now faces
+that side. A failed back-side probe changed zero pixels; corrected probe changes
+120 pixels. Synthetic textures verify row orientation/clamp, straight-alpha
+blending and absence of decal depth writes. Full original pixels remain **not tested**.

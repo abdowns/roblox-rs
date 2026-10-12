@@ -11,21 +11,23 @@ remain ignored under `RobloxStudio/analysis`. Rust 1.97.1, Bevy 0.20.0, Ghidra
 
 ## What works (tested)
 
-Fourteen synthetic tests pass. The runtime verifies the exact executable, reads
+Fifteen synthetic tests pass. The runtime verifies the exact executable, reads
 37 meshes (10,992 vertices, 12,896 triangles), imports 26 character instances
 including seven Parts and retains hierarchy/Part state through 120 Bevy updates.
 All 2,606 original Contents files/symlinks match the stored fingerprint.
 Native reader/writer/helper decompilation and targeted instruction capture succeed.
 Live Ghidra MCP works. Native palette/head/block/projection contracts are recovered;
 six draws/637 vertices/906 triangles render offscreen. Repeat pixels, depth, fog
-and RGBA/BGRA checks pass. Four shader packs contain 572 records.
+and RGBA/BGRA checks pass. Four shader packs contain 572 records. Head face decal
+loads eight native-rule mips and changes 120 pixels; synthetic blend/clamp/row
+order/no-depth-write checks pass. Empty torso texture is skipped.
 
 ## What does not work
 
 No complete graphical client, general geometry dispatch, physics, animation, Lua, interactive camera/input,
 Studio editing/saving, mesh v1 or binary-place loading. Only explicit Part fields
 are typed; other classes do not execute behavior. Native execution and full
-pixel/behavior parity are **not tested**. Decals, surface textures, dynamic light
+pixel/behavior parity are **not tested**. General decals, surface textures, dynamic light
 grid/shadows and full material paths are incomplete. Window presentation after
 the format fix is **not tested** (two failed attempts below).
 
@@ -74,7 +76,7 @@ sh tools/cargo.sh run --locked -- audit-runtime
 python3 tools/verify_bundle.py check
 ```
 
-Expected: fourteen passing tests, `static_import_pass updates=120`, and
+Expected: fifteen passing tests, `static_import_pass updates=120`, and
 `bundle_unchanged entries=2606`. The runtime prints the new log path. See
 docs/provenance/2016-MESH.md for native addresses and targeted trace commands.
 
@@ -83,6 +85,11 @@ docs/provenance/2016-MESH.md for native addresses and targeted trace commands.
 Continue the recovered decal/material and surface paths. Native head sizing,
 normal transforms and explicit character block dispatch are implemented. General
 clothing/mesh selection and Attachment transforms remain unimplemented.
+
+The first textured character probe changed zero pixels. Numeric CFrame evidence
+showed R00=R22=-1, turning the face toward +Z. Changing the explicit probe camera
+to that side passed; original model transforms and UVs were retained. Independent
+PNG defilter/normal-facing numbers are in analysis/decal-facing-20261012.log.
 The 2015 implementation is not evidence of equality for those functions.
 
 - `src/bundle.rs`: exact identity and confined read-only data access.

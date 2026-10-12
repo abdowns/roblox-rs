@@ -1,5 +1,21 @@
 # MODLOG
 
+## 2026-10-12 Render the native character face decal
+
+**Changed:** Confined RGBA8 PNG loader, recovered byte mipmap rule, separate Bevy
+textured draws and low-quality decal GPU pass; front-side probe camera.
+**Why:** Render the provided face from native mesh/material/sampler evidence.
+**Tested how:** 15 source-only tests, real Metal readback and synthetic clamp/row
+order/straight-alpha/no-depth-write checks; native decompilation plus instructions.
+**Result:** One face draw, eight mips, 120 changed pixels, repeat-identical frames.
+Empty torso decal skipped. Formatting and Clippy with warnings denied pass.
+**Still broken / not tested:** First character probe changed zero pixels because
+the probe viewed the back; CFrame evidence explained and corrected it. Two doc
+patch context mismatches were fixed using exact file context. General images,
+decals, native quality/anisotropy defaults and GL/Metal bias equivalence are
+**not tested**. Window presentation remains **not tested** after its format fix.
+**Next:** Recover block surface/stud coordinates and atlas before extending Plastic.
+
 ## 2026-10-12 Execute static rendering on Metal
 
 **Changed:** Direct Metal renderer with Bevy extraction, independently authored

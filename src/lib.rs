@@ -8,3 +8,4 @@ pub mod render;
 pub mod runtime;
 pub mod scene;
 pub mod shader_pack;
+pub mod texture;

@@ -15,7 +15,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **14 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **15 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -34,6 +34,13 @@ are downloaded on first build; runtime data loading uses no network requests.
   lighting/camera; checks depth and fog numerically; inventories 572 shader records
   across four native packs. Logs and a PPM capture stay in RobloxStudio/analysis.
   It covers opaque Plastic low-quality shading with constant grid/shadow inputs.
+
+- Bundled head face decal: straight-alpha RGBA8 PNG, eight native-rule mip levels,
+  trilinear clamp, recovered blending and disabled decal depth writes. The same
+  `audit-render` command reports `decal_import_pass draws=1`,
+  `decal_render_pass draws=1 changed_pixels=120`, and `gpu_decal_contract_pass`.
+  The empty torso decal is skipped. Other decal geometry and image formats are
+  not implemented.
 
 - Recovered static character geometry and palette import. Run
   `sh tools/cargo.sh run --locked -- audit-geometry`; expect
@@ -66,7 +73,7 @@ failed smoke attempts are recorded in STATUS.md. A manual test is
 No full graphical client, general native geometry dispatch, interactive camera/input,
 physics, animation, Lua runtime, Studio ribbon/docks/editing, place saving,
 or complete XML/binary-place loader exists yet. Mesh v1.00/v1.01 are not implemented.
-Surface UVs/studs, decals, textures, high-quality materials, dynamic light grid,
+Surface UVs/studs, general decals/textures, high-quality materials, dynamic light grid,
 shadows, sky and postprocessing remain unimplemented. Imported Attachments and
 Humanoid do not execute their native behavior. Full native execution, behavioral equivalence and visual equivalence
 are **not tested**. Do not treat `static_import_pass` as evidence of those.
