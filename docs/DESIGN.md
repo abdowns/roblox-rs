@@ -4,6 +4,8 @@ This is a standalone offline reimplementation. The supplied Studio 0.255.0.82159
 installation supplies data at runtime. The original executable is never patched
 or launched. Bevy supplies application scheduling and entity storage at this stage.
 Each historical behavior needs evidence; modern engine defaults do not establish it.
+The current priority is the core offline client. Studio editor and editor GUI are
+deferred; world presentation and player/camera input remain core client work.
 
 ## Data boundary
 
@@ -53,7 +55,7 @@ Bevy supplies scheduling/storage rather than modern material defaults.
 temporary and build output into this project. The reference guides remain their
 pre-existing independent checkout, excluded from the outer repository.
 
-Eighteen source-only tests use invented inputs: version-line quirks, raw float words,
+Twenty-three source-only tests use invented inputs: version-line quirks, raw float words,
 malformed layouts/indices, matrix row order, nested referents, mip rules, DXT1
 endpoint branches and surface coordinates. The actual bundle
 diagnostic establishes import. `tools/verify_bundle.py` fingerprints every original
@@ -136,3 +138,21 @@ atlas alpha is ignored. Outlines are an explicit disabled probe option, with no
 edge/tangent geometry or high-quality normal perturbation implied. A synthetic
 texture gives `[32,64,96,255]`; the real atlas changes 5,518 pixels with identical
 repeat output. Full original lighting and visual parity remain **not tested**.
+
+## Humanoid command boundary
+
+`player` adds HumanoidProperties and HumanoidMotion components without changing
+existing public scene/runtime signatures. Properties are read explicitly from the
+bundled character. Motion stores final and raw unit directions, analog fraction
+and WalkTo-active state. DataModel attachment, camera presence and the full-rotation
+state branch are explicit contexts; no modern Player or Humanoid defaults apply.
+
+The direct internal setter has a squared-length fuzzy-zero threshold; the Move
+command first normalizes nonzero input and stores its magnitude separately. Zero
+Move preserves the prior fraction. Missing camera occurs after raw/fraction writes;
+detached Move is a no-op. Ground movement follows the projected native lookAt
+basis, strips Y, then unitizes; the other branch uses the full camera rotation.
+Degenerate ground frames and non-finite/overflowing vectors are rejected within
+this diagnostic subset. Reflection signals, replication, state transitions,
+locomotion forces, collisions and animation remain separate unrecovered behavior.
+Seven Bevy command updates log these decisions in `audit-player`.

@@ -1,5 +1,25 @@
 # MODLOG
 
+## 2026-10-12 Prioritize core client and recover Humanoid commands
+
+**Changed:** Added explicit Humanoid properties, Bevy motion component and
+audit-player CLI. Recorded Ghidra command/setter/camera traces and the user's
+core-client priority; Studio editing/GUI deferred. Existing public signatures
+and rendering behavior retained.
+**Why:** Establish native Player/Humanoid input behavior before physics forces.
+**Tested how:** Live Ghidra MCP decompilation/instructions, 23 synthetic tests,
+actual bundled-character command diagnostic, formatting and Clippy.
+**Result:** WalkSpeed=16, JumpPower=50, HipHeight=0, MaxSlopeAngle=89, health=100.
+Seven logged command updates pass including analog, camera, zero, missing-camera
+partial updates and detached no-op. Run
+`sh tools/cargo.sh run --locked -- audit-player`; expect `player_command_pass updates=7`.
+**Still broken / not tested:** Initial test expected the wrong 4/5 float;
+corrected to 0.8 with the algorithm unchanged. Degenerate ground cameras are
+rejected. Locomotion, jumping, collision, signals/replication, full native
+execution and behavioral parity are **not tested**. No GUI retry was performed.
+**Next:** Implement the recovered free-fall branch with native timing/gravity;
+recover assemblies and contact/Humanoid forces before claiming a playable rig.
+
 ## 2026-10-12 Render Plastic stud surfaces from native evidence
 
 **Changed:** DXT1/DDS software decoder, runtime native atlas-row lookup, explicit

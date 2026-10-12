@@ -5,6 +5,7 @@ pub mod dds;
 pub mod geometry;
 pub mod mesh;
 pub mod native_data;
+pub mod player;
 pub mod render;
 pub mod runtime;
 pub mod scene;
