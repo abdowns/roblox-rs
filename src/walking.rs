@@ -243,8 +243,8 @@ impl WalkingFixture {
         let parameters = self.humanoid.contact_parameters();
         let humanoid = &mut self.humanoid;
         self.world
-            .step(rig, parameters, |body, statics, torso, inertia| {
-                humanoid.apply_forces(body, statics, torso, inertia)
+            .step_with(rig, parameters, |body, surroundings, torso, inertia| {
+                humanoid.apply_forces_in(body, surroundings, torso, inertia)
             })
     }
     pub fn report(&self) -> String {
@@ -1017,6 +1017,166 @@ pub fn audit_part_push(bundle: &Bundle) -> Result<String, String> {
     {
         return Err(format!("part push failed\n{report}"));
     }
-    writeln!(report, "part_push_pass pushed=true connectors=realtime floor_raycast=static_only sleep=not_implemented broadphase_order=assumed native_differential=not_tested").unwrap();
+    writeln!(report, "part_push_pass pushed=true connectors=realtime floor_raycast=static_and_loose sleep=not_implemented broadphase_order=assumed native_differential=not_tested").unwrap();
+    Ok(report)
+}
+
+/// The character on unanchored Parts: it falls onto a light loose "Pad"
+/// (lighter than the character, so RunningBase uses the Pad's mass), stands
+/// on it, walks off and up onto a heavier loose "Step" 1 stud high, and idles
+/// there into RunningNoPhysics. Logs the floor Part, heights and how far the
+/// Parts were pushed.
+pub fn audit_part_stand(bundle: &Bundle) -> Result<String, String> {
+    use crate::humanoid_state::FloorPart;
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    let mut add = |name: &str, size: [f32; 3], position: [f32; 3]| {
+        let mut part = crate::workspace::PartInstance {
+            name: name.into(),
+            ..Default::default()
+        };
+        part.set_size(size);
+        part.frame.position = position;
+        workspace.parts.push(part);
+    };
+    add("Pad", [6.0, 0.3, 6.0], [0.0, 0.15, 0.0]);
+    add("Step", [6.0, 1.0, 6.0], [0.0, 0.5, -12.0]);
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let mut report = String::new();
+    let start: Vec<[f32; 3]> = fixture
+        .world
+        .loose
+        .parts
+        .iter()
+        .map(|p| p.body.frame.position)
+        .collect();
+    let character_mass = 1.0 / fixture.world.body.inverse_mass();
+    let masses: Vec<f32> = fixture
+        .world
+        .loose
+        .parts
+        .iter()
+        .map(|p| 1.0 / p.body.inverse_mass())
+        .collect();
+    if masses[0] >= character_mass {
+        return Err("the Pad must be lighter than the character".into());
+    }
+    writeln!(
+        report,
+        "part_stand_start character_mass={character_mass} part_masses={masses:?} root={:?}",
+        fixture.world.body.frame.position
+    )
+    .unwrap();
+    let line = |label: &str, step: u32, f: &WalkingFixture| {
+        format!(
+            "{label} step={step} root={:?} velocity={:?} state={:?} floor={:?} floor_velocity={:?} support_height={} character_connectors={} {}",
+            f.world.body.frame.position,
+            f.world.body.velocity,
+            f.state_type(),
+            f.humanoid.floor_part(),
+            f.humanoid.floor_velocity(),
+            f.humanoid.support_height(),
+            f.world.loose.character_connector_count(),
+            f.world.loose.report()
+        )
+    };
+    // 1. Fall onto the Pad (the spawn is far above it) and stand 3 s.
+    let mut pad_floor_steps = 0u32;
+    let mut landed = None;
+    let mut fell = false;
+    for step in 0..900u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        if fixture.humanoid.floor_part() == Some(FloorPart::Loose(0)) {
+            pad_floor_steps += 1;
+        }
+        fell |= fixture.state_type() == StateType::Freefall;
+        if fell && landed.is_none() && fixture.state_type() != StateType::Freefall {
+            landed = Some(step + 1);
+            writeln!(report, "{}", line("part_stand_landed", step + 1, &fixture)).unwrap();
+        }
+        if landed.is_some_and(|l| step + 1 >= l + 180) {
+            break;
+        }
+        if step % 30 == 29 && landed.is_some() {
+            writeln!(report, "{}", line("part_stand_pad", step + 1, &fixture)).unwrap();
+        }
+    }
+    let on_pad = fixture.world.body.frame.position;
+    let pad_top = fixture.world.loose.parts[0].body.frame.position[1] + 0.15;
+    // 2. Walk -Z off the Pad and up onto the Step, then stop on it.
+    let mut lowest_between = f32::INFINITY;
+    let mut step_floor_at = None;
+    let mut walked = 0u32;
+    while fixture.world.body.frame.position[2] > -12.0 {
+        if walked >= 240 {
+            return Err(format!("character never reached the Step\n{report}"));
+        }
+        fixture.step_animated(&mut rig, [0.0, 0.0, -1.0])?;
+        walked += 1;
+        let root = fixture.world.body.frame.position;
+        if root[2] < -4.0 && root[2] > -8.0 {
+            lowest_between = lowest_between.min(root[1]);
+        }
+        if step_floor_at.is_none() && fixture.humanoid.floor_part() == Some(FloorPart::Loose(1)) {
+            step_floor_at = Some(walked);
+            writeln!(
+                report,
+                "{}",
+                line("part_stand_step_floor", walked, &fixture)
+            )
+            .unwrap();
+        }
+        if walked.is_multiple_of(15) {
+            writeln!(report, "{}", line("part_stand_walk", walked, &fixture)).unwrap();
+        }
+    }
+    // 3. Idle on the Step.
+    for step in 0..180u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        if step % 30 == 29 {
+            writeln!(report, "{}", line("part_stand_step", step + 1, &fixture)).unwrap();
+        }
+    }
+    let on_step = fixture.world.body.frame.position;
+    let step_top = fixture.world.loose.parts[1].body.frame.position[1] + 0.5;
+    let moved: Vec<[f32; 3]> = fixture
+        .world
+        .loose
+        .parts
+        .iter()
+        .zip(&start)
+        .map(|(p, s)| std::array::from_fn(|a| p.body.frame.position[a] - s[a]))
+        .collect();
+    writeln!(
+        report,
+        "part_stand_result landed_step={landed:?} pad_floor_steps={pad_floor_steps} root_on_pad={on_pad:?} pad_top={pad_top} lowest_between={lowest_between} step_floor_at={step_floor_at:?} root_on_step={on_step:?} step_top={step_top} parts_moved={moved:?} state={:?} upright_y={} max_penetration={}",
+        fixture.state_type(),
+        fixture.world.body.frame.rotation[1][1],
+        fixture.world.max_penetration
+    )
+    .unwrap();
+    // Mechanism checks: the floor rays report the loose Parts, the support
+    // height follows their tops (top + 3 for this rig), and neither Part is
+    // shoved away by standing on it.
+    let close = |a: f32, b: f32| (a - b).abs() < 0.1;
+    if landed.is_none()
+        || pad_floor_steps == 0
+        || !close(on_pad[1], pad_top + 3.0)
+        || !close(lowest_between, 3.0)
+        || step_floor_at.is_none()
+        || !close(on_step[1], step_top + 3.0)
+        || moved
+            .iter()
+            .any(|m| m[0].abs() > 0.5 || m[2].abs() > 0.5 || m[1].abs() > 0.2)
+        || fixture.world.body.frame.rotation[1][1] < 0.99
+    {
+        return Err(format!("part stand failed\n{report}"));
+    }
+    writeln!(report, "part_stand_pass floor_raycast=static_and_loose floor_velocity=c02c28 floor_reaction=running_and_jump sleep=not_implemented native_differential=not_tested").unwrap();
     Ok(report)
 }

@@ -634,11 +634,42 @@ Events follow 00bfda98: Jumping fires Jumping, Freefall/Landed fire
 FreeFalling, Running/RNP fire raw Running(speed) on either edge plus the
 per-state deadband. The bundled script's handlers turn them into poses.
 
+**Floor Parts and movable floors.** The rays go through ContactManager::getHit
+(00ae818c, getFastHit 00ae8274, getSlowHit 00ae7d08) with the HumanoidState hit
+filter (00c02844): it ignores a primitive that is being dragged (+0xca,
+DraggingV1), has CanCollide off (+0xcc) or belongs to the character's own
+assembly. Anchored and unanchored Parts are treated alike, so `World::raycast`
+offers the static blocks, then the loose Parts, then the fixture planes, and
+the nearest hit wins. The first primary hit's Part is the floor (+0x60, kept
+as `FloorQuery::part`).
+- Floor motion (00c02c28): the floor primitive's velocity at the touch point
+  (+0x6c) and its angular velocity, times the environmental-throttle factor
+  00ba69b0 (1 - 1/100000000 = 1.0 in f32 when unthrottled). Anchored floors
+  give zero. 00be32ea zeroes it when the character's SpatialFilter phase is
+  above 2, which never happens in Play Solo (mode 0, phase 0).
+- RunningBase uses it in the yaw target (+0x114 + desired), the horizontal
+  target (floor + desired) and the vertical damping (vy - floor vy).
+  RunningNoPhysics adds it to the kinematic velocity and yaw (00c07626).
+- Mass: an anchored floor uses the character's mass. A loose floor uses
+  min(character, floor assembly) mass, and when the floor is lighter the
+  support acceleration is capped at 10000 (00c0ab74) and the force at 1e5.
+  The support force's -0.5 share (016f71e8) is applied to the floor body at the
+  touch point (00c0abf2). The legacy horizontal reaction is the zero vector,
+  because Running's Y component is 0.
+- Jumping (00c05e0e) uses min(character, floor) mass for every floor (Body
+  mass is set for anchored Parts too, 00b63366). It pushes the floor with
+  -(force - existing Y force) at the touch point.
+- Steep floors (00c0a498/00c07626): when up . n < cos(MaxSlopeAngle), the
+  velocity loses its normal component and its downhill component becomes
+  WalkSpeed. Walkable slopes are left alone.
+- Event 17/22's new-contact test (00be141e) counts HumanoidRootPart contacts.
+  CanCollide-off Parts get no contacts (00ae714a), so it stays false.
+
 Fixture boundaries: the world is still a floor plane plus wall half-space;
 "touching" means the part generates a wall vertex/plane connector; climbing,
-FallingDown/GettingUp, Seated, PlatformStanding, Swimming, Dead, slopes,
-movable floors and the PGS solver branches are not implemented (FallingDown and
-slopes return explicit errors). Floor/part friction combination is not recovered.
+FallingDown/GettingUp, Seated, PlatformStanding, Swimming, Dead and the PGS
+solver branches are not implemented (FallingDown returns an explicit error).
+Floor/part friction combination is not recovered (the factor stays 1).
 Jumping from rest rises 8.66 studs in this model (three push frames, then free
 flight); native jump height is not tested. Evidence summary:
 RobloxStudio/analysis/humanoid-state-native-20261012.md.
@@ -999,9 +1030,9 @@ The kinematic Humanoid path still steps the loose Parts.
 **Not ported:**
 
 - the sleep stage (resting stacks creep slowly instead of sleeping);
-- the Humanoid floor ray against loose Parts, and the Humanoid force
-  reaction on a loose floor;
-- drawing their motion;
+- leaving realTimeBodies: a contact body moved there by an external force
+  (for example the Humanoid's floor reaction) stays until a connector change
+  reclassifies it;
 - the broadphase pair order (pairs are visited in a fixed order).
 
 **The character against loose Parts.** Each character collider (Torso, Head)
@@ -1036,6 +1067,9 @@ is a `Prim::Character` in the same pair map.
 
 `audit-part-drop` drops four Parts onto the Baseplate and logs every Part every
 120 steps. `audit-part-push` walks the character into a 4 x 6 x 2 Crate.
+`audit-part-stand` drops the character onto a loose Pad lighter than itself,
+then walks it onto a 1-stud loose Step (see the Humanoid section for the floor
+rules).
 Evidence:
 RobloxStudio/analysis/kernel-lists-native-20261013.md.
 

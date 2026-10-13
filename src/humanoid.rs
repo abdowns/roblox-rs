@@ -6,7 +6,7 @@ use crate::{
     assembly::Tensor,
     balancing::Balancing,
     bundle::Bundle,
-    humanoid_state::{self, FloorQuery, HumanoidStateProfile, StateType},
+    humanoid_state::{self, FloorPart, FloorQuery, HumanoidStateProfile, StateType},
     kernel::{ContactParameters, KernelBody, cross},
     locomotion::{RunningInput, RunningProfile, Solver},
     native_data::NativeImage,
@@ -14,7 +14,7 @@ use crate::{
     player::{HumanoidMotion, HumanoidProperties, MoveContext},
     rig::R6Rig,
     scene::{CoordinateFrame, Scene},
-    world::{Statics, World},
+    world::{Statics, Surroundings, World},
 };
 use std::collections::BTreeMap;
 
@@ -61,6 +61,10 @@ struct HumanoidStateData {
     /// +0x98 Running event deadband.
     running_speed: f32,
     balancing: Balancing,
+    /// RunningBase +0x104 / +0x110: the floor's velocity at the touch point
+    /// and its angular velocity (00c02c28), zero without a floor.
+    floor_velocity: [f32; 3],
+    floor_angular_velocity: [f32; 3],
 }
 
 pub struct Humanoid {
@@ -144,6 +148,8 @@ impl Humanoid {
             jump_direction: [0.0, profile.jump_direction_y, 0.0],
             running_speed: 0.0,
             balancing: balancing.with_gains(gains[0], gains[1]),
+            floor_velocity: [0.0; 3],
+            floor_angular_velocity: [0.0; 3],
         };
         let mut humanoid = Self {
             properties: HumanoidProperties::character(bundle)?,
@@ -204,6 +210,14 @@ impl Humanoid {
     pub fn support_height(&self) -> f32 {
         self.state.support_height
     }
+    /// The Part under the floor rays' first primary hit (+0x60).
+    pub fn floor_part(&self) -> Option<FloorPart> {
+        self.state.floor.part
+    }
+    /// The floor motion RunningBase/RunningNoPhysics last read (00c02c28).
+    pub fn floor_velocity(&self) -> [f32; 3] {
+        self.state.floor_velocity
+    }
     /// Signals fired since the last call, in firing order.
     pub fn take_events(&mut self) -> Vec<HumanoidEvent> {
         std::mem::take(&mut self.events)
@@ -245,6 +259,8 @@ impl Humanoid {
             jump_direction: [0.0, self.profile.jump_direction_y, 0.0],
             running_speed: 0.0,
             balancing: self.balancing.with_gains(balance[0], balance[1]),
+            floor_velocity: [0.0; 3],
+            floor_angular_velocity: [0.0; 3],
         }
     }
     fn torso(world: &World, rig: &R6Rig) -> Result<CoordinateFrame, String> {
@@ -308,14 +324,14 @@ impl Humanoid {
         if self.profile.searches_floor(self.state.kind) {
             let torso = Self::torso(world, rig)?;
             let vy = world.point_velocity(torso.position)[1];
-            let query = humanoid_state::find_floor(
+            let query = humanoid_state::find_floor_parts(
                 &self.profile,
                 &torso,
                 self.torso_size,
                 Some(self.leg_height),
                 had_floor,
                 vy,
-                |o, d, l| world.statics.raycast(o, d, l),
+                |o, d, l| world.raycast(o, d, l),
             );
             if let Some((_, normal)) = query.floor {
                 self.state.no_floor = 0.0;
@@ -327,6 +343,41 @@ impl Humanoid {
         self.state.elapsed += dt;
         self.state.no_floor += dt;
         Ok(())
+    }
+    /// HumanoidState 00c02c28: the floor primitive's velocity at the floor
+    /// touch point (+0x6c) and its angular velocity, both times 00ba69b0 on
+    /// the World's environmental throttle. PhysicsEnvironmentalThrottle
+    /// DefaultAuto at level 0 gives 1 - 1/100000000, which is 1.0 in f32.
+    /// Anchored floors have zero velocity. 00be32ea zeroes an unanchored
+    /// floor's velocity when the character's assembly filter phase is above 2;
+    /// in Play Solo the SpatialFilter mode is 0 and every moving assembly is
+    /// in phase 0 (00b79c1e), so that never happens here.
+    fn floor_motion(&self, world: &World) -> Result<([f32; 3], [f32; 3]), String> {
+        let (Some(FloorPart::Loose(index)), Some((touch, _))) =
+            (self.state.floor.part, self.state.floor.floor)
+        else {
+            return Ok(([0.0; 3], [0.0; 3]));
+        };
+        let pv = world
+            .loose
+            .parts
+            .get(index)
+            .ok_or("missing loose floor")?
+            .body
+            .body_state();
+        let scale = 1.0f32 - 1.0 / 100_000_000.0f32;
+        let p = pv.frame.position;
+        let r: [f32; 3] = std::array::from_fn(|a| touch[a] - p[a]);
+        let v = pv.velocity;
+        let w = pv.angular_velocity;
+        Ok((
+            [
+                ((w[1] * r[2] - r[1] * w[2]) + v[0]) * scale,
+                ((w[2] * r[0] - r[2] * w[0]) + v[1]) * scale,
+                ((r[1] * w[0] - r[0] * w[1]) + v[2]) * scale,
+            ],
+            w.map(|x| x * scale),
+        ))
     }
     /// c0192c: HumanoidRootPart (non-colliding, never) or Head touching.
     fn root_or_head_touching(&mut self, world: &mut World, rig: &R6Rig) -> Result<bool, String> {
@@ -482,12 +533,16 @@ impl Humanoid {
                     ),
                     None => f32::INFINITY,
                 };
+                (self.state.floor_velocity, self.state.floor_angular_velocity) =
+                    self.floor_motion(world)?;
                 if let Some((_, normal)) = floor.floor {
                     (self.state.desired_velocity, self.state.desired_rotation) =
                         self.desired_motion(&torso);
-                    if normal != [0.0, 1.0, 0.0] {
-                        return Err("sloped floor projection is not implemented".into());
-                    }
+                    // 00c0a498: up . n summed z, y, x.
+                    let up = [0.0f32, 1.0, 0.0];
+                    let d = (up[2] * normal[2] + up[1] * normal[1]) + up[0] * normal[0];
+                    self.state.desired_velocity =
+                        self.steep_floor(self.state.desired_velocity, normal, d);
                 }
             }
             StateType::Freefall => {
@@ -517,6 +572,40 @@ impl Humanoid {
         }
         Ok(())
     }
+    /// The steep-floor rule shared by RunningBase 00c0a498 and
+    /// MovingNoPhysicsBase 00c07626. With `d` = up . floor normal below
+    /// cos(MaxSlopeAngle) (00bfd9b4), the velocity loses its component along
+    /// the normal and its downhill component becomes WalkSpeed (+0x194).
+    /// Walkable floors leave it unchanged.
+    fn steep_floor(&self, velocity: [f32; 3], n: [f32; 3], d: f32) -> [f32; 3] {
+        let limit =
+            f64::from(self.properties.max_slope_angle * std::f32::consts::PI / 180.0).cos() as f32;
+        if d >= limit {
+            return velocity;
+        }
+        let up = [0.0f32, 1.0, 0.0];
+        let mut t = [
+            -(up[0] - n[0] * d),
+            -(up[1] - n[1] * d),
+            -(up[2] - d * n[2]),
+        ];
+        // G3D::Vector3::unitize(1e-6).
+        let length = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+        if length <= 1e-6 {
+            return velocity;
+        }
+        let inverse = 1.0 / length;
+        t = t.map(|v| v * inverse);
+        let along = (n[2] * velocity[2] + n[1] * velocity[1]) + n[0] * velocity[0];
+        let p = [
+            velocity[0] - n[0] * along,
+            velocity[1] - n[1] * along,
+            velocity[2] - along * n[2],
+        ];
+        let w = self.properties.walk_speed;
+        let downhill = (p[2] * t[2] + p[1] * t[1]) + p[0] * t[0];
+        std::array::from_fn(|a| (t[a] * w + p[a]) - t[a] * downhill)
+    }
     /// MovingNoPhysicsBase 00c07626: place the Torso assembly kinematically.
     fn kinematic_update(
         &mut self,
@@ -525,12 +614,18 @@ impl Humanoid {
         dt: f32,
     ) -> Result<(), String> {
         let (desired, rotation) = self.desired_motion(torso);
-        let mut v = [desired[0], desired[1], desired[2]];
+        // 00c07626: desired plus the floor's motion (00c02c28).
+        let (floor_velocity, floor_angular) = self.floor_motion(world)?;
+        let mut v: [f32; 3] = std::array::from_fn(|a| desired[a] + floor_velocity[a]);
+        let rotation: [f32; 3] = std::array::from_fn(|a| rotation[a] + floor_angular[a]);
         let floor = self.state.floor.clone();
-        if let (Some((_, normal)), Some(average)) = (floor.floor, floor.average) {
-            if normal != [0.0, 1.0, 0.0] {
-                return Err("sloped floor projection is not implemented".into());
-            }
+        if let Some((_, normal)) = floor.floor {
+            // 00c07626: up . n summed x, y, z.
+            let up = [0.0f32, 1.0, 0.0];
+            let d = (up[0] * normal[0] + up[1] * normal[1]) + up[2] * normal[2];
+            v = self.steep_floor(v, normal, d);
+        }
+        if let (Some(_), Some(average)) = (floor.floor, floor.average) {
             let height = humanoid_state::support_height(
                 average[1],
                 self.torso_size[1],
@@ -607,56 +702,109 @@ impl Humanoid {
         torso: &CoordinateFrame,
         inertia: Tensor,
     ) -> Result<(), String> {
+        let mut surroundings = Surroundings {
+            statics,
+            loose: None,
+        };
+        self.apply_forces_in(body, &mut surroundings, torso, inertia)
+    }
+    /// `apply_forces` reaching the loose Parts (floor mass and reaction).
+    pub fn apply_forces_in(
+        &mut self,
+        body: &mut KernelBody,
+        surroundings: &mut Surroundings,
+        torso: &CoordinateFrame,
+        inertia: Tensor,
+    ) -> Result<(), String> {
         match self.state.kind {
-            StateType::Running | StateType::Landed => self.running_force(body, torso, inertia),
+            StateType::Running | StateType::Landed => {
+                self.running_force(body, surroundings, torso, inertia)
+            }
             StateType::Freefall => self.freefall_force(body, torso, inertia),
-            StateType::Jumping => self.jump_force(body, statics, torso),
+            StateType::Jumping => self.jump_force(body, surroundings, torso),
             StateType::RunningNoPhysics => Err("kinematic state has no kernel force".into()),
         }
     }
-    /// RunningBase 00c09632 for Running and Landed (anchored floor branch).
+    /// RunningBase 00c09632 for Running and Landed, legacy solver.
     fn running_force(
         &mut self,
         body: &mut KernelBody,
+        surroundings: &mut Surroundings,
         torso: &CoordinateFrame,
         inertia: Tensor,
     ) -> Result<(), String> {
         self.state.balancing.apply(body, torso, inertia)?;
-        // 00c09632: anchored floor angular velocity is zero. Apply torque
-        // about world Y; keep the native inertia and force limit.
-        let yaw = ((self.yaw_gain * inertia[1][1])
-            * (self.state.desired_rotation[1] - body.angular_velocity[1]))
+        // Yaw torque about world Y towards the floor's spin plus the desired
+        // rotation (+0x114 + +0x12c); native inertia and force limit.
+        let target = self.state.floor_angular_velocity[1] + self.state.desired_rotation[1];
+        let yaw = ((self.yaw_gain * inertia[1][1]) * (target - body.angular_velocity[1]))
             .clamp(-self.yaw_limit, self.yaw_limit);
         body.apply_torque([0.0, yaw, 0.0])?;
         let published = body.body_state();
-        let mass = 1.0 / body.inverse_mass();
+        let root_mass = 1.0 / body.inverse_mass();
+        // Mass selection: an anchored floor (Part +0xcb, or an assembly in
+        // Sim::ANCHORED, 00ad8b68) or no floor uses the root mass; an
+        // unanchored floor uses min(root, floor assembly mass) and remembers
+        // whether the root is the lighter one (SETBE after UCOMISS).
+        let floor = self.state.floor.part;
+        let (mass, root_lighter) = match floor {
+            Some(part @ FloorPart::Loose(_)) => {
+                let floor_mass = surroundings
+                    .floor_mass(part)?
+                    .ok_or("missing loose floor mass")?;
+                (
+                    if floor_mass < root_mass {
+                        floor_mass
+                    } else {
+                        root_mass
+                    },
+                    root_mass <= floor_mass,
+                )
+            }
+            _ => (root_mass, true),
+        };
+        let center = body.center;
+        // Vertical support only with a floor: target from the floor rays,
+        // torso height and the root's Y velocity relative to the floor's.
+        if let Some(part) = floor.filter(|_| self.state.support_height.is_finite()) {
+            let acceleration = (self.state.support_height - torso.position[1]) * self.spring_gain
+                - (published.velocity[1] - self.state.floor_velocity[1]) * self.spring_damping;
+            let existing = body.force[1] / root_mass;
+            if acceleration > 0.0 && existing < acceleration {
+                let delta = acceleration - existing;
+                let force = if root_lighter {
+                    (delta * mass).clamp(-self.spring_limit, self.spring_limit)
+                } else {
+                    let lift = self.profile.floor_lift_limit;
+                    let capped = if lift < delta { lift } else { delta };
+                    (capped * mass).clamp(-self.yaw_limit, self.yaw_limit)
+                };
+                body.apply_force([0.0, force, 0.0], center)?;
+                // c0acec/c0abf2: the floor's share at the floor touch point.
+                let touch = self.state.floor.floor.ok_or("floor without touch point")?.0;
+                surroundings.push_floor(
+                    part,
+                    [0.0, force * self.profile.floor_reaction, 0.0],
+                    touch,
+                )?;
+            }
+        }
         let desired = self.state.desired_velocity;
         let horizontal = self.running.horizontal_force(&RunningInput {
             velocity: [published.velocity[0], published.velocity[2]],
             desired_velocity: [desired[0], desired[2]],
-            floor_velocity: [0.0; 2],
+            floor_velocity: [self.state.floor_velocity[0], self.state.floor_velocity[2]],
             accumulated_force: [body.force[0], body.force[2]],
-            root_mass: mass,
+            root_mass,
             effective_mass: mass,
-            floor_present: self.state.floor.floor.is_some(),
+            floor_present: floor.is_some(),
             floor_friction: 1.0,
             solver: Solver::Legacy,
         })?;
-        let center = body.center;
-        body.apply_force([horizontal[0], 0.0, horizontal[1]], center)?;
-        // Vertical support only with a floor: target from the floor rays,
-        // torso height and assembly-root Y velocity.
-        if self.state.support_height.is_finite() {
-            let acceleration = (self.state.support_height - torso.position[1]) * self.spring_gain
-                - published.velocity[1] * self.spring_damping;
-            let existing = body.force[1] / mass;
-            if acceleration > 0.0 && existing < acceleration {
-                let force =
-                    ((acceleration - existing) * mass).clamp(-self.spring_limit, self.spring_limit);
-                body.apply_force([0.0, force, 0.0], center)?;
-            }
-        }
-        Ok(())
+        // The legacy floor reaction for this force is pushed only when its Y
+        // component is positive (00c0a2ea); Running's Y component is zero
+        // (+0x4d clear), so the floor gets the zero vector.
+        body.apply_force([horizontal[0], 0.0, horizontal[1]], center)
     }
     /// Freefall 00bd4194: balancing, yaw torque and limited air control.
     fn freefall_force(
@@ -703,7 +851,7 @@ impl Humanoid {
     fn jump_force(
         &mut self,
         body: &mut KernelBody,
-        statics: &Statics,
+        surroundings: &mut Surroundings,
         torso: &CoordinateFrame,
     ) -> Result<(), String> {
         if self.state.jump_done {
@@ -713,22 +861,33 @@ impl Humanoid {
         let d = self.state.jump_direction;
         let along = (v[1] * d[1] + v[0] * d[0]) + v[2] * d[2];
         let acceleration = (self.properties.jump_power - along) * self.profile.jump_gain;
-        if acceleration <= 0.0 || self.ceiling(statics, torso) {
+        if acceleration <= 0.0 || self.ceiling(surroundings, torso) {
             self.state.jump_done = true;
             return Ok(());
         }
-        let mass = 1.0 / body.inverse_mass();
+        let root_mass = 1.0 / body.inverse_mass();
+        let center = body.center;
+        let Some(part) = self.state.floor.part else {
+            let force = acceleration * root_mass;
+            return body.apply_force(d.map(|v| v * force), center);
+        };
+        // Floor branch: min(root, floor assembly mass) for any floor (no
+        // anchored test here); the fixture planes stand in for a heavier one.
+        let mass = match surroundings.floor_mass(part)? {
+            Some(floor_mass) if floor_mass < root_mass => floor_mass,
+            _ => root_mass,
+        };
         let force = acceleration * mass;
-        // Floor branch: the anchored floor mass is not smaller than the root's,
-        // and the existing force includes gravity, so the push is the same.
-        if self.state.floor.floor.is_none() || body.force[1] < force {
-            let center = body.center;
+        let existing = body.force[1];
+        if existing < force {
             body.apply_force(d.map(|v| v * force), center)?;
+            let touch = self.state.floor.floor.ok_or("floor without touch point")?.0;
+            surroundings.push_floor(part, [0.0, -(force - existing), 0.0], touch)?;
         }
         Ok(())
     }
     /// 00c0624e: upward rays from the Torso; any hit ends the jump push.
-    fn ceiling(&self, statics: &Statics, torso: &CoordinateFrame) -> bool {
+    fn ceiling(&self, surroundings: &Surroundings, torso: &CoordinateFrame) -> bool {
         let [sx, sy, sz] = self.torso_size;
         let length = sy * 1.5 + self.head_size[1];
         let up = [0.0, 1.0, 0.0];
@@ -739,7 +898,7 @@ impl Humanoid {
             }
         }
         origins.into_iter().any(|local| {
-            statics
+            surroundings
                 .raycast(torso.transform_point(local), up, length)
                 .is_some()
         })

@@ -111,6 +111,13 @@ pub struct LoosePart {
     contact: u32,
 }
 
+impl LoosePart {
+    /// Part.CanCollide (Primitive +0xcc is its negation).
+    pub fn can_collide(&self) -> bool {
+        self.can_collide
+    }
+}
+
 /// Per-connector kernel state.
 #[derive(Clone, Debug)]
 pub struct Link {
@@ -286,6 +293,13 @@ impl LooseWorld {
     /// A static (anchored, colliding) block, in Statics order.
     pub fn add_static(&mut self, properties: PhysicalProperties, stiffness: f32) {
         self.statics.push((properties, stiffness));
+    }
+    /// A static block's Body mass (Primitive::setMass 00b63366 sets Body +0x9c
+    /// whether or not the Part is anchored): size product times density, in
+    /// the `add_part` order.
+    pub fn static_mass(&self, index: usize, size: [f32; 3]) -> Result<f32, String> {
+        let (properties, _) = self.statics.get(index).ok_or("missing static block")?;
+        Ok((size[0] * size[1]) * size[2] * properties.density)
     }
     /// A character collider, in the order its blocks are passed later.
     pub fn add_collider(&mut self, properties: PhysicalProperties, stiffness: f32) {

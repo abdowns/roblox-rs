@@ -1,5 +1,49 @@
 # MODLOG
 
+## 2026-10-13 The character stands on unanchored Parts
+
+**Changed:**
+- `World::raycast` and `Surroundings::raycast`: the Humanoid rays now see loose Parts as well as the static blocks and fixture planes, and report which Part was hit (`FloorPart`). This follows the HumanoidState hit filter 00c02844, which skips only dragged, CanCollide-off and own-assembly Parts.
+- `FloorQuery::part` (+0x60) and `find_floor_parts`. `find_floor` is kept as a wrapper.
+- Humanoid:
+  - floor motion from 00c02c28 (point velocity at the touch point, plus spin) feeds RunningBase's yaw, horizontal and vertical targets and RunningNoPhysics' kinematic velocity and yaw;
+  - RunningBase support force uses min(character, floor) mass on a loose floor, capped at 10000 / 1e5 when the floor is lighter, and pushes the floor with -0.5 of it at the touch point (00c0abf2);
+  - the Jumping push uses min(character, floor) mass and pushes the floor with -(force - existing);
+  - the ceiling rays see loose Parts;
+  - the steep-floor rule (MaxSlopeAngle, WalkSpeed downhill) replaces the "sloped floor projection is not implemented" errors.
+- `World::step_with` / `Humanoid::apply_forces_in` give the force callback the loose Parts. `World::step` and `apply_forces` keep their signatures as wrappers.
+- `LooseWorld::static_mass`, `LoosePart::can_collide`.
+- New audit `audit-part-stand`. The part-push and viewport labels now say `static_and_loose`.
+
+**Why:** The user reported the character sinking into loose Parts and walking through low ones: the floor ray ignored them.
+
+**Tested how:**
+- Ran audit-part-stand.
+- Re-ran audit-walking, part-wall, part-drop, baseplate, animate, player, locomotion, runtime, walking-render, camera, kernel and baseplate-render against a build of the previous commit. All are identical apart from evidence paths and timing.
+- audit-part-push changes, as expected.
+- viewport-baseplate-smoke: exit 0.
+- 75 tests pass; clippy and fmt are clean.
+
+**Result:**
+- audit-part-stand:
+  - the character (mass 9.9) lands on a 7.56-mass Pad at step 241 with `floor=Loose(0)` and stands at Pad top + 3 (3.183);
+  - it walks off at 2.997;
+  - it steps up onto the 1-stud Step (`floor=Loose(1)` at walk step 148) and idles there in RunningNoPhysics at 4.001 (Step top + 3);
+  - neither Part moves more than 0.02 sideways.
+- audit-part-push: the character rides up on the tipping Crate (root y up to about 7.5) and then walks off. The Crate ends 13.0 studs along, not 14.7.
+
+**Still broken / not tested:**
+- The Pad sinks about 0.11 into the Baseplate while the character stands on it. The reaction moves it into realTimeBodies, its Baseplate connectors stay contactConnectors, and nothing moves it back without a sleep stage. Native behaviour is not tested.
+- The jump floor reaction is not tested.
+- The steep-floor rule is not exercised by an audit (only by the tipping Crate).
+- The getFastHit cell order for exact ties is not recovered.
+- The floor friction factor is still 1.
+- The PopperCam camera ray still ignores loose Parts.
+- No sleep stage.
+- Native parity is not tested.
+
+**Next:** Sleep stage (Sim::AssemblyState, SleepStage b707f4), so resting and stood-on Parts settle.
+
 ## 2026-10-13 Viewport demo shows unanchored Parts
 
 **Changed:**

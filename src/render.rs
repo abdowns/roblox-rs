@@ -2557,7 +2557,7 @@ fn run_viewport(
             }
         }
         app.update();
-        writeln!(report, "baseplate_world spawn=native_no_spawnlocation floor=baseplate_block_raycast loose_parts={loose:?} loose_floor_raycast=not_ported camera_start=fixture_offset_until_studio_camera_port native_parity=not_tested").unwrap();
+        writeln!(report, "baseplate_world spawn=native_no_spawnlocation floor=baseplate_block_raycast loose_parts={loose:?} loose_floor_raycast=static_and_loose camera_start=fixture_offset_until_studio_camera_port native_parity=not_tested").unwrap();
         motion::walking_frame(app.world()).map(|f| f.position)
     } else if walking {
         app.world_mut()

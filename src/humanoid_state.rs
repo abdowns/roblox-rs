@@ -63,6 +63,12 @@ pub struct HumanoidStateProfile {
     pub freefall_walk_threshold: f64,
     /// 017b0218: RunningNoPhysics acceleration limits with / without floor.
     pub kinematic_limits: [f32; 2],
+    /// 00c0ab74 static (1000, 10000, 1000): RunningBase's support
+    /// acceleration cap (Y) when the floor assembly is the lighter one.
+    pub floor_lift_limit: f32,
+    /// 016f71e8 (-0.5): RunningBase's support force share pushed back onto
+    /// an unanchored floor (00c09d1e, legacy solver).
+    pub floor_reaction: f32,
 }
 
 fn immediate(
@@ -151,12 +157,16 @@ impl HumanoidStateProfile {
                 image.region(0x017bb970, 8)?.try_into().unwrap(),
             ),
             kinematic_limits: [limits[0], limits[1]],
+            floor_lift_limit: imm(0x00c0abad, 10, Mnemonic::Mov)?,
+            floor_reaction: float(0x016f71e8)?,
         };
         if result.ray_extent <= 0.0
             || result.jump_seconds <= 0.0
             || result.landed_seconds <= 0.0
             || result.jump_direction_y != 1.0
             || result.air_limit * result.air_limit != result.air_limit_squared
+            || result.floor_lift_limit <= 0.0
+            || result.floor_reaction >= 0.0
         {
             return Err(format!("unexpected Humanoid state constants {result:?}"));
         }
@@ -207,12 +217,25 @@ impl HumanoidStateProfile {
 /// HumanoidState.cpp:1430 ray result: hit point and surface normal.
 pub type Hit = ([f32; 3], [f32; 3]);
 
+/// The Part a ray hit (HumanoidState +0x60 holds it for the floor).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloorPart {
+    /// The walking fixture's floor plane or wall (anchored).
+    Fixture,
+    /// An anchored Workspace block (index into `Statics::blocks`).
+    Static(usize),
+    /// An unanchored Part (index into `LooseWorld::parts`).
+    Loose(usize),
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FloorQuery {
     /// +0x60/+0x6c/+0x78: first primary hit.
     pub floor: Option<Hit>,
     /// +0x84: mean of every hit, used for the support height.
     pub average: Option<[f32; 3]>,
+    /// +0x60: the Part of the first primary hit.
+    pub part: Option<FloorPart>,
 }
 
 /// FUN_00c003f4/00c02606. `torso_size` and `leg_height` are Part sizes; rays
@@ -225,6 +248,30 @@ pub fn find_floor(
     had_floor: bool,
     torso_velocity_y: f32,
     mut raycast: impl FnMut([f32; 3], [f32; 3], f32) -> Option<Hit>,
+) -> FloorQuery {
+    let mut query = find_floor_parts(
+        profile,
+        torso,
+        torso_size,
+        leg_height,
+        had_floor,
+        torso_velocity_y,
+        |o, d, l| raycast(o, d, l).map(|hit| (hit, FloorPart::Fixture)),
+    );
+    query.part = None;
+    query
+}
+
+/// `find_floor` with the hit Part kept for the first primary hit (c02606
+/// stores it at +0x60 with the touch point and normal).
+pub fn find_floor_parts(
+    profile: &HumanoidStateProfile,
+    torso: &CoordinateFrame,
+    torso_size: [f32; 3],
+    leg_height: Option<f32>,
+    had_floor: bool,
+    torso_velocity_y: f32,
+    mut raycast: impl FnMut([f32; 3], [f32; 3], f32) -> Option<(Hit, FloorPart)>,
 ) -> FloorQuery {
     let mut factor = profile.ray_length_factors[usize::from(had_floor)];
     let speed = torso_velocity_y.abs();
@@ -243,11 +290,12 @@ pub fn find_floor(
         let origin: [f32; 3] = std::array::from_fn(|a| {
             r[a][2] * local[2] + r[a][1] * local[1] + r[a][0] * local[0] + torso.position[a]
         });
-        if let Some(hit) = raycast(origin, down, length) {
+        if let Some((hit, part)) = raycast(origin, down, length) {
             sum = std::array::from_fn(|a| hit.0[a] + sum[a]);
             count += 1;
             if primary && result.floor.is_none() {
                 result.floor = Some(hit);
+                result.part = Some(part);
             }
         }
     };
@@ -329,6 +377,8 @@ mod tests {
             freefall_decay_interval: 0.033333335,
             freefall_walk_threshold: 0.1,
             kinematic_limits: [500.0, 143.0],
+            floor_lift_limit: 10000.0,
+            floor_reaction: -0.5,
         }
     }
     fn flat(floor: f32) -> impl FnMut([f32; 3], [f32; 3], f32) -> Option<Hit> {
@@ -336,6 +386,49 @@ mod tests {
             (d[1] < 0.0 && o[1] > floor && o[1] - floor <= len)
                 .then_some(([o[0], floor, o[2]], [0.0, 1.0, 0.0]))
         }
+    }
+    #[test]
+    fn floor_part_is_the_first_primary_hit() {
+        let p = profile();
+        let torso = CoordinateFrame {
+            position: [0.0, 18.0, 0.0],
+            rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        // Rays at local z < 0 see a loose Part 1 stud higher than the rest.
+        let mut floor = flat(15.0);
+        let q = find_floor_parts(
+            &p,
+            &torso,
+            [2.0, 2.0, 1.0],
+            Some(2.0),
+            false,
+            0.0,
+            |o, d, l| {
+                if o[2] < 0.0 {
+                    flat(16.0)(o, d, l).map(|h| (h, FloorPart::Loose(3)))
+                } else {
+                    floor(o, d, l).map(|h| (h, FloorPart::Static(0)))
+                }
+            },
+        );
+        // Ray order is offsets 0, +1, -1: the centre ray is first.
+        assert_eq!(q.part, Some(FloorPart::Static(0)));
+        assert_eq!(q.floor.unwrap().0[1], 15.0);
+        // Two of five rays hit the higher Part: mean 15.4.
+        assert!((q.average.unwrap()[1] - 15.4).abs() < 1e-5);
+        assert_eq!(
+            find_floor(
+                &p,
+                &torso,
+                [2.0, 2.0, 1.0],
+                Some(2.0),
+                false,
+                0.0,
+                flat(15.0)
+            )
+            .part,
+            None
+        );
     }
     #[test]
     fn floor_rays_use_previous_floor_hysteresis_and_leg_length() {

@@ -8,7 +8,7 @@ use crate::{
     block_contact::{Block, BlockBlockContact, BlockTables, Connector},
     bundle::Bundle,
     collision::ContactBodyState,
-    humanoid_state::Hit,
+    humanoid_state::{FloorPart, Hit},
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
     legacy_contact::{BlockContactProfile, ContactGeometry, ImpulseProfile},
     loose::LooseWorld,
@@ -84,32 +84,63 @@ fn moving_point_fixed_aabox(
     Some((location, normal))
 }
 
-impl StaticBlock {
-    /// Primitive hitTest (00b631de) with Block geometry (vtable +0x70,
-    /// 00adeffe): the unit ray in part space against the centered box, the
-    /// hit point and normal back in world space.
-    fn hit_test(&self, origin: [f32; 3], direction: [f32; 3]) -> Option<Hit> {
-        let r = &self.frame.rotation;
-        let t = self.frame.position;
-        let p: [f32; 3] = std::array::from_fn(|i| origin[i] - t[i]);
-        let local_origin: [f32; 3] =
-            std::array::from_fn(|i| r[0][i] * p[0] + r[1][i] * p[1] + r[2][i] * p[2]);
-        let local_direction: [f32; 3] = std::array::from_fn(|i| {
-            r[0][i] * direction[0] + r[1][i] * direction[1] + r[2][i] * direction[2]
-        });
-        let half = self.size.map(|s| s * 0.5);
-        let (hit, normal) =
-            moving_point_fixed_aabox(local_origin, local_direction, half.map(|h| -h), half)?;
-        Some((
-            std::array::from_fn(|i| r[i][2] * hit[2] + r[i][1] * hit[1] + r[i][0] * hit[0] + t[i]),
-            std::array::from_fn(|i| {
-                r[i][2] * normal[2] + r[i][1] * normal[1] + r[i][0] * normal[0]
-            }),
-        ))
+/// Primitive hitTest (00b631de) with Block geometry (vtable +0x70,
+/// 00adeffe): the unit ray in part space against the centered box, the hit
+/// point and normal back in world space.
+fn box_hit_test(
+    frame: &CoordinateFrame,
+    size: [f32; 3],
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> Option<Hit> {
+    let r = &frame.rotation;
+    let t = frame.position;
+    let p: [f32; 3] = std::array::from_fn(|i| origin[i] - t[i]);
+    let local_origin: [f32; 3] =
+        std::array::from_fn(|i| r[0][i] * p[0] + r[1][i] * p[1] + r[2][i] * p[2]);
+    let local_direction: [f32; 3] = std::array::from_fn(|i| {
+        r[0][i] * direction[0] + r[1][i] * direction[1] + r[2][i] * direction[2]
+    });
+    let half = size.map(|s| s * 0.5);
+    let (hit, normal) =
+        moving_point_fixed_aabox(local_origin, local_direction, half.map(|h| -h), half)?;
+    Some((
+        std::array::from_fn(|i| r[i][2] * hit[2] + r[i][1] * hit[1] + r[i][0] * hit[0] + t[i]),
+        std::array::from_fn(|i| r[i][2] * normal[2] + r[i][1] * normal[1] + r[i][0] * normal[0]),
+    ))
+}
+
+/// One getSlowHit (00ae7d08) candidate: the bounding-sphere test (vtable
+/// +0x10 radius), the hit test, then a positive distance strictly below the
+/// best so far.
+fn slow_hit_candidate(
+    frame: &CoordinateFrame,
+    size: [f32; 3],
+    origin: [f32; 3],
+    direction: [f32; 3],
+    best: f32,
+) -> Option<(f32, Hit)> {
+    let c = frame.position;
+    let along = (c[2] - origin[2]) * direction[2]
+        + (c[1] - origin[1]) * direction[1]
+        + (c[0] - origin[0]) * direction[0];
+    let off: [f32; 3] = std::array::from_fn(|i| c[i] - (direction[i] * along + origin[i]));
+    let h = size.map(|s| s * 0.5);
+    let radius = (h[0] * h[0] + h[1] * h[1] + h[2] * h[2]).sqrt();
+    if (off[2] * off[2] + off[1] * off[1] + off[0] * off[0]).sqrt() > radius {
+        return None;
     }
-    fn radius(&self) -> f32 {
-        let h = self.size.map(|s| s * 0.5);
-        (h[0] * h[0] + h[1] * h[1] + h[2] * h[2]).sqrt()
+    let (point, normal) = box_hit_test(frame, size, origin, direction)?;
+    let distance = (point[2] - origin[2]) * direction[2]
+        + (point[1] - origin[1]) * direction[1]
+        + (point[0] - origin[0]) * direction[0];
+    (0.0 < distance && distance < best).then_some((distance, (point, normal)))
+}
+
+impl StaticBlock {
+    #[cfg(test)]
+    fn hit_test(&self, origin: [f32; 3], direction: [f32; 3]) -> Option<Hit> {
+        box_hit_test(&self.frame, self.size, origin, direction)
     }
     fn corners(frame: &CoordinateFrame, size: [f32; 3]) -> [[f32; 3]; 8] {
         std::array::from_fn(|i| {
@@ -172,37 +203,50 @@ impl Statics {
     /// sphere test, block hit test, then the nearest hit with a positive
     /// distance along the ray strictly below min(length, 5000). The spatial
     /// grid walk of getFastHit (00ae8274) only orders candidates.
-    fn block_hit(&self, origin: [f32; 3], direction: [f32; 3], length: f32) -> Option<(f32, Hit)> {
+    fn block_hit(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        length: f32,
+    ) -> Option<(f32, Hit, FloorPart)> {
         let mut best = length.min(5000.0);
         let mut result = None;
-        for block in &self.blocks {
-            let c = block.frame.position;
-            let along = (c[2] - origin[2]) * direction[2]
-                + (c[1] - origin[1]) * direction[1]
-                + (c[0] - origin[0]) * direction[0];
-            let off: [f32; 3] = std::array::from_fn(|i| c[i] - (direction[i] * along + origin[i]));
-            if (off[2] * off[2] + off[1] * off[1] + off[0] * off[0]).sqrt() > block.radius() {
-                continue;
-            }
-            let Some((point, normal)) = block.hit_test(origin, direction) else {
-                continue;
-            };
-            let distance = (point[2] - origin[2]) * direction[2]
-                + (point[1] - origin[1]) * direction[1]
-                + (point[0] - origin[0]) * direction[0];
-            if 0.0 < distance && distance < best {
+        for (index, block) in self.blocks.iter().enumerate() {
+            if let Some((distance, hit)) =
+                slow_hit_candidate(&block.frame, block.size, origin, direction, best)
+            {
                 best = distance;
-                result = Some((distance, (point, normal)));
+                result = Some((distance, hit, FloorPart::Static(index)));
             }
         }
         result
     }
     /// Floor plane (solid below), wall half-space and the static blocks.
     pub fn raycast(&self, origin: [f32; 3], direction: [f32; 3], length: f32) -> Option<Hit> {
-        let mut best: Option<(f32, Hit)> = self.block_hit(origin, direction, length);
+        self.raycast_part(origin, direction, length)
+            .map(|(_, hit, _)| hit)
+    }
+    /// `raycast` with the distance and the Part hit.
+    fn raycast_part(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        length: f32,
+    ) -> Option<(f32, Hit, FloorPart)> {
+        let best = self.block_hit(origin, direction, length);
+        self.fixture_hit(origin, direction, length, best)
+    }
+    /// The fixture floor plane and wall against the best hit so far.
+    fn fixture_hit(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        length: f32,
+        mut best: Option<(f32, Hit, FloorPart)>,
+    ) -> Option<(f32, Hit, FloorPart)> {
         if direction[1] < 0.0 && origin[1] > self.floor_y {
             let t = (origin[1] - self.floor_y) / -direction[1];
-            if t <= length && best.as_ref().is_none_or(|(b, _)| t < *b) {
+            if t <= length && best.as_ref().is_none_or(|(b, _, _)| t < *b) {
                 best = Some((
                     t,
                     (
@@ -213,12 +257,13 @@ impl Statics {
                         ],
                         [0.0, 1.0, 0.0],
                     ),
+                    FloorPart::Fixture,
                 ));
             }
         }
         if direction[0] > 0.0 && origin[0] < self.wall_x {
             let t = (self.wall_x - origin[0]) / direction[0];
-            if t <= length && best.as_ref().is_none_or(|(b, _)| t < *b) {
+            if t <= length && best.as_ref().is_none_or(|(b, _, _)| t < *b) {
                 best = Some((
                     t,
                     (
@@ -229,10 +274,11 @@ impl Statics {
                         ],
                         [-1.0, 0.0, 0.0],
                     ),
+                    FloorPart::Fixture,
                 ));
             }
         }
-        best.map(|(_, hit)| hit)
+        best
     }
     pub fn wall(&self) -> CoordinateFrame {
         CoordinateFrame {
@@ -252,6 +298,102 @@ impl Statics {
                 .geometry
                 .plane_vertices(frame, size, &self.wall(), 3)?
                 .is_empty())
+    }
+}
+
+/// The Humanoid ray query (getHit 00ae818c through the HumanoidState filter
+/// 00c02844): every primitive in the ContactManager, anchored or not, except
+/// CanCollide-false Parts (+0xcc), dragged Parts (+0xca) and the character's
+/// own assembly. Static blocks are offered before the loose Parts and the
+/// nearest hit wins; getFastHit's cell order (which only matters for exact
+/// ties) is not recovered. The fixture planes come last, as before.
+fn raycast_all(
+    statics: &Statics,
+    loose: Option<&LooseWorld>,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    length: f32,
+) -> Option<(Hit, FloorPart)> {
+    let mut best = statics.block_hit(origin, direction, length);
+    if let Some(loose) = loose {
+        let mut limit = best.as_ref().map_or(length.min(5000.0), |b| b.0);
+        for (index, part) in loose.parts.iter().enumerate() {
+            if !part.can_collide() {
+                continue;
+            }
+            if let Some((distance, hit)) =
+                slow_hit_candidate(&part.body.frame, part.size, origin, direction, limit)
+            {
+                limit = distance;
+                best = Some((distance, hit, FloorPart::Loose(index)));
+            }
+        }
+    }
+    statics
+        .fixture_hit(origin, direction, length, best)
+        .map(|(_, hit, part)| (hit, part))
+}
+
+/// What the Humanoid's kernel force callback reaches besides its own body:
+/// the static contents and, in a World, the loose Parts (floor mass and the
+/// floor reaction).
+pub struct Surroundings<'a> {
+    pub statics: &'a Statics,
+    pub loose: Option<&'a mut LooseWorld>,
+}
+
+impl Surroundings<'_> {
+    /// The Humanoid ray query (see `World::raycast`).
+    pub fn raycast(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        length: f32,
+    ) -> Option<(Hit, FloorPart)> {
+        raycast_all(
+            self.statics,
+            self.loose.as_deref(),
+            origin,
+            direction,
+            length,
+        )
+    }
+    /// The floor's assembly root Body mass (Body +0x34 -> +0x38 branch mass or
+    /// +0x9c). None for the fixture planes, which stand in for a floor at
+    /// least as heavy as the character.
+    pub fn floor_mass(&self, part: FloorPart) -> Result<Option<f32>, String> {
+        Ok(match part {
+            FloorPart::Fixture => None,
+            FloorPart::Static(index) => {
+                let block = self
+                    .statics
+                    .blocks
+                    .get(index)
+                    .ok_or("missing floor block")?;
+                let loose = self.loose.as_deref().ok_or("missing static block mass")?;
+                Some(loose.static_mass(index, block.size)?)
+            }
+            FloorPart::Loose(index) => {
+                let loose = self.loose.as_deref().ok_or("missing loose floor")?;
+                let part = loose.parts.get(index).ok_or("missing loose floor")?;
+                Some(1.0 / part.body.inverse_mass())
+            }
+        })
+    }
+    /// 00c0abf2: add a force at a world point to the floor's assembly SimBody
+    /// (Body +0x34 -> +0x3c). Anchored floors have no SimBody.
+    pub fn push_floor(
+        &mut self,
+        part: FloorPart,
+        force: [f32; 3],
+        point: [f32; 3],
+    ) -> Result<(), String> {
+        if let FloorPart::Loose(index) = part {
+            let loose = self.loose.as_deref_mut().ok_or("missing loose floor")?;
+            let part = loose.parts.get_mut(index).ok_or("missing loose floor")?;
+            part.body.apply_force(force, point)?;
+        }
+        Ok(())
     }
 }
 
@@ -509,6 +651,15 @@ impl World {
     pub fn inertia_changed(&self) -> bool {
         self.inertia != self.original_inertia
     }
+    /// The Humanoid ray query over the static contents and the loose Parts.
+    pub fn raycast(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        length: f32,
+    ) -> Option<(Hit, FloorPart)> {
+        raycast_all(&self.statics, Some(&self.loose), origin, direction, length)
+    }
     pub fn point_velocity(&self, point: [f32; 3]) -> [f32; 3] {
         let arm = std::array::from_fn(|a| point[a] - self.body.center[a]);
         let spin = cross(self.body.angular_velocity, arm);
@@ -730,8 +881,24 @@ impl World {
     pub fn step(
         &mut self,
         rig: &R6Rig,
-        _parameters: ContactParameters,
+        parameters: ContactParameters,
         mut force: impl FnMut(&mut KernelBody, &Statics, &CoordinateFrame, Tensor) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.step_with(rig, parameters, |body, surroundings, torso, inertia| {
+            force(body, surroundings.statics, torso, inertia)
+        })
+    }
+    /// `step` with the force callback reaching the loose Parts as well.
+    pub fn step_with(
+        &mut self,
+        rig: &R6Rig,
+        _parameters: ContactParameters,
+        mut force: impl FnMut(
+            &mut KernelBody,
+            &mut Surroundings,
+            &CoordinateFrame,
+            Tensor,
+        ) -> Result<(), String>,
     ) -> Result<(), String> {
         let wall = self.statics.wall();
         let fixed = ContactBodyState {
@@ -835,7 +1002,11 @@ impl World {
             // (Humanoid +0xdc, type 2, computeForce 00bddb7a -> 00bddaae),
             // then realTimeBodies and jointBodies integrate.
             let torso = frames.get("Torso").ok_or("missing state torso")?.clone();
-            force(&mut self.body, &self.statics, &torso, self.inertia)?;
+            let mut surroundings = Surroundings {
+                statics: &self.statics,
+                loose: Some(&mut self.loose),
+            };
+            force(&mut self.body, &mut surroundings, &torso, self.inertia)?;
             self.body.step(&self.kernel)?;
             self.loose.integrate(&self.kernel)?;
         }

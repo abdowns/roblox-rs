@@ -25,17 +25,16 @@ not a native document):
   y = 60, landing ahead of the spawn.
 
 Every 60 frames the live log gets a `loose_parts` line with each Part's kernel
-list, position and connector counts. You can't stand on a loose Part yet (the
-floor ray ignores them).
+list, position and connector counts. The character can stand on loose Parts,
+step up onto low ones and ride them (`audit-part-stand`).
 Same controls as the walking fixture below (WASD, Space, camera keys, R
 respawns, Escape closes). The first camera frame is a fixture offset behind the
 character until the Studio edit camera is ported; ClassicCamera takes over
 immediately. Torso and Head collide with anchored Parts (`audit-part-wall`).
 Unanchored Parts fall, land, stack and come to rest in the simulation
-(`audit-part-drop`), and the character pushes them (`audit-part-push`), but
-they are not drawn moving, and the Humanoid's floor ray does not see them yet
-(the character cannot stand on one). Not ported yet: the sleep stage, outlines
-and the Studio camera.
+(`audit-part-drop`), the character pushes them (`audit-part-push`) and stands
+on them (`audit-part-stand`). Not ported yet: the sleep stage, outlines and the
+Studio camera.
 Manual keys are **not tested**.
 
 ```sh
@@ -238,10 +237,32 @@ are downloaded on first build; runtime data loading uses no network requests.
 
   Run `sh tools/cargo.sh run --locked -- audit-part-push`. Expect:
   - `part_push_first_contact step=101`;
-  - `part_push_result ... max_character_connectors=7 lists=[Contact, RealTime, FreeFall, Joint] crate_moved=[0.061565157, -2.0029554, -14.680002]`, meaning the Crate is pushed about 14.7 studs and tips onto its face;
+  - `part_push_result ... max_character_connectors=7 lists=[Contact, RealTime, FreeFall, Joint] crate_moved=[0.886339, -2.0041766, -12.955814]`, meaning the Crate is pushed about 13 studs and tips onto its face (the character rides up on it while it tips, then walks off);
   - `part_push_pass pushed=true`.
 
-  The Humanoid floor ray still ignores loose Parts. Native parity is **not tested**.
+  Native parity is **not tested**.
+- The character standing on unanchored Parts:
+  - the Humanoid floor and ceiling rays see loose Parts (the HumanoidState
+    filter skips only CanCollide-off, dragged and own-assembly Parts);
+  - the floor's point velocity and spin are added to the walk (Running and
+    RunningNoPhysics);
+  - RunningBase's support force uses min(character, floor) mass on a loose
+    floor and pushes the floor down with half of it; the jump push does the
+    same with the full difference;
+  - floors steeper than MaxSlopeAngle get the native downhill rule.
+
+  Run `sh tools/cargo.sh run --locked -- audit-part-stand`. Expect:
+  - `part_stand_start character_mass=9.9 part_masses=[7.56, 25.199999]`: the
+    Pad is lighter than the character, so the support force uses its mass;
+  - `part_stand_landed step=241 ... floor=Some(Loose(0))`: it lands on the Pad;
+  - `part_stand_result ... root_on_pad=[..., 3.1828773, ...] pad_top=0.18790008 lowest_between=2.9965982 step_floor_at=Some(148) root_on_step=[..., 4.001119, ...] step_top=0.9860703`:
+    it stands at Part top + 3 on both Parts and walks up the 1-stud Step;
+  - `part_stand_pass`.
+
+  The Pad sinks about 0.11 into the Baseplate under the character (its connectors
+  stay contactConnectors while the body is in realTimeBodies, and there is no
+  sleep stage); whether native does the same is **not tested**. The jump floor
+  reaction is **not tested**. Native parity is **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,
