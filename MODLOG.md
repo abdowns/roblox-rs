@@ -1,5 +1,36 @@
 # MODLOG
 
+## 2026-10-12 Recover native Humanoid state dispatch, floor rays and jumping
+
+**Changed:** Added `humanoid_state.rs` (native STATE_TABLE, floor rays, state
+constants read at runtime). Walking now runs Humanoid::onStepped at 60 Hz:
+findFloor, timers, table transitions, state update and events. Implemented
+Running, Landed, Jumping, Freefall and RunningNoPhysics (kinematic). Floor
+support height comes from the rays instead of a constant. Space jumps in
+`viewport-walking`. Script poses come from native Humanoid events.
+**Why:** The fixture held the character at a fixed height with no states, no
+jump, no falling and a 240 Hz AutoRotate cadence.
+**Tested how:** Live Ghidra decompilation/disassembly of Humanoid::onStepped,
+HumanoidState transitions/events, findFloor, all five states' constructors and
+force/update functions, ControlScript jump; 48 tests, Clippy, fmt;
+audit-walking (wall, directions, RNP, jump, drop), audit-walking-render, walking
+window smoke, animation regression, bundle check.
+**Result:** One-second walk 15.746414 (unchanged; RNP starts after 1 s). Open
+runs settle in RunningNoPhysics at exactly 16 studs/s and torso Y 18. Jump:
+Running->Jumping->Freefall->Landed->Running, rise 8.66 studs, poses Jumping,
+FreeFall, Running, Standing. 10-stud drop: Freefall->Landed->Running, returns to
+the rest height. 30 s wall hold min up Y 0.9999202. Limb pixels 5567/3100/5764.
+Window: 120 frames, 474 world steps. Original files unchanged.
+Test: `sh tools/cargo.sh run --locked -- viewport-walking`; Space jumps, the
+arms raise while airborne, landing returns to Running.
+**Still broken / not tested:** Floor/wall world remains a fixture; climbing,
+FallingDown, Seated, Swimming, slopes, moving floors and PGS branches are not
+implemented. Contact "touching" is approximated by wall connector generation.
+First RunningNoPhysics placement inverted frames and amplified rounding x3 per
+frame (degenerate rotation after 0.5 s); fixed by rotating root and offset by
+the same yaw matrix. Native jump height and manual keys are **not tested**.
+**Next:** Camera system from characterCameraScript.rbxmx, then sky/lighting.
+
 ## 2026-10-12 Recover native joint, Heartbeat and Lua wait scheduling
 
 **Changed:** Added `scheduler.rs` and `audit-scheduler`. Walking now steps

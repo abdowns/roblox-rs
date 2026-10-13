@@ -14,7 +14,7 @@ sh tools/cargo.sh run --locked -- viewport-walking
 ```
 
 Expected: the original character rendered on a gray floor beside a brown wall.
-**WASD** moves along world X/Z, **R** resets, **Escape** closes. The fixture camera
+**WASD** moves along world X/Z, **Space** jumps, **R** resets, **Escape** closes. The fixture camera
 follows translation. Movement uses native Humanoid command math, WalkSpeed=16,
 RunningBase forces, R6 assembly mass/inertia and constrained SimBody substeps.
 The two original collidable bodies (Head/Torso) generate vertex/plane wall
@@ -93,7 +93,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **46 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **48 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -104,6 +104,14 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Native Humanoid state dispatch: Running, Landed, Jumping, Freefall and
+  RunningNoPhysics with the original transition table, floor rays, timers and
+  events. Run `sh tools/cargo.sh run --locked -- audit-walking`; expect
+  `walking_jump transitions=[...Jumping...Freefall...Landed...Running...]`,
+  `walking_drop`, and `walking_state_pass running_no_physics_speed=16`.
+  Climbing, FallingDown, Seated, Swimming, slopes and moving floors are not
+  implemented. Native jump height is **not tested** (this model rises 8.66 studs).
 
 - Native job scheduling for joints and Lua waits. Run
   `sh tools/cargo.sh run --locked -- audit-scheduler`; expect a

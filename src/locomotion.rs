@@ -43,6 +43,10 @@ impl RunningProfile {
             air_limit: float(0x017b05c4)?,
         })
     }
+    /// FUN_00bfd990's legacy RunningBase/MovingNoPhysics gain (017af5a0).
+    pub fn legacy_gain(&self) -> f32 {
+        self.legacy_gain
+    }
     pub fn horizontal_force(&self, input: &RunningInput) -> Result<[f32; 2], String> {
         if input
             .velocity

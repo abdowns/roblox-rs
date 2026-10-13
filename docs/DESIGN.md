@@ -574,3 +574,46 @@ long-step work and keyframe Animator stepping are recorded, not implemented.
 The rest-pose walking audit is numerically unchanged. The standalone A probe and
 audit-animation keep their explicit 60 Hz research cadence. Evidence summary:
 RobloxStudio/analysis/scheduler-native-20261012.md.
+
+
+## Native Humanoid state dispatch
+
+humanoid_state.rs reads the native STATE_TABLE (017af5d0, 17 states x 26
+events, 18 = none) and the floor-ray, timer, gain and limit constants from the
+exact binary. Walking now runs Humanoid::onStepped (00bde4f2) on each 60 Hz
+Stepped, before Motor6D stepUi and the world steps: findFloor (00bff784),
+state timers, then the first event in table order whose target is enabled and
+whose condition holds (00c0090e/00c0132c). A transition builds a fresh state
+object (timers, floor, deadband, balancing gains reset; Humanoid.Jump cleared),
+runs the new state's onStepped, then its update and the event slot.
+
+Floor search casts the native ray pattern from the Torso: five Z-offset rays at
+-0.4*height (first three may define the floor), else four corner rays; length
+is leg height * 1.1 (no previous floor) or 1.5 (+|vy|/100 beyond 100) plus 1.
+The support height is the mean hit Y + half Torso height + leg height, which
+replaces the earlier constant torso-height fixture. Implemented states:
+- Running / Landed (RunningBase): balancing 2250/50 or 7500/50, AutoRotate yaw
+  and horizontal force from desired motion computed at Stepped, vertical spring
+  only with a floor. Landed returns to Running after 0.05 s.
+- Jumping: no balancing; pushes 500*(JumpPower - v.dir)*mass along +Y until the
+  ceiling rays hit, the 0.5 s timer expires or the floor is lost.
+- Freefall: balancing kP 5000, yaw torque 7500*I limited to 120000*I, air
+  control gain 1250 limited to 143, Head/Torso friction 0. Lands when a floor is
+  found and Torso relative vertical velocity is not upward.
+- RunningNoPhysics: entered from Running after more than 1 s without Head or
+  HumanoidRootPart contacts and no BodyMover. The Torso assembly leaves the
+  kernel; each Stepped moves it kinematically toward the desired velocity
+  (gain 1250, limits 500/143), snaps it to the support height and yaws it by
+  AxisAngle(up, yaw*dt). Head contact returns it to Running.
+Events follow 00bfda98: Jumping fires Jumping, Freefall/Landed fire
+FreeFalling, Running/RNP fire raw Running(speed) on either edge plus the
+per-state deadband. The bundled script's handlers turn them into poses.
+
+Fixture boundaries: the world is still a floor plane plus wall half-space;
+"touching" means the part generates a wall vertex/plane connector; climbing,
+FallingDown/GettingUp, Seated, PlatformStanding, Swimming, Dead, slopes,
+movable floors and the PGS solver branches are not implemented (FallingDown and
+slopes return explicit errors). Floor/part friction combination is not recovered.
+Jumping from rest rises 8.66 studs in this model (three push frames, then free
+flight); native jump height is not tested. Evidence summary:
+RobloxStudio/analysis/humanoid-state-native-20261012.md.

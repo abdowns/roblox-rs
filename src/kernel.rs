@@ -264,6 +264,28 @@ impl KernelBody {
         self.frame.position = std::array::from_fn(|a| self.center[a] - offset[a]);
         self.validate()
     }
+    /// Kinematic placement (Primitive::setCoordinateFrame/setVelocity while the
+    /// assembly is outside the kernel, e.g. RunningNoPhysics 00c07626). Keeps the
+    /// assembly properties; accumulators restart as on kernel re-entry.
+    pub fn set_body_state(&mut self, body: &FreeFallBody) -> Result<(), String> {
+        let offset = rotate(body.frame.rotation, self.center_in_body);
+        let inertia = self.inverse_diagonal.map(|v| 1.0 / v);
+        self.frame = body.frame.clone();
+        self.center = std::array::from_fn(|a| body.frame.position[a] + offset[a]);
+        let angular_offset = cross(body.angular_velocity, offset);
+        self.velocity = std::array::from_fn(|a| body.velocity[a] + angular_offset[a]);
+        self.angular_velocity = body.angular_velocity;
+        self.angular_momentum = rotate(
+            rotate_tensor(diagonal(inertia), body.frame.rotation),
+            body.angular_velocity,
+        );
+        self.quaternion = physics::matrix_quaternion(body.frame.rotation)?;
+        self.force = [0.0, self.gravity_force, 0.0];
+        self.torque = [0.0; 3];
+        self.linear_impulse = [0.0; 3];
+        self.angular_impulse = [0.0; 3];
+        self.validate()
+    }
     /// Native Body publishing removes Cofm offset and moves center velocity back
     /// to the origin (00ab13e8); it does not overwrite velocity with center velocity.
     pub fn body_state(&self) -> FreeFallBody {

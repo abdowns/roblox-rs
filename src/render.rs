@@ -1410,7 +1410,7 @@ impl ApplicationHandler for Viewport {
                 event_loop
                     .create_window(
                         Window::default_attributes()
-                            .with_title(if self.app.world().resource::<MotionControl>().walking_probe {"Roblox 2016 — walking fixture | WASD: move | R: reset | Esc: close"} else {"Roblox 2016 — Space: fall probe | R: reset | Esc: close"})
+                            .with_title(if self.app.world().resource::<MotionControl>().walking_probe {"Roblox 2016 — walking fixture | WASD: move | Space: jump | R: reset | Esc: close"} else {"Roblox 2016 — Space: fall probe | R: reset | Esc: close"})
                             .with_inner_size(winit::dpi::LogicalSize::new(960.0, 720.0))
                             .with_visible(false),
                     )
@@ -1543,7 +1543,16 @@ impl ApplicationHandler for Viewport {
                 } else {
                     None
                 };
-                if let Some(key) = key {
+                if event.logical_key == Key::Named(NamedKey::Space) {
+                    let held = event.state == ElementState::Pressed;
+                    self.app
+                        .world_mut()
+                        .resource_mut::<MotionControl>()
+                        .walking_jump = held;
+                    if let Err(error) = self.log_event(format!("walking_jump held={held}")) {
+                        self.fail(event_loop, error);
+                    }
+                } else if let Some(key) = key {
                     self.walking_keys[key] = event.state == ElementState::Pressed;
                     let input = [
                         f32::from(self.walking_keys[3]) - f32::from(self.walking_keys[1]),
@@ -1574,10 +1583,9 @@ impl ApplicationHandler for Viewport {
                 if self.app.world().resource::<MotionControl>().walking_probe =>
             {
                 self.walking_keys = [false; 4];
-                self.app
-                    .world_mut()
-                    .resource_mut::<MotionControl>()
-                    .walking_input = [0.0; 3];
+                let mut control = self.app.world_mut().resource_mut::<MotionControl>();
+                control.walking_input = [0.0; 3];
+                control.walking_jump = false;
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && !event.repeat =>

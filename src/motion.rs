@@ -36,6 +36,8 @@ pub(crate) struct MotionControl {
     pub animation_probe: bool,
     pub walking_probe: bool,
     pub walking_input: [f32; 3],
+    /// Space held: ControlScript MasterControl sets Humanoid.Jump each frame.
+    pub walking_jump: bool,
     walking: WalkingFixture,
     animation: ProceduralAnimation,
     animation_ticks: u32,
@@ -126,6 +128,7 @@ pub(crate) fn install(app: &mut App, bundle: &Bundle) -> Result<(), String> {
         animation_probe: false,
         walking_probe: false,
         walking_input: [0.0; 3],
+        walking_jump: false,
         walking,
         animation: ProceduralAnimation::load(bundle)?,
         animation_ticks: 0,
@@ -151,6 +154,8 @@ pub(crate) fn advance(
     for _ in 0..steps {
         if control.walking_probe {
             let input = control.walking_input;
+            let jump = control.walking_jump;
+            control.walking.set_jump(jump);
             if let Err(error) = control.walking.step_animated(&mut rig, input) {
                 control.error = Some(error);
                 return;
@@ -251,6 +256,7 @@ pub(crate) fn reset(world: &mut World) {
     control.animation_probe = false;
     control.walking_probe = false;
     control.walking_input = [0.0; 3];
+    control.walking_jump = false;
     control.walking.reset();
     control.animation_ticks = 0;
 }

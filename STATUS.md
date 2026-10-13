@@ -350,3 +350,10 @@ clock zero. Throttling, legacy non-cyclic steps, sleeping-joint skip and keyfram
 Animator stepping are not implemented. Evidence summary:
 RobloxStudio/analysis/scheduler-native-20261012.md. Rollback: revert this
 commit; f7fd31e restores the explicit 60 Hz grid.
+
+
+2026-10-12 Humanoid states: native table-driven Running/Landed/Jumping/Freefall/
+RunningNoPhysics dispatch, floor rays and jump are implemented; 48 tests and all
+walking/render/window audits pass. Remaining: climbing, FallingDown/GettingUp,
+Seated, Swimming, slopes, moving floors, PGS, native contact "touching", native
+world geometry. Jump height not compared with the original client.

@@ -7,6 +7,7 @@ use crate::{
     scene::CoordinateFrame,
 };
 
+#[derive(Clone)]
 pub(crate) struct Balancing {
     gain: f32,
     damping: f32,
@@ -53,6 +54,20 @@ impl Balancing {
             return Err("invalid native balancing constants".into());
         }
         Ok(result)
+    }
+    /// A fresh controller as built by a state constructor with explicit
+    /// gain/damping (RunningBase 00c09450, Freefall 00bd3ab4 +0xec).
+    pub(crate) fn with_gains(&self, gain: f32, damping: f32) -> Self {
+        Self {
+            gain,
+            damping,
+            remaining: -1,
+            cached: [0.0; 3],
+            ..*self
+        }
+    }
+    pub(crate) fn gains(&self) -> [f32; 2] {
+        [self.gain, self.damping]
     }
     pub(crate) fn reset(&mut self) {
         self.remaining = -1;

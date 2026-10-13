@@ -7,6 +7,7 @@ pub mod camera;
 pub mod collision;
 pub mod dds;
 pub mod geometry;
+pub mod humanoid_state;
 pub mod kernel;
 pub mod legacy_contact;
 pub mod locomotion;
