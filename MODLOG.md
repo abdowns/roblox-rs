@@ -1,5 +1,25 @@
 # MODLOG
 
+## 2026-10-13 audit-part-jump: the Jumping floor push
+
+**Changed:**
+- `Humanoid::jump_pushes` (`JumpPush`) logs every Jumping push (00c05e0e). For each push it records the floor, acceleration, root mass, the mass used, force, the existing y force and the reaction.
+- New `audit-part-jump`: the character lands on the light Pad, idles 240 steps and jumps; then the same jump from the Baseplate. Every push is checked bit for bit against force = acceleration × min(root, floor), force > existing, and reaction = force − existing.
+- Re-checked 00c05e0e against its instructions: the dot product order, MINSS, the UCOMISS/JBE compare and the floor torque all match the port.
+- README: corrected the part-stand numbers. They changed with the floor friction commit, which I missed because my audit runner did not include part-stand.
+
+**Why:** The user listed "The jump push on the floor ... no audit of their own."
+
+**Tested how:**
+- Ran audit-part-jump, then all other audits: unchanged.
+- 77 tests pass; clippy and fmt are clean.
+
+**Result:**
+- Pad: 304 pushes, mass 7.56, rise 9.415.
+- Baseplate: 228 pushes, mass 9.9, rise 8.658.
+- Wrong assumption, recorded: I expected the lighter floor to give a lower jump. The push drives the speed to JumpPower, so it only takes longer. The audit checks the push count instead.
+- Pad sink: the pre-step 00a96eb0 has no realtime → contact path, so the Pad stays a realtime body under the Humanoid's push. Native sink depth is **not tested**.
+
 ## 2026-10-13 PopperCam ray sees unanchored Parts
 
 **Changed:**

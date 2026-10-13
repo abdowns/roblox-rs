@@ -271,18 +271,34 @@ are downloaded on first build; runtime data loading uses no network requests.
   - `part_stand_start character_mass=9.9 part_masses=[7.56, 25.199999]`: the
     Pad is lighter than the character, so the support force uses its mass;
   - `part_stand_landed step=241 ... floor=Some(Loose(0))`: it lands on the Pad;
-  - `part_stand_result ... root_on_pad=[..., 3.2311025, ...] pad_top=0.21530852 lowest_between=2.9965973 step_floor_at=Some(144) root_on_step=[..., 3.9999352, ...] step_top=0.98490196`:
+  - `part_stand_result ... root_on_pad=[..., 3.2041068, ...] pad_top=0.18830347 lowest_between=2.9966283 step_floor_at=Some(156) root_on_step=[..., 3.9999356, ...] step_top=0.98490196`:
     it stands at Part top + 3 on both Parts and walks up the 1-stud Step;
   - `part_stand_sleep ... [Pad final=SleepingDeeply ... (239, WakePending), (240, Awake), (367, SleepingDeeply)] [Step final=SleepingDeeply ...]`:
     landing wakes the sleeping Pad, and both Parts sleep again under the idle
     character;
   - `part_stand_pass ... sleep=sleep_stage`.
 
-  The Pad still sinks about 0.085 into the Baseplate, then sleeps there. At the
-  landing it wakes with the 19 substep reactions of that step accumulated, and
-  afterwards it sits in realTimeBodies against contactConnectors. Whether
-  native does the same is **not tested**. The jump floor reaction is **not
-  tested**. Native parity is **not tested**.
+  The Pad sinks about 0.11 into the Baseplate, settles (y 0.011, 0.037,
+  0.044, then 0.0383) and sleeps there. The Humanoid pushes it every
+  substep, and the kernel pre-step (00a96eb0) moves any contact body with a
+  force into realTimeBodies and has no path back. So the Pad rests as a
+  realtime body against its contactConnectors. Whether native sinks the same
+  amount is **not tested**. Native parity is **not tested**.
+
+- The Jumping push on a floor (00c05e0e). Run
+  `sh tools/cargo.sh run --locked -- audit-part-jump`. Expect:
+  - `part_jump_pad_push index=0 floor=Some(Loose(0)) acceleration=25004.637 root_mass=9.9 mass=7.56 force=189035.05 existing=-1942.38 reaction=Some(190977.42)`:
+    the force uses min(character, Pad) mass, and the Pad is pushed down with
+    force - existing;
+  - `part_jump_baseplate_push index=0 floor=Some(Static(0)) ... mass=9.9 force=247542.61`;
+  - `part_jump_compare pad_pushes=304 baseplate_pushes=228 pad_rise=9.4151535 baseplate_rise=8.657764`.
+    The push drives the jump speed to JumpPower, so the lighter Pad only
+    takes more substeps to get there. The higher rise from the Pad comes from
+    the Pad springing back up (it reaches vy -118);
+  - `part_jump_pass`.
+
+  Each push is checked against the native arithmetic bit for bit. Native jump
+  height and parity are **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,

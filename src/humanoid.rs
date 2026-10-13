@@ -92,7 +92,25 @@ pub struct Humanoid {
     /// workspace.CurrentCamera for Player:Move(..., true); None = world input.
     camera: Option<CoordinateFrame>,
     pub transitions: Vec<(u32, StateType)>,
+    /// Every Jumping push (00c05e0e) since the last reset, for the audits.
+    pub jump_pushes: Vec<JumpPush>,
     events: Vec<HumanoidEvent>,
+}
+
+/// One Jumping force call that pushed (00c05e0e).
+#[derive(Clone, Debug)]
+pub struct JumpPush {
+    pub floor: Option<FloorPart>,
+    /// (JumpPower - v . d) * 500.
+    pub acceleration: f32,
+    pub root_mass: f32,
+    /// The mass the force uses: min(root, floor assembly) on a floor.
+    pub mass: f32,
+    pub force: f32,
+    /// The root body's y force before the push (00c038dc +4).
+    pub existing: f32,
+    /// The downward push given to a loose floor: force - existing.
+    pub reaction: Option<f32>,
 }
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -172,6 +190,7 @@ impl Humanoid {
             last_floor_normal: [0.0; 3],
             camera: None,
             transitions: Vec::new(),
+            jump_pushes: Vec::new(),
             events: Vec::new(),
             balancing,
             profile,
@@ -189,6 +208,7 @@ impl Humanoid {
         self.jump_held = false;
         self.last_floor_normal = [0.0; 3];
         self.transitions.clear();
+        self.jump_pushes.clear();
         self.events.clear();
     }
     /// ControlScript's jump key: while held, MasterControl sets Humanoid.Jump
@@ -889,6 +909,15 @@ impl Humanoid {
         let center = body.center;
         let Some(part) = self.state.floor.part else {
             let force = acceleration * root_mass;
+            self.jump_pushes.push(JumpPush {
+                floor: None,
+                acceleration,
+                root_mass,
+                mass: root_mass,
+                force,
+                existing: body.force[1],
+                reaction: None,
+            });
             return body.apply_force(d.map(|v| v * force), center);
         };
         // Floor branch: min(root, floor assembly mass) for any floor (no
@@ -903,6 +932,15 @@ impl Humanoid {
             body.apply_force(d.map(|v| v * force), center)?;
             let touch = self.state.floor.floor.ok_or("floor without touch point")?.0;
             surroundings.push_floor(part, [0.0, -(force - existing), 0.0], touch)?;
+            self.jump_pushes.push(JumpPush {
+                floor: Some(part),
+                acceleration,
+                root_mass,
+                mass,
+                force,
+                existing,
+                reaction: Some(force - existing),
+            });
         }
         Ok(())
     }

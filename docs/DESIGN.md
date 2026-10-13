@@ -658,7 +658,18 @@ as `FloorQuery::part`).
   because Running's Y component is 0.
 - Jumping (00c05e0e) uses min(character, floor) mass for every floor (Body
   mass is set for anchored Parts too, 00b63366). It pushes the floor with
-  -(force - existing Y force) at the touch point.
+  -(force - existing Y force) at the touch point. Order checked against the
+  instructions:
+  - v . d is (vy·dy + vx·dx) + vz·dz;
+  - the mass is MINSS(floor, root);
+  - the push runs only when force > existing (UCOMISS/JBE);
+  - the torque is r × (0, -f, 0) about the floor body's +0x38.
+  The force targets JumpPower, so a lighter floor needs more pushes but does
+  not lower the jump. `Humanoid::jump_pushes` logs every push for
+  audit-part-jump.
+- The kernel pre-step (00a96eb0) only moves contact bodies into
+  realTimeBodies (on any force, torque or impulse). A loose floor under a
+  standing Humanoid therefore stays a realtime body while it is pushed.
 - Steep floors (00c0a498/00c07626): when up . n < cos(MaxSlopeAngle), the
   velocity loses its normal component and its downhill component becomes
   WalkSpeed. Walkable slopes are left alone.

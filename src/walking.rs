@@ -1252,3 +1252,159 @@ pub fn audit_part_stand(bundle: &Bundle) -> Result<String, String> {
     writeln!(report, "part_stand_pass floor_raycast=static_and_loose floor_velocity=c02c28 floor_reaction=running_and_jump sleep=sleep_stage native_differential=not_tested").unwrap();
     Ok(report)
 }
+
+/// The Jumping force (00c05e0e) on a floor: the character lands on a light
+/// loose Pad, idles, and jumps; then the same jump from the Baseplate. Every
+/// push is logged (`Humanoid::jump_pushes`) and checked against the native
+/// arithmetic: force = (JumpPower - v . d) * 500 * min(root mass, floor
+/// assembly mass), applied only while it exceeds the root's existing y force,
+/// with force - existing pushed down on the floor at the touch point.
+pub fn audit_part_jump(bundle: &Bundle) -> Result<String, String> {
+    use crate::humanoid_state::FloorPart;
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut report = String::new();
+    let mut results = Vec::new();
+    for pad in [true, false] {
+        let label = if pad { "pad" } else { "baseplate" };
+        let mut rig = R6Rig::character(bundle, &scene)?;
+        let mut workspace = Workspace::studio_new_document();
+        if pad {
+            let mut part = crate::workspace::PartInstance {
+                name: "Pad".into(),
+                ..Default::default()
+            };
+            part.set_size([6.0, 0.3, 6.0]);
+            part.frame.position = [0.0, 0.15, 0.0];
+            workspace.parts.push(part);
+        }
+        let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+        let root_mass = 1.0 / fixture.world.body.inverse_mass();
+        let pad_mass = fixture
+            .world
+            .loose
+            .parts
+            .first()
+            .map(|p| 1.0 / p.body.inverse_mass());
+        // 1. Fall, land and idle until 240 steps after landing (the Pad
+        // falls asleep at landing + about 120).
+        let mut fell = false;
+        let mut landed = None;
+        let mut step = 0u32;
+        while landed.is_none_or(|l| step < l + 240) {
+            if step >= 1200 {
+                return Err(format!("part jump ({label}): never landed\n{report}"));
+            }
+            fixture.step_animated(&mut rig, [0.0; 3])?;
+            step += 1;
+            fell |= fixture.state_type() == StateType::Freefall;
+            if fell && landed.is_none() && fixture.state_type() != StateType::Freefall {
+                landed = Some(step);
+            }
+        }
+        let rest_y = fixture.world.body.frame.position[1];
+        let floor = fixture.humanoid.floor_part();
+        let pad_before = fixture
+            .world
+            .loose
+            .parts
+            .first()
+            .map(|p| (p.sleep, p.body.frame.position[1]));
+        writeln!(
+            report,
+            "part_jump_{label}_rest step={step} root_y={rest_y} floor={floor:?} root_mass={root_mass} pad_mass={pad_mass:?} pad={pad_before:?}"
+        )
+        .unwrap();
+        // 2. Jump: hold the key for one 60 Hz frame (4 world steps), as the
+        // walking audit does, then run 120 world steps.
+        fixture.humanoid.jump_pushes.clear();
+        fixture.set_jump(true);
+        let mut apex = rest_y;
+        let mut pad_lowest_vy = 0.0f32;
+        for frame in 0..120u32 {
+            if frame == 4 {
+                fixture.set_jump(false);
+            }
+            fixture.step_animated(&mut rig, [0.0; 3])?;
+            apex = apex.max(fixture.world.body.frame.position[1]);
+            if let Some(p) = fixture.world.loose.parts.first() {
+                pad_lowest_vy = pad_lowest_vy.min(p.body.velocity[1]);
+            }
+        }
+        let pushes = fixture.humanoid.jump_pushes.clone();
+        for (i, p) in pushes.iter().enumerate() {
+            writeln!(
+                report,
+                "part_jump_{label}_push index={i} floor={:?} acceleration={} root_mass={} mass={} force={} existing={} reaction={:?}",
+                p.floor, p.acceleration, p.root_mass, p.mass, p.force, p.existing, p.reaction
+            )
+            .unwrap();
+        }
+        let pad_after = fixture
+            .world
+            .loose
+            .parts
+            .first()
+            .map(|p| (p.sleep, p.body.frame.position[1]));
+        writeln!(
+            report,
+            "part_jump_{label}_result pushes={} rise={} pad_lowest_vy={pad_lowest_vy} pad_after={pad_after:?} state={:?}",
+            pushes.len(),
+            apex - rest_y,
+            fixture.state_type()
+        )
+        .unwrap();
+        if pad {
+            writeln!(
+                report,
+                "{}",
+                sleep_summary("part_jump_pad_sleep", &fixture.world.loose)
+            )
+            .unwrap();
+        }
+        // The native arithmetic, bit for bit.
+        let expected_floor = if pad {
+            Some(FloorPart::Loose(0))
+        } else {
+            Some(FloorPart::Static(0))
+        };
+        let expected_mass = match pad_mass {
+            Some(m) if m < root_mass => m,
+            _ => root_mass,
+        };
+        let floor_pushes: Vec<_> = pushes.iter().filter(|p| p.floor.is_some()).collect();
+        if floor != expected_floor
+            || floor_pushes.is_empty()
+            || floor_pushes.iter().any(|p| {
+                p.floor != expected_floor
+                    || p.mass != expected_mass
+                    || p.force != p.acceleration * expected_mass
+                    || p.existing >= p.force
+                    || p.reaction != Some(p.force - p.existing)
+            })
+        {
+            return Err(format!(
+                "part jump ({label}): pushes differ from 00c05e0e\n{report}"
+            ));
+        }
+        results.push((pushes.len(), apex - rest_y));
+    }
+    // The push drives v . d toward JumpPower, so a lighter floor's smaller
+    // push mass takes more substeps to get there; it does not cap the jump.
+    writeln!(
+        report,
+        "part_jump_compare pad_pushes={} baseplate_pushes={} pad_rise={} baseplate_rise={}",
+        results[0].0, results[1].0, results[0].1, results[1].1
+    )
+    .unwrap();
+    if results[0].0 <= results[1].0 {
+        return Err(format!(
+            "part jump: the Pad jump does not take more pushes\n{report}"
+        ));
+    }
+    writeln!(report, "part_jump_pass floor_mass=min(root,floor) reaction=force_minus_existing native_differential=not_tested").unwrap();
+    Ok(report)
+}
