@@ -1,5 +1,30 @@
 # MODLOG
 
+## 2026-10-13 AwakeContact follows native a936d0 (resting flags, cache, separation)
+
+**Changed in `AwakeContact::solve`:**
+- Its signature is unchanged.
+- **Resting flags:** it reads both bodies' resting flags (KernelBody `resting`, SimBody +0x12c/+0x12d).
+  - A fast contact (|ns| > 60 or |vt|² > 1) clears a body's angular flag.
+  - Resting needs both bodies' angular flags.
+  - The friction cone is skipped only when both linear flags are also set.
+- **Separating contacts:** a separating contact (ns ≥ 0) is still impulsed when resting and iterations ≠ 0.
+- **Elastic rebound:** it now also requires !resting.
+- **Rebound target and clip:** these are computed only in the call that rebuilds the +0x74 cache.
+- **Separation:** zeroes iterations, clip and rebound but keeps the cache flag, as native does.
+- **Error term:** the per-call `error_term` (|delta/clip|) is exposed for the stepWorld error sum.
+- **Float order:** all three-term sums use the asm-verified z + (y + x) order (`dot_zyx`). This covers the correction, n·J, |t|², |vt|² and n·Md.
+- **Thresholds:** the fast-contact thresholds are read from the binary at 0x01749d10 (60) and 0x015d8978 (1), found through PIC base 00a936e1.
+- **Test support:** `KernelProfile::test_profile()` is added for unit tests (test builds only).
+
+**Why:** Unanchored Parts step 2. Resting Parts depend on the resting path.
+
+**Tested how:** Two new unit tests cover the separating-but-resting impulse, the fast flag clear and the separation-keeps-cache behavior. 73 tests pass, plus Clippy and fmt. audit-legacy-contact, audit-walking, audit-part-wall and audit-baseplate are byte-identical (none sets the resting flags).
+
+**Still broken / not tested:** The float order of the G3D Matrix3 products in the mass matrix is not verified. Native differential not tested.
+
+**Next:** Loose Parts in the World (kernel lists, free fall, contact bodies, impulse schedule).
+
 ## 2026-10-13 SimBody free-fall, contact pre-step and contact integration (kernel.rs)
 
 **Changed:**

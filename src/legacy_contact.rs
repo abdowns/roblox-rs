@@ -240,6 +240,9 @@ pub struct ImpulseProfile {
     penetration_goal: f32,
     penetration_gain: f32,
     friction_gain: f32,
+    /// a936d0 "fast contact" bounds: |normal speed| and |tangent velocity|^2.
+    fast_normal_speed: f32,
+    fast_tangent_squared: f32,
 }
 impl ImpulseProfile {
     pub fn load(bundle: &Bundle) -> Result<Self, String> {
@@ -247,26 +250,63 @@ impl ImpulseProfile {
         let float = |at| -> Result<f32, String> {
             Ok(f32::from_le_bytes(image.region(at, 4)?.try_into().unwrap()))
         };
-        Ok(Self {
+        let result = Self {
             penetration_goal: float(0x017424d0)?,
             penetration_gain: float(0x01713e40)?,
             friction_gain: float(0x01752a24)?,
-        })
+            // PIC base 00a936e1: +0xcb662f and +0xb45297.
+            fast_normal_speed: float(0x01749d10)?,
+            fast_tangent_squared: float(0x015d8978)?,
+        };
+        if [
+            result.penetration_goal,
+            result.penetration_gain,
+            result.friction_gain,
+            result.fast_normal_speed,
+            result.fast_tangent_squared,
+        ]
+        .iter()
+        .any(|v| !v.is_finite())
+            || result.fast_normal_speed <= 0.0
+            || result.fast_tangent_squared <= 0.0
+        {
+            return Err("unexpected native impulse profile".into());
+        }
+        Ok(result)
     }
 }
+/// The three-term sums of a936d0 compile as z + (y + x).
+fn dot_zyx(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[2] * b[2] + (a[1] * b[1] + a[0] * b[0])
+}
+/// ContactConnector impulse state (connector +0x1c, +0x20..+0x74).
 #[derive(Default)]
 pub struct AwakeContact {
+    /// +0x1c: impulse computations since the contact last separated.
     pub iterations: u32,
+    /// +0x70.
     pub rebound_velocity: f32,
+    /// Sum of the error terms of every applied impulse.
     pub error: f32,
-    cached: Option<(Tensor, Tensor, f32, f32)>,
+    /// |delta / clip| of the last call, 0 when no impulse was applied: the
+    /// term 00a9768c adds into its shared per-iteration error.
+    pub error_term: f32,
+    /// +0x6c.
+    clip: f32,
+    /// +0x74 set: mass matrix +0x20, inverse +0x44 and inverse mass sum +0x68.
+    cached: Option<(Tensor, Tensor, f32)>,
 }
 impl AwakeContact {
-    /// Explicit caller invalidation; native interval scheduling remains pending.
+    /// Clears the +0x74 cache flag, as the Kernel::step pre-step (00a96eb0)
+    /// does for every contactConnector once per world step.
     pub fn invalidate(&mut self) {
         self.cached = None;
         self.error = 0.0;
     }
+    /// ContactConnector impulse a936d0. `a` is the first body in the kernel
+    /// and the geometry normal points from `a` into `b` (a92c26 swaps the
+    /// bodies and negates the normal when only the second is in the kernel).
+    /// The resting flags of both bodies are read and may be cleared.
     pub fn solve(
         &mut self,
         input: &ImpulseInput,
@@ -295,10 +335,12 @@ impl AwakeContact {
         {
             return Err("invalid awake contact inputs".into());
         }
+        self.error_term = 0.0;
         if g.distance >= 0.0 {
+            // The cache flag survives separation; clip and rebound do not.
             self.iterations = 0;
+            self.clip = 0.0;
             self.rebound_velocity = 0.0;
-            self.cached = None;
             return Ok(false);
         }
         let bs = b.as_ref().map(|b| b.contact_state());
@@ -308,19 +350,43 @@ impl AwakeContact {
             g.point,
             g.normal,
         )?;
-        if v.normal_speed >= 0.0 {
+        let ns = v.normal_speed;
+        let vt = v.tangent_component;
+        let fast =
+            ns.abs() > profile.fast_normal_speed || dot_zyx(vt, vt) > profile.fast_tangent_squared;
+        // Resting (+0x12c) needs both bodies; skipping the friction cone also
+        // needs both linear flags (+0x12d).
+        let mut resting = a.resting[0];
+        let mut cone_skipped = resting && a.resting[1];
+        if resting && fast {
+            a.resting[0] = false;
+            resting = false;
+            cone_skipped = false;
+        }
+        if let Some(b) = b.as_mut() {
+            if b.resting[0] {
+                if fast {
+                    b.resting[0] = false;
+                    resting = false;
+                    cone_skipped = false;
+                } else if !b.resting[1] {
+                    cone_skipped = false;
+                }
+            } else {
+                resting = false;
+                cone_skipped = false;
+            }
+        }
+        if ns >= 0.0 && (!resting || self.iterations == 0) {
             return Ok(false);
         }
-        let inv_mass = a.inverse_mass() + b.as_ref().map_or(0.0, |b| b.inverse_mass());
-        let correction = dot(input.reference_impulse_a, g.normal) * a.inverse_mass()
-            - b.as_ref().map_or(0.0, |b| {
-                dot(input.reference_impulse_b, g.normal) * b.inverse_mass()
-            });
-        if self.cached.is_none() {
+        let fresh = self.cached.is_none();
+        if fresh {
             self.iterations = self
                 .iterations
                 .checked_add(1)
                 .ok_or("contact iteration overflow")?;
+            let inv_mass = a.inverse_mass() + b.as_ref().map_or(0.0, |b| b.inverse_mass());
             let s = skew(std::array::from_fn(|i| g.point[i] - a.center[i]));
             let d = multiply(multiply(s, a.inverse_inertia_world()), s);
             let mut m = d.map(|r| r.map(|v| -v));
@@ -332,34 +398,44 @@ impl AwakeContact {
             for (i, row) in m.iter_mut().enumerate() {
                 row[i] += inv_mass;
             }
-            let inv = inverse(m)?;
+            self.cached = Some((m, inverse(m)?, inv_mass));
+        }
+        let correction = dot_zyx(input.reference_impulse_a, g.normal) * a.inverse_mass()
+            - b.as_ref().map_or(0.0, |b| {
+                dot_zyx(input.reference_impulse_b, g.normal) * b.inverse_mass()
+            });
+        let (m, inv, inv_mass) = self.cached.unwrap();
+        if fresh {
+            // Rebound target (+0x70) and error clip (+0x6c) are set only
+            // when the cache is rebuilt; elastic rebound needs a moving,
+            // non-resting contact.
             self.rebound_velocity = 0.0;
-            if v.normal_speed <= -1.0
+            if ns <= -1.0
                 && self.iterations < 5
-                && correction <= -v.normal_speed
+                && correction <= -ns
+                && !resting
                 && correction >= 0.0
             {
-                self.rebound_velocity =
-                    (v.normal_speed + correction) * (-p.decompression / p.compression);
+                self.rebound_velocity = (ns + correction) * (-p.decompression / p.compression);
             }
-            self.rebound_velocity = self.rebound_velocity.max(
-                ((profile.penetration_goal - g.distance).max(0.0) / kernel.physics.free_fall_dt)
-                    * profile.penetration_gain,
-            );
-            self.cached = Some((m, inv, inv_mass, v.normal_speed.abs().max(1.0)));
+            let penetration = ((profile.penetration_goal - g.distance).max(0.0)
+                / kernel.physics.free_fall_dt)
+                * profile.penetration_gain;
+            if self.rebound_velocity < penetration {
+                self.rebound_velocity = penetration;
+            }
+            self.clip = if 1.0 < ns.abs() { ns.abs() } else { 1.0 };
         }
-        let (m, inv, inv_mass, clip) = self.cached.unwrap();
-        let mut delta = self.rebound_velocity - v.normal_speed;
-        self.error += (delta / clip).abs();
-        let mut impulse = mul_vector(
-            inv,
-            std::array::from_fn(|i| g.normal[i] * delta - v.tangent_component[i]),
-        );
-        if input.friction_enabled {
-            let ni = dot(impulse, g.normal);
-            let tangent = std::array::from_fn(|i| impulse[i] - g.normal[i] * ni);
+        let target = self.rebound_velocity;
+        let mut delta = target - ns;
+        self.error_term = (delta / self.clip).abs();
+        self.error += self.error_term;
+        let mut impulse = mul_vector(inv, std::array::from_fn(|i| g.normal[i] * delta - vt[i]));
+        if input.friction_enabled && !cone_skipped {
+            let ni = dot_zyx(impulse, g.normal);
+            let tangent: [f32; 3] = std::array::from_fn(|i| impulse[i] - g.normal[i] * ni);
             let bound = (correction.abs() / inv_mass).max(ni.abs()) * p.friction;
-            let squared = dot(tangent, tangent);
+            let squared = dot_zyx(tangent, tangent);
             if bound * bound < squared {
                 let length_inverse = 1.0 / squared.sqrt();
                 let coefficient = p.friction * profile.friction_gain;
@@ -373,7 +449,7 @@ impl AwakeContact {
                 } else {
                     delta.max(correction.abs())
                 };
-                impulse = direction.map(|v| v * (delta / dot(g.normal, md)));
+                impulse = direction.map(|v| v * (delta / dot_zyx(g.normal, md)));
             }
         }
         a.contact_impulse(impulse.map(|v| -v), g.point, kernel)?;
@@ -533,6 +609,120 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{assembly::AssemblyProperties, physics::FreeFallBody};
+    fn unit_body(position: [f32; 3], velocity: [f32; 3]) -> KernelBody {
+        let frame = CoordinateFrame {
+            position,
+            rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        let a = AssemblyProperties {
+            mass: 1.0,
+            center_world: position,
+            center_in_body: [0.0; 3],
+            inertia_in_body: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            body_frame: frame.clone(),
+            parts: 1,
+        };
+        KernelBody::new(
+            &a,
+            &FreeFallBody::new(frame, velocity, [0.0; 3]).unwrap(),
+            &KernelProfile::test_profile(),
+        )
+        .unwrap()
+    }
+    fn native_profile() -> ImpulseProfile {
+        ImpulseProfile {
+            penetration_goal: -0.02,
+            penetration_gain: 0.1,
+            friction_gain: 1.2,
+            fast_normal_speed: 60.0,
+            fast_tangent_squared: 1.0,
+        }
+    }
+    fn floor_input(distance: f32) -> ImpulseInput {
+        ImpulseInput {
+            // Normal from the body (A) into the floor (B).
+            geometry: ContactGeometry {
+                normal: [0.0, -1.0, 0.0],
+                distance,
+                point: [0.0, -0.5, 0.0],
+            },
+            parameters: ContactParameters {
+                compression: 100.0,
+                decompression: 50.0,
+                friction: 0.3,
+            },
+            reference_impulse_a: [0.0; 3],
+            reference_impulse_b: [0.0; 3],
+            friction_enabled: true,
+        }
+    }
+    const FLOOR: ContactBodyState = ContactBodyState {
+        center: [0.0, -1.0, 0.0],
+        velocity: [0.0; 3],
+        angular_velocity: [0.0; 3],
+    };
+    #[test]
+    fn separating_contact_waits_unless_resting_after_an_impulse() {
+        let kernel = KernelProfile::test_profile();
+        let profile = native_profile();
+        // Moving away from the floor (up): normal speed along (0,-1,0) > 0.
+        let mut body = unit_body([0.0; 3], [0.0, 0.5, 0.0]);
+        let mut contact = AwakeContact::default();
+        let input = floor_input(-0.001);
+        assert!(
+            !contact
+                .solve(&input, &mut body, None, &FLOOR, &kernel, &profile)
+                .unwrap()
+        );
+        // A resting body gets the pull-back impulse once iterations > 0.
+        body.resting = [true, true];
+        contact.iterations = 1;
+        assert!(
+            contact
+                .solve(&input, &mut body, None, &FLOOR, &kernel, &profile)
+                .unwrap()
+        );
+        assert!(body.velocity[1] < 0.5);
+        assert!(contact.error_term > 0.0);
+    }
+    #[test]
+    fn fast_contact_clears_the_resting_flag_and_separation_keeps_the_cache() {
+        let kernel = KernelProfile::test_profile();
+        let profile = native_profile();
+        let mut body = unit_body([0.0; 3], [0.0, -61.0, 0.0]);
+        body.resting = [true, true];
+        let mut contact = AwakeContact::default();
+        assert!(
+            contact
+                .solve(
+                    &floor_input(-0.001),
+                    &mut body,
+                    None,
+                    &FLOOR,
+                    &kernel,
+                    &profile
+                )
+                .unwrap()
+        );
+        assert_eq!(body.resting, [false, true]);
+        assert_eq!(contact.iterations, 1);
+        assert!(
+            !contact
+                .solve(
+                    &floor_input(0.1),
+                    &mut body,
+                    None,
+                    &FLOOR,
+                    &kernel,
+                    &profile
+                )
+                .unwrap()
+        );
+        assert_eq!(contact.iterations, 0);
+        assert!(contact.cached.is_some());
+        assert_eq!((contact.clip, contact.rebound_velocity), (0.0, 0.0));
+    }
     #[test]
     fn inverse_keeps_nondiagonal_effective_mass() {
         let m = [[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 2.0]];

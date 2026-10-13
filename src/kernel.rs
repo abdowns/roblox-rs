@@ -629,9 +629,17 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
 }
 
 #[cfg(test)]
+impl KernelProfile {
+    /// Round-number profile for unit tests in other modules.
+    pub(crate) fn test_profile() -> Self {
+        tests::profile()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    fn profile() -> KernelProfile {
+    pub(super) fn profile() -> KernelProfile {
         KernelProfile {
             physics: NativePhysics {
                 free_fall_dt: 1.0,
