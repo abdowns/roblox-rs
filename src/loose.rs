@@ -142,6 +142,8 @@ pub struct LoosePart {
     depth: i32,
     /// RunningBase friction factor when the Part is a Humanoid floor.
     floor_friction: f32,
+    /// Part.Transparency.
+    transparency: f32,
 }
 
 impl LoosePart {
@@ -152,6 +154,9 @@ impl LoosePart {
     /// The Part's material friction weighted against Plastic (00a43f4c).
     pub fn floor_friction(&self) -> f32 {
         self.floor_friction
+    }
+    pub fn transparency(&self) -> f32 {
+        self.transparency
     }
 }
 
@@ -463,6 +468,7 @@ impl LooseWorld {
             pass: 0,
             depth: -1,
             floor_friction: materials.floor_friction(&properties)?,
+            transparency: part.transparency,
         });
         self.original = self.parts.clone();
         Ok(())

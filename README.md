@@ -193,6 +193,13 @@ are downloaded on first build; runtime data loading uses no network requests.
   zoom, `camera_popper` with the near plane at the wall and
   `camera_pass classic=true popper=true transparency_fade=true`. Character
   transparency is computed but not rendered; FOV 70 is explicit.
+  PopperCam's ray sees static and unanchored Parts, and pierces Parts that are
+  CanCollide off or have Transparency above 0.95. Run
+  `sh tools/cargo.sh run --locked -- audit-part-push`; expect
+  `part_push_camera_ray ... hit=Some(([..., -8.080032], ...)) static_only=None crate_face_z=-8.080033`
+  and `part_push_pass pushed=true camera_ray=static_and_loose`. Ties between
+  Parts at exactly the same distance are not ordered like native (the spatial
+  grid order is not ported).
 
 - Native Humanoid state dispatch: Running, Landed, Jumping, Freefall and
   RunningNoPhysics with the original transition table, floor rays, timers and

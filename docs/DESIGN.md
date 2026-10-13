@@ -701,7 +701,13 @@ runtime and its code contracts are checked, so a changed script fails loudly.
 - PopperCam: five near-plane points (FOV, viewport), rays from focus-shifted
   starts, pulls the eye forward by the largest cutoff and restores 0.3/frame.
   The near clip plane ends on the obstruction, so the eye can stay up to 0.5
-  behind it.
+  behind it. Its CastRay is workspace:FindPartOnRayWithIgnoreList (00882368):
+  getHit 00ae818c with the ignore-list filter 0086dc78, which ignores only
+  descendants of the listed instances (the player characters). It has no
+  CanCollide test. A miss returns the ray end. PiercingCast recasts past
+  Transparency > 0.95 or CanCollide-false hits. `World::camera_raycast` takes
+  the nearest acceptable hit over static blocks and loose Parts; this is the
+  same Part the recast loop ends on.
 - TransparencyController: (7 - distance)/5, zero below 0.5, 2.8/s tween,
   rounded to 0.01. The value is computed and logged; character transparency is
   not yet rendered.

@@ -120,8 +120,7 @@ impl WalkingFixture {
             return None;
         }
         self.world
-            .statics
-            .raycast(from, v.map(|x| x / m), m.min(999.0))
+            .camera_raycast(from, v.map(|x| x / m), m.min(999.0))
             .map(|h| h.0)
     }
     pub fn state_type(&self) -> StateType {
@@ -1033,7 +1032,26 @@ pub fn audit_part_push(bundle: &Bundle) -> Result<String, String> {
         sleep_summary("part_push_sleep", &fixture.world.loose)
     )
     .unwrap();
-    writeln!(report, "part_push_pass pushed=true connectors=realtime floor_raycast=static_and_loose sleep=sleep_stage broadphase_order=assumed native_differential=not_tested").unwrap();
+    // PopperCam's ray (World::camera_raycast) sees the loose Crate: a ray
+    // from 10 studs behind its centre stops on its +z face. The static-only
+    // query passes through it.
+    let part = &fixture.world.loose.parts[0];
+    let centre = part.body.frame.position;
+    let from = [centre[0], centre[1], centre[2] + 10.0];
+    let camera = fixture.world.camera_raycast(from, [0.0, 0.0, -1.0], 20.0);
+    let statics = fixture.world.statics.raycast(from, [0.0, 0.0, -1.0], 20.0);
+    writeln!(
+        report,
+        "part_push_camera_ray from={from:?} hit={camera:?} static_only={statics:?} crate_face_z={} transparency={} can_collide={}",
+        centre[2] + part.size[2] * 0.5,
+        part.transparency(),
+        part.can_collide()
+    )
+    .unwrap();
+    if camera.is_none_or(|(point, _)| (point[2] - (centre[2] + part.size[2] * 0.5)).abs() > 0.05) {
+        return Err(format!("camera ray missed the Crate\n{report}"));
+    }
+    writeln!(report, "part_push_pass pushed=true camera_ray=static_and_loose connectors=realtime floor_raycast=static_and_loose sleep=sleep_stage broadphase_order=assumed native_differential=not_tested").unwrap();
     Ok(report)
 }
 

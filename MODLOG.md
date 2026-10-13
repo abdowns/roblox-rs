@@ -1,5 +1,25 @@
 # MODLOG
 
+## 2026-10-13 PopperCam ray sees unanchored Parts
+
+**Changed:**
+- New `World::camera_raycast`: FindPartOnRayWithIgnoreList (00882368, getHit 00ae818c, ignore-list filter 0086dc78) over static blocks and loose Parts. It applies PiercingCast's skip of Transparency > 0.95 and CanCollide false.
+- `WalkingFixture::camera_raycast` (the PopperCam query in the audits and the viewport) now uses it, not the static-only `Statics::raycast`.
+- Static blocks and loose Parts now keep their Transparency. `LoosePart::transparency`.
+- The ray walk is shared: `raycast_where` and `Statics::block_hit_where` take hit filters. The Humanoid query is unchanged.
+- audit-part-push prints `part_push_camera_ray`.
+
+**Why:** The user listed "The camera's ray still ignores loose Parts."
+
+**Tested how:**
+- Ran all 13 audits. Only part-push changed, by the new line.
+- 77 tests pass; clippy and fmt are clean.
+
+**Result:**
+- The camera ray from 10 studs behind the Crate stops on its face (z -8.080032; the face is at -8.080033). The static-only query misses.
+- Ties at equal distance and native parity are **not tested**.
+- A transparent or non-colliding loose Part being pierced is **not tested**; no audit scene has one.
+
 ## 2026-10-13 RunningBase floor friction
 
 **Changed:**

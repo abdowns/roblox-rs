@@ -11,7 +11,7 @@ use crate::{
     humanoid_state::{FloorPart, Hit},
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
     legacy_contact::{BlockContactProfile, ContactGeometry, ImpulseProfile},
-    loose::{CharacterMotion, LooseWorld},
+    loose::{CharacterMotion, LoosePart, LooseWorld},
     material::{MaterialProfile, Shape},
     physics,
     rig::{R6Rig, compose},
@@ -24,6 +24,9 @@ use std::collections::BTreeMap;
 struct ContactState {
     spring: ContactSpring,
 }
+
+/// PopperCam.lua PiercingCast: `hitPart.Transparency > 0.95` is pierced.
+const POPPER_PIERCE_TRANSPARENCY: f32 = 0.95;
 
 /// An anchored, colliding block Part in the world.
 #[derive(Clone, Debug)]
@@ -197,6 +200,8 @@ pub struct Statics {
     /// (a Plastic stand-in).
     floor_friction: Vec<f32>,
     fixture_friction: f32,
+    /// Part.Transparency of each block (PopperCam pierces above 0.95).
+    transparency: Vec<f32>,
 }
 
 impl Statics {
@@ -213,9 +218,22 @@ impl Statics {
         direction: [f32; 3],
         length: f32,
     ) -> Option<(f32, Hit, FloorPart)> {
+        self.block_hit_where(origin, direction, length, |_| true)
+    }
+    /// `block_hit` over the blocks the hit filter accepts.
+    fn block_hit_where(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        length: f32,
+        accept: impl Fn(usize) -> bool,
+    ) -> Option<(f32, Hit, FloorPart)> {
         let mut best = length.min(5000.0);
         let mut result = None;
         for (index, block) in self.blocks.iter().enumerate() {
+            if !accept(index) {
+                continue;
+            }
             if let Some((distance, hit)) =
                 slow_hit_candidate(&block.frame, block.size, origin, direction, best)
             {
@@ -318,11 +336,32 @@ fn raycast_all(
     direction: [f32; 3],
     length: f32,
 ) -> Option<(Hit, FloorPart)> {
-    let mut best = statics.block_hit(origin, direction, length);
+    raycast_where(
+        statics,
+        loose,
+        origin,
+        direction,
+        length,
+        |_| true,
+        LoosePart::can_collide,
+    )
+}
+
+/// The getHit walk with a hit filter for static blocks and loose Parts.
+fn raycast_where(
+    statics: &Statics,
+    loose: Option<&LooseWorld>,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    length: f32,
+    accept_static: impl Fn(usize) -> bool,
+    accept_loose: impl Fn(&LoosePart) -> bool,
+) -> Option<(Hit, FloorPart)> {
+    let mut best = statics.block_hit_where(origin, direction, length, accept_static);
     if let Some(loose) = loose {
         let mut limit = best.as_ref().map_or(length.min(5000.0), |b| b.0);
         for (index, part) in loose.parts.iter().enumerate() {
-            if !part.can_collide() {
+            if !accept_loose(part) {
                 continue;
             }
             if let Some((distance, hit)) =
@@ -583,6 +622,7 @@ impl World {
                 tables: BlockTables::load(bundle)?,
                 floor_friction: Vec::new(),
                 fixture_friction: materials.floor_friction(&plastic)?,
+                transparency: Vec::new(),
             },
             kernel,
             steps: 0,
@@ -648,6 +688,7 @@ impl World {
                     .statics
                     .floor_friction
                     .push(world.materials.floor_friction(&properties)?);
+                world.statics.transparency.push(part.transparency);
             }
         }
         let spawn = CoordinateFrame {
@@ -694,6 +735,31 @@ impl World {
         length: f32,
     ) -> Option<(Hit, FloorPart)> {
         raycast_all(&self.statics, Some(&self.loose), origin, direction, length)
+    }
+    /// PopperCam's PiercingCast: workspace:FindPartOnRayWithIgnoreList
+    /// (00882368 -> getHit 00ae818c with the ignore-list filter 0086dc78,
+    /// which ignores only descendants of the listed instances: the player
+    /// characters, which are not in the loose or static lists). The Lua
+    /// recasts past any hit with Transparency > 0.95 or CanCollide false;
+    /// recasting until the nearest hit is acceptable is the nearest
+    /// acceptable hit. Anchored CanCollide-false Parts are not static blocks,
+    /// which matches them being pierced.
+    pub fn camera_raycast(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        length: f32,
+    ) -> Option<Hit> {
+        raycast_where(
+            &self.statics,
+            Some(&self.loose),
+            origin,
+            direction,
+            length,
+            |index| self.statics.transparency[index] <= POPPER_PIERCE_TRANSPARENCY,
+            |part| part.can_collide() && part.transparency() <= POPPER_PIERCE_TRANSPARENCY,
+        )
+        .map(|(hit, _)| hit)
     }
     pub fn point_velocity(&self, point: [f32; 3]) -> [f32; 3] {
         let arm = std::array::from_fn(|a| point[a] - self.body.center[a]);
