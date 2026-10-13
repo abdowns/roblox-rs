@@ -617,3 +617,38 @@ slopes return explicit errors). Floor/part friction combination is not recovered
 Jumping from rest rises 8.66 studs in this model (three push frames, then free
 flight); native jump height is not tested. Evidence summary:
 RobloxStudio/analysis/humanoid-state-native-20261012.md.
+
+
+## PlayerScripts camera (ClassicCamera)
+
+camera_script.rs ports the bundled characterCameraScript.rbxmx desktop path:
+CameraScript selects ClassicCamera (Computer, Default -> Classic), PopperCam
+(DevCameraOcclusionMode Zoom) and TransparencyController, all updated in the
+"cameraRenderUpdate" render step. Literals are parsed from the original Lua at
+runtime and its code contracts are checked, so a changed script fails loudly.
+- Spawn: ZoomCamera(12.5), then after one wait the look is set behind the
+  character: (Torso.lookVector - (0,0.23,0)).unit via RotateInput.
+- Update: focus = Torso.p + Torso:vectorToWorldSpace((0,1.5,0)); eye =
+  focus - zoom*look, frame = CFrame.new(eye, focus) (G3D lookAt), zoom >= 0.5.
+  RotateVector uses CFrame.Angles(0,-x,0) * lookAt * CFrame.Angles(-y,0,0);
+  pitch is clamped to +-80 degrees.
+- Input: right-drag pan (delta/1920, delta/1200) * (4pi, 1.9pi); arrows turn
+  120 deg/s (delta capped at 0.1 s); wheel ZoomCameraBy(clamp(-1,1,-z)*1.4);
+  I/O ZoomCameraBy(-+5). ZoomCameraBy starts from the actual eye distance and
+  runs the Lua RK4 integrator (UserBetterInertialScrolling assumed off). First
+  person when zoom < 2. Zoom limits come from Player setters 00b8a9f8/00b8a99a
+  (0.5..400); constructor defaults were not located.
+- PopperCam: five near-plane points (FOV, viewport), rays from focus-shifted
+  starts, pulls the eye forward by the largest cutoff and restores 0.3/frame.
+  The near clip plane ends on the obstruction, so the eye can stay up to 0.5
+  behind it.
+- TransparencyController: (7 - distance)/5, zero below 0.5, 2.8/s tween,
+  rounded to 0.01. The value is computed and logged; character transparency is
+  not yet rendered.
+WASD now goes through the ControlScript's Player:Move(move, true): input is
+camera-relative using the recovered camera projection. Camera.FieldOfView stays
+the explicit 70 degrees (setter 00734682 clamps 1..120; constructor default not
+located). First-person (CameraRelative) Humanoid rotation, ShiftLock, gamepad,
+touch, VR, Follow/ClickToMove modes and vehicle branches are not implemented.
+Camera updates use the presented frame's wall-clock time; the headless audit
+uses ideal 60 Hz frames ordered camera update, then four world steps.

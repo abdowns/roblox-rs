@@ -38,6 +38,8 @@ pub(crate) struct MotionControl {
     pub walking_input: [f32; 3],
     /// Space held: ControlScript MasterControl sets Humanoid.Jump each frame.
     pub walking_jump: bool,
+    /// Latest ClassicCamera frame, used for camera-relative Player:Move.
+    pub walking_camera: Option<CoordinateFrame>,
     walking: WalkingFixture,
     animation: ProceduralAnimation,
     animation_ticks: u32,
@@ -129,6 +131,7 @@ pub(crate) fn install(app: &mut App, bundle: &Bundle) -> Result<(), String> {
         walking_probe: false,
         walking_input: [0.0; 3],
         walking_jump: false,
+        walking_camera: None,
         walking,
         animation: ProceduralAnimation::load(bundle)?,
         animation_ticks: 0,
@@ -156,6 +159,8 @@ pub(crate) fn advance(
             let input = control.walking_input;
             let jump = control.walking_jump;
             control.walking.set_jump(jump);
+            let camera = control.walking_camera.clone();
+            control.walking.set_camera(camera);
             if let Err(error) = control.walking.step_animated(&mut rig, input) {
                 control.error = Some(error);
                 return;
@@ -257,6 +262,7 @@ pub(crate) fn reset(world: &mut World) {
     control.walking_probe = false;
     control.walking_input = [0.0; 3];
     control.walking_jump = false;
+    control.walking_camera = None;
     control.walking.reset();
     control.animation_ticks = 0;
 }
@@ -281,6 +287,23 @@ pub(crate) fn walking_frame(world: &World) -> Option<CoordinateFrame> {
     control
         .walking_probe
         .then(|| control.walking.body.frame.clone())
+}
+pub(crate) fn walking_torso(world: &World) -> Option<CoordinateFrame> {
+    let control = world.resource::<MotionControl>();
+    if !control.walking_probe {
+        return None;
+    }
+    control.walking.torso_frame(world.resource::<R6Rig>()).ok()
+}
+pub(crate) fn walking_camera_raycast(
+    world: &World,
+    from: [f32; 3],
+    to: [f32; 3],
+) -> Option<[f32; 3]> {
+    world
+        .resource::<MotionControl>()
+        .walking
+        .camera_raycast(from, to)
 }
 pub(crate) fn walking_geometry(world: &World) -> Vec<Draw> {
     let control = world.resource::<MotionControl>();

@@ -4,6 +4,7 @@ pub mod assembly;
 mod balancing;
 pub mod bundle;
 pub mod camera;
+pub mod camera_script;
 pub mod collision;
 pub mod dds;
 pub mod geometry;

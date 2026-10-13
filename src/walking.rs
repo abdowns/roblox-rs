@@ -97,6 +97,8 @@ pub struct WalkingFixture {
     /// humanoidAnimateLocal's `pose` variable, set by Humanoid events.
     script_pose: Pose,
     pub transitions: Vec<(u32, StateType)>,
+    /// workspace.CurrentCamera for Player:Move(..., true); None = world input.
+    camera: Option<CoordinateFrame>,
 }
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]
@@ -230,6 +232,7 @@ impl WalkingFixture {
             last_floor_normal: [0.0; 3],
             script_pose: Pose::Standing,
             transitions: Vec::new(),
+            camera: None,
         };
         fixture.reset();
         Ok(fixture)
@@ -262,6 +265,24 @@ impl WalkingFixture {
     /// every render step; every new state clears it (00bfd2a2 -> setJump(0)).
     pub fn set_jump(&mut self, held: bool) {
         self.jump_held = held;
+    }
+    /// MasterControl calls Player:Move(moveValue, true): input is camera-relative.
+    pub fn set_camera(&mut self, camera: Option<CoordinateFrame>) {
+        self.camera = camera;
+    }
+    /// humanoid.Torso render CFrame (the camera subject part).
+    pub fn torso_frame(&self, rig: &R6Rig) -> Result<CoordinateFrame, String> {
+        self.torso(rig)
+    }
+    /// PopperCam CastRay: segment query against the fixture world.
+    pub fn camera_raycast(&self, from: [f32; 3], to: [f32; 3]) -> Option<[f32; 3]> {
+        let v: [f32; 3] = std::array::from_fn(|a| to[a] - from[a]);
+        let m = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if m == 0.0 {
+            return None;
+        }
+        self.raycast(from, v.map(|x| x / m), m.min(999.0))
+            .map(|h| h.0)
     }
     pub fn state_type(&self) -> StateType {
         self.state.kind
@@ -373,8 +394,8 @@ impl WalkingFixture {
             input,
             &MoveContext {
                 attached_to_data_model: true,
-                relative_to_camera: false,
-                camera: None,
+                relative_to_camera: self.camera.is_some(),
+                camera: self.camera.clone(),
                 swimming: false,
             },
         )?;

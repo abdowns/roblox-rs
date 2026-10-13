@@ -1385,6 +1385,8 @@ struct Viewport {
     acquisition_retries: u32,
     walking_keys: [bool; 4],
     walking_camera_root: Option<[f32; 3]>,
+    walking_camera: Option<crate::camera_script::ClassicCamera>,
+    cursor: Option<[f64; 2]>,
 }
 impl Viewport {
     fn log_event(&mut self, event: String) -> Result<(), String> {
@@ -1410,7 +1412,7 @@ impl ApplicationHandler for Viewport {
                 event_loop
                     .create_window(
                         Window::default_attributes()
-                            .with_title(if self.app.world().resource::<MotionControl>().walking_probe {"Roblox 2016 — walking fixture | WASD: move | Space: jump | R: reset | Esc: close"} else {"Roblox 2016 — Space: fall probe | R: reset | Esc: close"})
+                            .with_title(if self.app.world().resource::<MotionControl>().walking_probe {"Roblox 2016 — walking fixture | WASD: move | Space: jump | Right-drag/arrows: turn camera | Wheel/I/O: zoom | R: reset | Esc: close"} else {"Roblox 2016 — Space: fall probe | R: reset | Esc: close"})
                             .with_inner_size(winit::dpi::LogicalSize::new(960.0, 720.0))
                             .with_visible(false),
                     )
@@ -1525,6 +1527,35 @@ impl ApplicationHandler for Viewport {
             {
                 event_loop.exit()
             }
+            WindowEvent::MouseInput {
+                state,
+                button: winit::event::MouseButton::Right,
+                ..
+            } if self.walking_camera.is_some() => {
+                if let Some(camera) = self.walking_camera.as_mut() {
+                    camera.panning = state == ElementState::Pressed;
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } if self.walking_camera.is_some() => {
+                let current = [position.x, position.y];
+                if let (Some(camera), Some(last)) = (self.walking_camera.as_mut(), self.cursor)
+                    && camera.panning
+                {
+                    camera.mouse_pan([current[0] - last[0], current[1] - last[1]]);
+                }
+                self.cursor = Some(current);
+            }
+            WindowEvent::MouseWheel { delta, .. } if self.walking_camera.is_some() => {
+                let notches = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(y),
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y.signum(),
+                };
+                if let Some(camera) = self.walking_camera.as_mut()
+                    && notches != 0.0
+                {
+                    camera.mouse_wheel(notches);
+                }
+            }
             WindowEvent::KeyboardInput { event, .. }
                 if self.app.world().resource::<MotionControl>().walking_probe =>
             {
@@ -1543,6 +1574,20 @@ impl ApplicationHandler for Viewport {
                 } else {
                     None
                 };
+                let pressed = event.state == ElementState::Pressed;
+                if let Some(camera) = self.walking_camera.as_mut() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::ArrowLeft) => camera.turning_left = pressed,
+                        Key::Named(NamedKey::ArrowRight) => camera.turning_right = pressed,
+                        Key::Character(k) if pressed && k.eq_ignore_ascii_case("i") => {
+                            camera.zoom_key(true)
+                        }
+                        Key::Character(k) if pressed && k.eq_ignore_ascii_case("o") => {
+                            camera.zoom_key(false)
+                        }
+                        _ => {}
+                    }
+                }
                 if event.logical_key == Key::Named(NamedKey::Space) {
                     let held = event.state == ElementState::Pressed;
                     self.app
@@ -1644,7 +1689,9 @@ impl ApplicationHandler for Viewport {
                             self.app
                                 .world_mut()
                                 .resource_mut::<MotionControl>()
-                                .walking_input = [1.0, 0.0, 0.0];
+                                // Camera-relative "A": the spawn camera looks
+                                // along +Z, so left is world +X (the wall).
+                                .walking_input = [-1.0, 0.0, 0.0];
                         }
                         let now = Instant::now();
                         self.motion_remainder +=
@@ -1674,12 +1721,28 @@ impl ApplicationHandler for Viewport {
                     let step = control.steps;
                     let walking = control.walking_probe;
                     if let Some(frame) = motion::walking_frame(self.app.world()) {
-                        if let Some(previous) = self.walking_camera_root {
-                            self.inputs.frame.position = std::array::from_fn(|a| {
-                                self.inputs.frame.position[a] + frame.position[a] - previous[a]
-                            });
-                        }
                         self.walking_camera_root = Some(frame.position);
+                    }
+                    let viewport_size = self.config.as_ref().map_or([1024.0, 768.0], |c| {
+                        [f64::from(c.width), f64::from(c.height)]
+                    });
+                    let now = self.started.elapsed().as_secs_f64();
+                    let world = self.app.world();
+                    if let (Some(camera), Some(torso)) =
+                        (self.walking_camera.as_mut(), motion::walking_torso(world))
+                    {
+                        camera.update(now, &torso, viewport_size, &|a, b| {
+                            motion::walking_camera_raycast(world, a, b)
+                        });
+                        self.inputs.frame = camera.frame.clone();
+                        self.inputs.fov_y =
+                            (camera.profile.field_of_view_degrees as f32).to_radians();
+                    }
+                    if let Some(camera) = &self.walking_camera {
+                        self.app
+                            .world_mut()
+                            .resource_mut::<MotionControl>()
+                            .walking_camera = Some(camera.frame.clone());
                     }
                     if self.motion_active && !walking && step == 60 {
                         self.motion_active = false;
@@ -1696,7 +1759,8 @@ impl ApplicationHandler for Viewport {
                             .iter()
                             .map(|v| v.position[1])
                             .fold(f32::INFINITY, f32::min);
-                        let animation = control.animation_probe;
+                        let animation =
+                            self.app.world().resource::<MotionControl>().animation_probe;
                         self.log_event(format!("motion_probe_paused step={step} simulated_seconds={:.9} head_min_y={min_y:.9} animation={animation} reason=research_probe_limit", f64::from(step) * motion::timestep(self.app.world())))?;
                     }
                     let config = self.config.as_ref().unwrap();
@@ -1856,7 +1920,7 @@ fn run_viewport(
         if frame_limit.is_some() {
             app.world_mut()
                 .resource_mut::<MotionControl>()
-                .walking_input = [1.0, 0.0, 0.0];
+                .walking_input = [-1.0, 0.0, 0.0];
         }
         for draw in motion::walking_geometry(app.world()) {
             surfaces
@@ -1904,6 +1968,17 @@ fn run_viewport(
             ],
         };
     }
+    // CameraScript: ClassicCamera from the bundled PlayerScripts; the fixture
+    // frame above is only workspace.CurrentCamera before the script runs.
+    let walking_camera = if walking {
+        Some(crate::camera_script::ClassicCamera::new(
+            crate::camera_script::CameraProfile::load(bundle)?,
+            inputs.frame.clone(),
+            0.0,
+        ))
+    } else {
+        None
+    };
     let mut viewport = Viewport {
         app,
         bundle_root: bundle.root().to_path_buf(),
@@ -1926,6 +2001,8 @@ fn run_viewport(
         acquisition_retries: 0,
         walking_keys: [false; 4],
         walking_camera_root,
+        walking_camera,
+        cursor: None,
     };
     EventLoop::new()
         .map_err(|e| e.to_string())?

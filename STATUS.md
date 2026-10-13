@@ -357,3 +357,9 @@ RunningNoPhysics dispatch, floor rays and jump are implemented; 48 tests and all
 walking/render/window audits pass. Remaining: climbing, FallingDown/GettingUp,
 Seated, Swimming, slopes, moving floors, PGS, native contact "touching", native
 world geometry. Jump height not compared with the original client.
+
+
+2026-10-12 camera: bundled ClassicCamera/PopperCam/TransparencyController
+ported; WASD is camera-relative. audit-camera and all walking audits pass.
+Remaining: render character transparency, native FOV/zoom defaults, first-person
+rotation, other camera modes.

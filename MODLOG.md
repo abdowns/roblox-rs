@@ -1,5 +1,33 @@
 # MODLOG
 
+## 2026-10-12 Port the bundled 2016 ClassicCamera and camera-relative movement
+
+**Changed:** Added `camera_script.rs`: RootCamera/ClassicCamera, PopperCam and
+TransparencyController from characterCameraScript.rbxmx, with literals parsed
+from the original Lua. viewport-walking now uses it (right-drag, arrows, wheel,
+I/O) and WASD goes through camera-relative Player:Move as the ControlScript does.
+Added `audit-camera`.
+**Why:** The walking view used a fixed translation-follow fixture camera and
+world-axis input.
+**Tested how:** Read the bundled CameraScript/ControlScript sources; Ghidra for
+Humanoid.Torso (00bd5050), Player zoom setters and Camera.FieldOfView setter.
+50 tests, Clippy, fmt; audit-camera, audit-walking, audit-walking-render,
+walking window smoke (now camera-relative), bundle check.
+**Result:** Spawn eye 12.5 studs behind/above the head focus, look matching the
+script's 0.23 drop to 5e-8; one second of W moves 15.749 studs along the camera
+look; quarter-width drag = half turn; pitch clamps at -80 deg; wheel zoom
+12.5 -> 9.0809 (RK4); PopperCam keeps the near plane at the wall (eye x 4.41,
+unpopped 15.70); transparency fades 0.05/frame to 0.7. Window smoke: 120
+frames, 467 world steps, wall contact via camera-relative A.
+Test: `sh tools/cargo.sh run --locked -- viewport-walking`; expect a camera
+behind the character, right-drag to orbit, wheel to zoom, WASD relative to view.
+**Still broken / not tested:** Character transparency not rendered; FOV 70 and
+zoom limit defaults are explicit (constructors not located); first-person
+rotation, ShiftLock, gamepad/touch/VR/Follow modes not implemented. First audit
+attempts used ancestor-matched script modules and wrong test signs; fixed.
+Manual mouse/keyboard interaction and native visual parity are **not tested**.
+**Next:** Sky and lighting.
+
 ## 2026-10-12 Recover native Humanoid state dispatch, floor rays and jumping
 
 **Changed:** Added `humanoid_state.rs` (native STATE_TABLE, floor rays, state
