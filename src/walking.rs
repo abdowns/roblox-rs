@@ -7,6 +7,7 @@
 use crate::{
     animate_script::{AnimateProfile, AnimateScript, ScriptPose},
     animator::Animator,
+    block_contact::PairKind,
     bundle::Bundle,
     humanoid::Humanoid,
     humanoid_state::StateType,
@@ -39,8 +40,16 @@ impl WalkingFixture {
     /// Play Solo in the Studio new-document place: the character spawns over
     /// the Baseplate (`World::in_workspace`).
     pub fn baseplate(bundle: &Bundle, scene: &Scene, rig: &R6Rig) -> Result<Self, String> {
-        let workspace = Workspace::studio_new_document();
-        let world = World::in_workspace(bundle, scene, rig, &workspace)?;
+        Self::in_workspace(bundle, scene, rig, &Workspace::studio_new_document())
+    }
+    /// Play Solo in any Workspace of anchored Parts.
+    pub fn in_workspace(
+        bundle: &Bundle,
+        scene: &Scene,
+        rig: &R6Rig,
+        workspace: &Workspace,
+    ) -> Result<Self, String> {
+        let world = World::in_workspace(bundle, scene, rig, workspace)?;
         Self::with_world(bundle, scene, rig, world)
     }
     fn with_world(
@@ -705,6 +714,86 @@ pub fn audit_baseplate(bundle: &Bundle) -> Result<String, String> {
     if !(7.0..10.0).contains(&(apex - before_jump)) || (after_jump - before_jump).abs() > 0.05 {
         return Err(format!("baseplate jump failed\n{report}"));
     }
-    writeln!(report, "baseplate_pass spawn=native_no_spawnlocation floor=baseplate_block_raycast block_contacts=not_ported native_differential=not_tested").unwrap();
+    writeln!(report, "baseplate_pass spawn=native_no_spawnlocation floor=baseplate_block_raycast block_contacts=block_block_contact native_differential=not_tested").unwrap();
+    Ok(report)
+}
+
+/// Walk into an anchored wall Part on the Baseplate: Torso and Head meet it
+/// through the BlockBlockContact narrowphase.
+pub fn audit_part_wall(bundle: &Bundle) -> Result<String, String> {
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    // Explicit test Part: its +Z face is the plane z = -10, across the
+    // walking path (the character faces and walks -Z).
+    let mut wall = crate::workspace::PartInstance {
+        name: "Wall".into(),
+        anchored: true,
+        ..Default::default()
+    };
+    wall.set_size([20.0, 10.0, 2.0]);
+    wall.frame.position = [0.0, 5.0, -11.0];
+    workspace.parts.push(wall);
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let mut report = String::new();
+    for _ in 0..720u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+    }
+    let start = fixture.world.body.frame.position;
+    let mut first_contact = None;
+    let mut most = 0;
+    for step in 0..480u32 {
+        fixture.step_animated(&mut rig, [0.0, 0.0, -1.0])?;
+        let contacts = fixture.world.contacts;
+        if contacts > 0 && first_contact.is_none() {
+            first_contact = Some(step + 1);
+            writeln!(
+                report,
+                "part_wall_first_contact step={} root={:?} velocity={:?} {}",
+                step + 1,
+                fixture.world.body.frame.position,
+                fixture.world.body.velocity,
+                fixture.world.block_contact_report()
+            )
+            .unwrap();
+        }
+        most = most.max(contacts);
+        if step % 60 == 59 {
+            writeln!(
+                report,
+                "part_wall_walk step={} root={:?} velocity={:?} contacts={contacts} {}",
+                step + 1,
+                fixture.world.body.frame.position,
+                fixture.world.body.velocity,
+                fixture.world.block_contact_report()
+            )
+            .unwrap();
+        }
+    }
+    let stop = fixture.world.body.frame.position;
+    let kinds = fixture.world.block_contact_kinds();
+    writeln!(
+        report,
+        "part_wall_result start={start:?} stop={stop:?} first_contact_step={first_contact:?} max_contacts={most} max_penetration={} impulses={} upright_y={} state={:?} kinds={kinds:?}",
+        fixture.world.max_penetration,
+        fixture.world.impulse_applications,
+        fixture.world.body.frame.rotation[1][1],
+        fixture.state_type()
+    )
+    .unwrap();
+    // Torso front face (half depth 0.5) stops at the wall face z = -10.
+    if first_contact.is_none()
+        || stop[2] < -9.6
+        || stop[2] > -9.0
+        || fixture.world.max_penetration > 0.5
+        || !kinds.contains(&PairKind::VertexPlane)
+    {
+        return Err(format!("part wall failed\n{report}"));
+    }
+    writeln!(report, "part_wall_pass blocked=true narrowphase=block_block_contact broadphase_order=assumed native_differential=not_tested").unwrap();
     Ok(report)
 }

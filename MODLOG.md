@@ -1,5 +1,44 @@
 # MODLOG
 
+## 2026-10-12 Torso/Head collide with Workspace Parts (BlockBlockContact in World)
+
+**Changed:**
+- The World keeps a BlockBlockContact per (collider, static block). Its
+  connectors join the awake impulse loop and the per-substep contact springs.
+- Added `WalkingFixture::in_workspace`, `World::block_contact_report` and
+  `World::block_contact_kinds`.
+- Added `audit-part-wall`.
+- The baseplate pass line now reads block_contacts=block_block_contact.
+
+**Why:** Parts step 5: the character must be stopped by Parts, not only stand
+on the Baseplate through the floor ray.
+
+**Tested how:**
+- audit-part-wall.
+- Before/after comparison: audit-walking, audit-camera, audit-animate,
+  audit-motion, audit-walking-render, audit-baseplate-render and
+  audit-legacy-contact are byte-identical. audit-baseplate differs only in the
+  pass-line marker.
+- viewport-baseplate-smoke (120 frames), 68 tests, Clippy.
+
+**Result:**
+- First contact at walk step 145, on the Head.
+- From then on, 6 vertex/plane connectors (Head 2, Torso 4).
+- The root stops at z = -9.5405 (Torso face at -10.04).
+- Maximum penetration 0.064, 725 impulse applications, upright_y 0.99976,
+  state Running.
+- Test: `sh tools/cargo.sh run --locked -- audit-part-wall`.
+
+**Still broken / not tested:**
+- The broadphase primitive order and the connector order across pairs are
+  assumed.
+- `touching` still uses the box-overlap stand-in.
+- Unanchored Parts are not simulated.
+- Native numeric parity is not tested.
+
+**Next:** Unanchored Parts (multi-body world). I'll ask before that
+refactor.
+
 ## 2026-10-12 Port the BlockBlockContact narrowphase (box/box connectors)
 
 **Changed:** New `block_contact` module: `Block`, `BlockTables`,

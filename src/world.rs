@@ -5,11 +5,14 @@
 //! anchored Parts of a Workspace (`World::in_workspace`).
 use crate::{
     assembly::{AssemblyProperties, MassPart, MassProfile, Tensor},
+    block_contact::{Block, BlockBlockContact, BlockTables, Connector},
     bundle::Bundle,
     collision::ContactBodyState,
     humanoid_state::Hit,
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
-    legacy_contact::{AwakeContact, BlockContactProfile, ImpulseInput, ImpulseProfile},
+    legacy_contact::{
+        AwakeContact, BlockContactProfile, ContactGeometry, ImpulseInput, ImpulseProfile,
+    },
     physics,
     rig::{R6Rig, compose},
     scene::{CoordinateFrame, Scene},
@@ -17,6 +20,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+#[derive(Default)]
 struct ContactState {
     spring: ContactSpring,
     impulse: AwakeContact,
@@ -158,6 +162,7 @@ pub struct Statics {
     /// Anchored, colliding Workspace blocks (empty in the walking fixture).
     pub blocks: Vec<StaticBlock>,
     geometry: BlockContactProfile,
+    tables: BlockTables,
 }
 
 impl Statics {
@@ -251,6 +256,26 @@ impl Statics {
     }
 }
 
+/// A static block as the kernel's fixed contact body.
+fn block_body(block: &StaticBlock) -> ContactBodyState {
+    ContactBodyState {
+        center: block.frame.position,
+        velocity: [0.0; 3],
+        angular_velocity: [0.0; 3],
+    }
+}
+
+/// Connector geometry with the character Part as contact body A: the normal
+/// points from A into B, so it is negated when the static block is A.
+fn character_geometry(c: &Connector<ContactState>) -> ContactGeometry {
+    let flip = c.pair.body_a == 1;
+    ContactGeometry {
+        normal: c.point.normal.map(|v| if flip { -v } else { v }),
+        distance: c.point.length,
+        point: c.point.position,
+    }
+}
+
 pub struct World {
     pub body: KernelBody,
     pub statics: Statics,
@@ -266,6 +291,8 @@ pub struct World {
     impulses: ImpulseProfile,
     colliders: Vec<(String, [f32; 3])>,
     states: BTreeMap<(String, usize), ContactState>,
+    /// BlockBlockContact per (character collider, static block index).
+    block_contacts: BTreeMap<(String, usize), BlockBlockContact<ContactState>>,
     mass_parts: BTreeMap<String, MassPart>,
 }
 
@@ -326,6 +353,7 @@ impl World {
                 wall_x: root.frame.position[0] + 4.0,
                 blocks: Vec::new(),
                 geometry: BlockContactProfile::load(bundle)?,
+                tables: BlockTables::load(bundle)?,
             },
             kernel,
             steps: 0,
@@ -337,6 +365,7 @@ impl World {
             impulses: ImpulseProfile::load(bundle)?,
             colliders,
             states: BTreeMap::new(),
+            block_contacts: BTreeMap::new(),
             mass_parts: parts,
         })
     }
@@ -394,6 +423,7 @@ impl World {
         self.impulse_applications = 0;
         self.max_penetration = 0.0;
         self.states.clear();
+        self.block_contacts.clear();
         self.inertia = self.original_inertia;
     }
     pub fn is_original(&self) -> bool {
@@ -410,6 +440,7 @@ impl World {
     /// The assembly returned to the kernel; contact accumulators restart.
     pub fn clear_contacts(&mut self) {
         self.states.clear();
+        self.block_contacts.clear();
     }
     /// Motor angles changed: recompute the assembly mass properties (Cofm).
     pub fn refresh_assembly(&mut self, rig: &R6Rig) -> Result<(), String> {
@@ -425,6 +456,93 @@ impl World {
         self.body.refresh_assembly(&assembly, &self.kernel)?;
         self.inertia = assembly.inertia_in_body;
         Ok(())
+    }
+    /// BlockBlockContact::update for every character collider against every
+    /// static block (body 0 = character Part, body 1 = static block; the
+    /// native broadphase order is not recovered).
+    fn update_block_contacts(
+        &mut self,
+        frames: &BTreeMap<String, CoordinateFrame>,
+        in_kernel: bool,
+    ) -> Result<(), String> {
+        for (name, size) in &self.colliders {
+            let part = Block {
+                frame: frames
+                    .get(name)
+                    .ok_or("missing block collider frame")?
+                    .clone(),
+                size: *size,
+            };
+            for (index, block) in self.statics.blocks.iter().enumerate() {
+                let other = Block {
+                    frame: block.frame.clone(),
+                    size: block.size,
+                };
+                self.block_contacts
+                    .entry((name.clone(), index))
+                    .or_default()
+                    .update([&part, &other], in_kernel, &self.statics.tables)?;
+            }
+        }
+        Ok(())
+    }
+    /// Refresh the live block connectors' geometry for the current pose.
+    fn refresh_block_contacts(
+        &mut self,
+        frames: &BTreeMap<String, CoordinateFrame>,
+    ) -> Result<(), String> {
+        for ((name, index), contact) in &mut self.block_contacts {
+            let size = self
+                .colliders
+                .iter()
+                .find(|(n, _)| n == name)
+                .ok_or("missing block collider")?
+                .1;
+            let part = Block {
+                frame: frames
+                    .get(name)
+                    .ok_or("missing block collider frame")?
+                    .clone(),
+                size,
+            };
+            let block = &self.statics.blocks[*index];
+            let other = Block {
+                frame: block.frame.clone(),
+                size: block.size,
+            };
+            contact.refresh([&part, &other]);
+        }
+        Ok(())
+    }
+    /// Live block connectors per (collider, block): kind, length, normal.
+    pub fn block_contact_report(&self) -> String {
+        let mut out = String::new();
+        for ((name, index), contact) in &self.block_contacts {
+            for c in contact.connectors() {
+                out.push_str(&format!(
+                    "[{name}/{} {:?} bodies=({},{}) length={} normal={:?} point={:?}]",
+                    self.statics.blocks[*index].name,
+                    c.pair.kind,
+                    c.pair.body_a,
+                    c.pair.body_b,
+                    c.point.length,
+                    c.point.normal,
+                    c.point.position
+                ));
+            }
+        }
+        out
+    }
+    pub fn block_contact_kinds(&self) -> Vec<crate::block_contact::PairKind> {
+        let mut kinds = Vec::new();
+        for contact in self.block_contacts.values() {
+            for c in contact.connectors() {
+                if !kinds.contains(&c.pair.kind) {
+                    kinds.push(c.pair.kind);
+                }
+            }
+        }
+        kinds
     }
     /// The assembly is placed kinematically (outside the kernel); only touch
     /// detection runs.
@@ -446,6 +564,9 @@ impl World {
             }
         }
         self.states.clear();
+        // Contacts still update outside the kernel stage; no connectors are
+        // generated (ae32f4 checks stage 0xf).
+        self.update_block_contacts(&frames, false)?;
         self.contacts = 0;
         self.steps = self.steps.checked_add(1).ok_or("walking tick overflow")?;
         Ok(())
@@ -493,7 +614,15 @@ impl World {
         }
         self.states
             .retain(|key, _| active.iter().any(|(k, _)| k == key));
-        self.contacts = active.len();
+        self.update_block_contacts(&frames, true)?;
+        let mut blocks = Vec::new();
+        for (key, contact) in &mut self.block_contacts {
+            for (at, c) in contact.connectors_mut().iter_mut().enumerate() {
+                c.state.impulse.invalidate();
+                blocks.push((key.clone(), at));
+            }
+        }
+        self.contacts = active.len() + blocks.len();
         // Explicit bounded awake fixture scheduling; full native adaptive/sleep
         // scheduling and +0xf0 reference-impulse accumulation remain unported.
         for _ in 0..60 {
@@ -520,6 +649,32 @@ impl World {
                         &self.impulses,
                     )?
                 {
+                    self.impulse_applications += 1;
+                    applied = true;
+                }
+            }
+            for (key, at) in &blocks {
+                let fixed = block_body(&self.statics.blocks[key.1]);
+                let c = &mut self
+                    .block_contacts
+                    .get_mut(key)
+                    .ok_or("missing block contact")?
+                    .connectors_mut()[*at];
+                let input = ImpulseInput {
+                    geometry: character_geometry(c),
+                    parameters,
+                    reference_impulse_a: [0.0; 3],
+                    reference_impulse_b: [0.0; 3],
+                    friction_enabled: true,
+                };
+                if c.state.impulse.solve(
+                    &input,
+                    &mut self.body,
+                    None,
+                    &fixed,
+                    &self.kernel,
+                    &self.impulses,
+                )? {
                     self.impulse_applications += 1;
                     applied = true;
                 }
@@ -556,6 +711,24 @@ impl World {
                         )?;
                         self.body.apply_force(force.map(|v| -v), g.point)?;
                     }
+                }
+            }
+            self.refresh_block_contacts(&frames)?;
+            for (key, contact) in &mut self.block_contacts {
+                let fixed = block_body(&self.statics.blocks[key.1]);
+                for c in contact.connectors_mut() {
+                    let g = character_geometry(c);
+                    self.max_penetration = self.max_penetration.max(-g.distance);
+                    let force = c.state.spring.force(
+                        &self.kernel,
+                        parameters,
+                        g.distance,
+                        g.normal,
+                        g.point,
+                        &self.body.contact_state(),
+                        &fixed,
+                    )?;
+                    self.body.apply_force(force.map(|v| -v), g.point)?;
                 }
             }
             self.body.step(&self.kernel)?;

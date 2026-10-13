@@ -19,8 +19,8 @@ with studs on top, under the default sky. The character spawns with its Head at
 Same controls as the walking fixture below (WASD, Space, camera keys, R
 respawns, Escape closes). The first camera frame is a fixture offset behind the
 character until the Studio edit camera is ported; ClassicCamera takes over
-immediately. Not ported yet: Torso/Head contacts with Parts, unanchored Parts,
-outlines and the Studio camera. Manual keys are **not tested**.
+immediately. Torso and Head collide with anchored Parts (`audit-part-wall`).
+Not ported yet: unanchored Parts, outlines and the Studio camera. Manual keys are **not tested**.
 
 ```sh
 sh tools/cargo.sh run --locked -- audit-baseplate-render
@@ -144,7 +144,8 @@ are downloaded on first build; runtime data loading uses no network requests.
   `sh tools/cargo.sh run --locked -- audit-baseplate`; expect
   `baseplate_landing landed_step=Some(241) lowest_root_y=3 ...
   animations=["idle", "fall", "idle"]` and `baseplate_pass`. The Baseplate is
-  not drawn yet; Torso/Head contacts with Parts are not ported.
+  drawn by `viewport-baseplate`; Torso/Head contacts with Parts use the
+  BlockBlockContact port (below).
 
 - Native Lighting defaults and day cycle: Roblox's LightingParameters::setTime,
   presetLighting and setFog, recovered from the binary. Run
@@ -197,7 +198,11 @@ are downloaded on first build; runtime data loading uses no network requests.
   `block_contact case=resting colliding=true features=[4, -1] ... connectors=4`,
   four `length=-0.050000` connectors and
   `block_contact_audit resting_ok=true separated_ok=true tilted_ok=true`.
-  It is not yet used by the walking World. Native parity is **not tested**.
+  Torso and Head use it against anchored Parts: run
+  `sh tools/cargo.sh run --locked -- audit-part-wall`; expect
+  `part_wall_first_contact step=145`, six `VertexPlane` connectors and
+  `part_wall_result ... stop=[..., -9.540545] ... max_penetration=0.06402397`
+  then `part_wall_pass blocked=true`. Native parity is **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,

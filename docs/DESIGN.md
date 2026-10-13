@@ -794,9 +794,11 @@ is -1/+1 on the chosen axis). The hit with distance > 0 and strictly below
 min(length, 5000) and below the best so far wins. The spatial-grid walk of
 getFastHit (00ae8274) is not modeled: it only orders candidates, so ties
 between equally distant hits on different Parts could resolve differently.
-Unanchored Parts are rejected for now. Torso/Head contacts with Parts are not
-generated (BlockBlockContact is not ported); `touching` uses a box-overlap test
-as a stand-in. `WalkingFixture::baseplate` runs Play Solo in that world.
+Unanchored Parts are rejected for now. Torso/Head contacts with Parts use the
+BlockBlockContact port (next section); `touching` (the Humanoid's Head test)
+still uses a box-overlap stand-in. `WalkingFixture::baseplate` runs Play Solo in
+that world and `WalkingFixture::in_workspace` in any Workspace of anchored
+Parts.
 
 Workspace Parts are drawn by `geometry::workspace_block`, a port of
 GeometryGenerator::addBlock (010cca80) for blocks without a decal. Corners are
@@ -902,3 +904,27 @@ Not ported:
 `audit-block-contact` logs a resting Part (four vertex connectors at -0.05), a
 lifted Part (none) and a tilted Part on an edge (two). Evidence:
 RobloxStudio/analysis/block-block-contact-native-20261012.md.
+
+In the World, every character collider (Torso and Head) has one
+BlockBlockContact per static block, with the character Part as body 0 and the
+block as body 1. Each world step does the following:
+
+1. It runs `update` with the step-start pose, so connectors are created, reused
+   or deleted.
+2. It invalidates their awake impulse caches.
+3. It solves those connectors after the fixture-wall connectors in the bounded
+   awake impulse loop.
+4. In every kernel substep, it refreshes each connector's geometry for the
+   current pose and applies its contact spring.
+
+The kernel code takes the character as contact body A. When the static block
+is the pair's A (a block corner on a character face), the normal is therefore
+negated, which is the same as swapping the two bodies.
+
+When the Humanoid is kinematic, `update` runs outside the kernel and no
+connectors are made. `clear_contacts` (the assembly re-entering the kernel)
+drops the contacts, as it does the wall states.
+
+Two things are not native: the connector order across pairs, and the
+pair-per-block lifetime (the broadphase is not ported). `audit-part-wall`
+walks into an anchored 20x10x2 Part whose face is at z = -10.
