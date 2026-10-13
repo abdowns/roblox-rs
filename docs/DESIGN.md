@@ -652,3 +652,28 @@ located). First-person (CameraRelative) Humanoid rotation, ShiftLock, gamepad,
 touch, VR, Follow/ClickToMove modes and vehicle branches are not implemented.
 Camera updates use the presented frame's wall-clock time; the headless audit
 uses ideal 60 Hz frames ordered camera update, then four world steps.
+
+
+## Native Lighting defaults and day-cycle colors
+
+lighting.rs recovers the Lighting service defaults and Roblox's modified
+G3D::LightingParameters from the binary with a small store tracer over the
+original constructors and setTime's static-init blocks (SSE constant copies,
+immediates, Color3::white()/black() results and scalar multiplies). Defaults:
+TimeOfDay 14:00:00, latitude 41.7333, Ambient 0.5, OutdoorAmbient 0.5,
+Brightness 1, ColorShift 0, FogColor 0.75, Fog 0..100000, ShadowColor
+(0.7,0.7,0.72), Outlines on, GlobalShadows off. setTime places the sun on a
+daily circle, tilts it by season (23.5 deg axial tilt) and latitude about
+Z x sun, and the moon by phase with a 5 deg tilt. With physicallyCorrect the
+light is the moon when the sun's Y <= -0.3. Five colors (light, ambient,
+diffuse ambient, sky ambient, horizon) are piecewise-linear splines over the
+local day. presetLighting turns them into Lamp0 = 0.9*Brightness*lightColor
+plus ColorShift_Top deviation (clamped to 1), Lamp1 = 0.4 of that with
+ColorShift_Bottom, AmbientColor = Ambient, Lamp0Dir = -light direction. Fog
+uses SceneManager::setFog's (0, start, end, 1/(end-start)), matching the
+existing shader packing; the shipped default.hlsl uses the same ambient/lamp
+equation as the WGSL adapter. At 14:00 Lamp0 is 0.675, Lamp1 0.27, Ambient 0.5.
+viewport-walking now uses these values; other probes keep their explicit
+lighting so their regression hashes stay comparable. Not implemented: the voxel
+light grid (OutdoorAmbient skylight and local lights, LightBorder), shadows,
+FrameRateManager fog culling and the PGS/high-quality material paths.

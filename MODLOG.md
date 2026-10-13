@@ -1,5 +1,28 @@
 # MODLOG
 
+## 2026-10-12 Recover native Lighting defaults, day-cycle colors and lamp math
+
+**Changed:** Added `lighting.rs`: store tracer for the Lighting and
+LightingParameters constructors and setTime's keyframe tables; port of
+LightingParameters::setTime, RenderView::presetLighting and SceneManager::setFog;
+`audit-lighting` with a Metal comparison. viewport-walking renders with these
+globals instead of the explicit probe lighting.
+**Why:** Lighting was an explicit probe guess (ambient 0.25, lamps 0.65/0.26).
+**Tested how:** Ghidra: Lighting ctor/reflection, LightingParameters ctor/setTime,
+static init, spline evaluator, updateLighting, presetLighting, renderPrepareImpl,
+setFog; shipped default.hlsl/sky.hlsl. 50 tests, Clippy, fmt; audit-lighting,
+walking window smoke, bundle check.
+**Result:** All five splines decode (including the computed 0.75/0.4 keys).
+14:00 sun (-0.475, 0.823, 0.313), Lamp0 0.675, Lamp1 0.27, Ambient 0.5, fog end
+100000. Character render changes 6,613 pixels vs probe lighting, repeat
+identical. Window smoke passes with native lighting.
+Test: `sh tools/cargo.sh run --locked -- audit-lighting`; expect `lighting_pass`
+and `lighting_render_pass`.
+**Still broken / not tested:** Light grid (OutdoorAmbient skylight), shadows,
+fog culling, high-quality materials; native pixel parity **not tested**. First
+tracer pass missed pointer loads from Color3::black(); fixed.
+**Next:** Default skybox, sun and moon rendering (Sky::render).
+
 ## 2026-10-12 Port the bundled 2016 ClassicCamera and camera-relative movement
 
 **Changed:** Added `camera_script.rs`: RootCamera/ClassicCamera, PopperCam and

@@ -108,6 +108,13 @@ are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
 
+- Native Lighting defaults and day cycle: Roblox's LightingParameters::setTime,
+  presetLighting and setFog, recovered from the binary. Run
+  `sh tools/cargo.sh run --locked -- audit-lighting`; expect
+  `lighting_pass time_of_day=14:00:00` with lamp0 0.675 and ambient 0.5, and
+  `lighting_render_pass changed_pixels=6613 repeat_identical=true`. The voxel
+  light grid, shadows and fog quality culling are not implemented.
+
 - Bundled PlayerScripts camera (ClassicCamera, PopperCam, TransparencyController).
   Run `sh tools/cargo.sh run --locked -- audit-camera`; expect `camera_spawn`
   distance 12.5, `camera_relative_walk`, a clamped pitch of -80, the RK4 wheel

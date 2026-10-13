@@ -11,6 +11,7 @@ pub mod geometry;
 pub mod humanoid_state;
 pub mod kernel;
 pub mod legacy_contact;
+pub mod lighting;
 pub mod locomotion;
 pub mod mesh;
 mod motion;

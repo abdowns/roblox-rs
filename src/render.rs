@@ -86,6 +86,17 @@ impl RenderInputs {
         }
     }
 
+    /// RenderView::presetLighting/SceneManager::setFog globals (lighting.rs).
+    pub fn apply_lighting(&mut self, lighting: &crate::lighting::RenderLighting) {
+        self.ambient = lighting.ambient;
+        self.lamp0 = lighting.lamp0;
+        self.lamp1 = lighting.lamp1;
+        self.lamp_direction = lighting.lamp0_direction;
+        self.fog_color = lighting.fog_color;
+        self.fog_start = lighting.fog_params[1];
+        self.fog_end = lighting.fog_params[2];
+    }
+
     fn bytes(&self, width: u32, height: u32) -> Result<Vec<u8>, String> {
         let vp = camera::multiply(
             camera::perspective(self.fov_y, width as f32 / height as f32, 0.5, 5000.0)?,
@@ -1149,6 +1160,55 @@ pub fn audit_animation(bundle: &Bundle) -> Result<String, String> {
 
 /// Compare moving limbs with a rest rig at the identical root frame. Translation
 /// and yaw cannot make this check pass without actual animated geometry.
+/// Native Lighting defaults through the existing low-quality shading path.
+pub fn audit_lighting(bundle: &Bundle) -> Result<String, String> {
+    let mut report = crate::lighting::audit(bundle)?;
+    let profile = crate::lighting::LightingProfile::load(bundle)?;
+    let native = profile.render_lighting(&profile.sky(profile.properties.time_of_day));
+    let scene = RenderScene::character(bundle)?;
+    let surfaces = surface::character(bundle, &scene)?;
+    let decals = texture::character_decals(bundle, &scene)?;
+    let mut app = scene_app(scene);
+    for decal in decals.draws {
+        app.world_mut().spawn(decal);
+    }
+    app.update();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let probe = RenderInputs::character_probe();
+    let mut inputs = probe.clone();
+    inputs.apply_lighting(&native);
+    let (mut gpu, _) = Gpu::new(
+        &instance,
+        None,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &app.world().resource::<Extracted>().0,
+    )?;
+    gpu.add_studs(&app.world().resource::<Extracted>().0, &surfaces)?;
+    gpu.add_decals(&app.world().resource::<ExtractedDecals>().0)?;
+    let before = gpu.read_frame(640, 480, &probe)?;
+    let after = gpu.read_frame(640, 480, &inputs)?;
+    let repeat = gpu.read_frame(640, 480, &inputs)?;
+    let changed = before
+        .chunks_exact(4)
+        .zip(after.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    let center = (240 * 640 + 320) * 4;
+    writeln!(
+        report,
+        "lighting_render_pass changed_pixels={changed} repeat_identical={} center_probe_rgba={:?} center_native_rgba={:?} rgba_sha256={:x} light_grid=zero_explicit shadows=disabled",
+        after == repeat,
+        &before[center..center + 4],
+        &after[center..center + 4],
+        Sha256::digest(&after)
+    )
+    .unwrap();
+    if changed == 0 || after != repeat {
+        return Err(format!("native lighting render failed: {report}"));
+    }
+    Ok(report)
+}
+
 pub fn audit_walking(bundle: &Bundle) -> Result<String, String> {
     let scene = RenderScene::character(bundle)?;
     let surfaces = surface::character(bundle, &scene)?;
@@ -1967,6 +2027,12 @@ fn run_viewport(
                 [right.z, up.z, back.z],
             ],
         };
+    }
+    if walking {
+        // Lighting service defaults at TimeOfDay 14:00 (lighting.rs).
+        let profile = crate::lighting::LightingProfile::load(bundle)?;
+        inputs
+            .apply_lighting(&profile.render_lighting(&profile.sky(profile.properties.time_of_day)));
     }
     // CameraScript: ClassicCamera from the bundled PlayerScripts; the fixture
     // frame above is only workspace.CurrentCamera before the script runs.
