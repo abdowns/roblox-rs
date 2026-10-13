@@ -916,3 +916,107 @@ pub fn audit_part_drop(bundle: &Bundle) -> Result<String, String> {
     writeln!(report, "part_drop_pass rested=4 stacked=true sleep=not_implemented broadphase_order=assumed native_differential=not_tested").unwrap();
     Ok(report)
 }
+
+/// The character walks -Z into an unanchored 4 x 6 x 2 "Crate" resting on
+/// the Baseplate (its +Z face at z = -7, tall enough to meet the Head, whose
+/// touch test ends RunningNoPhysics).
+/// Their contacts are realTimeConnectors (the character cannot throttle);
+/// the Crate is logged through its kernel lists while it is pushed.
+pub fn audit_part_push(bundle: &Bundle) -> Result<String, String> {
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    let mut crate_part = crate::workspace::PartInstance {
+        name: "Crate".into(),
+        ..Default::default()
+    };
+    crate_part.set_size([4.0, 6.0, 2.0]);
+    crate_part.frame.position = [0.0, 3.05, -8.0];
+    workspace.parts.push(crate_part);
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let mut report = String::new();
+    for _ in 0..720u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+    }
+    let settled = fixture.world.loose.parts[0].body.frame.position;
+    writeln!(
+        report,
+        "part_push_settled root={:?} {}",
+        fixture.world.body.frame.position,
+        fixture.world.loose.report()
+    )
+    .unwrap();
+    let mut first_contact = None;
+    let mut lists = Vec::new();
+    let mut most = 0;
+    for step in 0..960u32 {
+        let input = if step < 720 {
+            [0.0, 0.0, -1.0]
+        } else {
+            [0.0; 3]
+        };
+        fixture.step_animated(&mut rig, input)?;
+        let touching = fixture.world.loose.character_connector_count();
+        most = most.max(touching);
+        let list = fixture.world.loose.parts[0].list;
+        if !lists.contains(&list) {
+            lists.push(list);
+        }
+        if touching > 0 && first_contact.is_none() {
+            first_contact = Some(step + 1);
+            writeln!(
+                report,
+                "part_push_first_contact step={} root={:?} velocity={:?} {}",
+                step + 1,
+                fixture.world.body.frame.position,
+                fixture.world.body.velocity,
+                fixture.world.loose.report()
+            )
+            .unwrap();
+        }
+        if step % 60 == 59 {
+            writeln!(
+                report,
+                "part_push_walk step={} root={:?} velocity={:?} character_connectors={touching} state={:?} {}",
+                step + 1,
+                fixture.world.body.frame.position,
+                fixture.world.body.velocity,
+                fixture.state_type(),
+                fixture.world.loose.report()
+            )
+            .unwrap();
+        }
+    }
+    let part = &fixture.world.loose.parts[0];
+    let moved: [f32; 3] = std::array::from_fn(|a| part.body.frame.position[a] - settled[a]);
+    writeln!(
+        report,
+        "part_push_result first_contact_step={first_contact:?} max_character_connectors={most} lists={lists:?} crate_moved={moved:?} crate_up_y={} root={:?} upright_y={} max_penetration={} state={:?}",
+        part.body.frame.rotation[1][1],
+        fixture.world.body.frame.position,
+        fixture.world.body.frame.rotation[1][1],
+        fixture.world.max_penetration,
+        fixture.state_type()
+    )
+    .unwrap();
+    // Mechanism checks only: the Head touch ends RunningNoPhysics, the
+    // character's contacts with the Crate are realtime connectors that move
+    // it out of contactBodies, and the Crate is pushed along the path.
+    use crate::loose::BodyList;
+    if first_contact.is_none()
+        || !lists
+            .iter()
+            .any(|l| matches!(l, BodyList::RealTime | BodyList::Joint))
+        || moved[2] > -1.0
+        || fixture.world.max_penetration > 0.5
+        || fixture.world.body.frame.rotation[1][1] < 0.99
+    {
+        return Err(format!("part push failed\n{report}"));
+    }
+    writeln!(report, "part_push_pass pushed=true connectors=realtime floor_raycast=static_only sleep=not_implemented broadphase_order=assumed native_differential=not_tested").unwrap();
+    Ok(report)
+}

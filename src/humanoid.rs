@@ -329,12 +329,12 @@ impl Humanoid {
         Ok(())
     }
     /// c0192c: HumanoidRootPart (non-colliding, never) or Head touching.
-    fn root_or_head_touching(&mut self, world: &World, rig: &R6Rig) -> Result<bool, String> {
+    fn root_or_head_touching(&mut self, world: &mut World, rig: &R6Rig) -> Result<bool, String> {
         let head = rig
             .pose(&world.body.frame)?
             .remove("Head")
             .ok_or("missing Head")?;
-        if world.statics.touching(&head, self.head_size)? {
+        if world.collider_touching("Head", &head)? {
             self.state.elapsed = 0.0;
             return Ok(true);
         }
@@ -345,7 +345,7 @@ impl Humanoid {
         &mut self,
         event: usize,
         torso: &CoordinateFrame,
-        world: &World,
+        world: &mut World,
         rig: &R6Rig,
     ) -> Result<bool, String> {
         Ok(match event {

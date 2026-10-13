@@ -999,12 +999,43 @@ The kinematic Humanoid path still steps the loose Parts.
 **Not ported:**
 
 - the sleep stage (resting stacks creep slowly instead of sleeping);
-- springs for loose jointConnectors (an error if reached);
-- the character touching loose Parts, and raycasts against them;
+- the Humanoid floor ray against loose Parts, and the Humanoid force
+  reaction on a loose floor;
 - drawing their motion;
 - the broadphase pair order (pairs are visited in a fixed order).
 
+**The character against loose Parts.** Each character collider (Torso, Head)
+is a `Prim::Character` in the same pair map.
+- Because the character cannot throttle (Body +0x44 is cleared), 00a99514
+  files its connectors under realTimeConnectors. Each one counts in the loose
+  body's total (+0x110) and realtime (+0x11c) counts.
+- 00a9be30 then moves a loose body:
+  - from free fall to jointBodies, when it has no contact connectors;
+  - into realTimeBodies at the next pre-step, when it is a contact body: the
+    spring force counts as an external force.
+- A connector that touches a jointBodies body goes to jointConnectors.
+  Connectors never change list after insertion.
+- In each substep, World runs these springs in order:
+  1. the fixture-wall and static-block springs;
+  2. the character/loose springs (`real_time_springs`);
+  3. the jointConnectors springs (`joint_springs`).
+- Each spring recomputes the connector's geometry (+0x24) and applies a93074.
+  A is the connector's first primitive when both bodies are in the kernel.
+  Otherwise A is the kernel body and the normal is flipped (a92c26).
+- Then the Humanoid force runs, the character integrates, and the loose
+  realTimeBodies and jointBodies integrate.
+- While the character is kinematic (RunningNoPhysics), its contacts with loose
+  Parts get no connectors. The string evidence is SleepStage line 790,
+  `a->inStage(IStage::HUMANOID_STAGE)`; the exact edge-stage rule is assumed.
+- The Head touch test that ends RunningNoPhysics (c0192c → c02209) runs
+  vtable +0x24 (ae26a6) on each of the Head's contacts:
+  - first the extents check, then computeIsColliding with no ignored overlap;
+  - it uses the persistent pair, so it updates the cached separating axis.
+
+  Static blocks still use the SAT stand-in.
+
 `audit-part-drop` drops four Parts onto the Baseplate and logs every Part every
-120 steps. Evidence:
+120 steps. `audit-part-push` walks the character into a 4 x 6 x 2 Crate.
+Evidence:
 RobloxStudio/analysis/kernel-lists-native-20261013.md.
 

@@ -398,6 +398,10 @@ impl World {
             let params = materials.contact_params(own, *stiffness, &plastic, *stiffness);
             wall_parameters.insert(name.clone(), params.parameters());
         }
+        let mut loose = LooseWorld::new(bundle)?;
+        for (properties, stiffness) in &collider_materials {
+            loose.add_collider(*properties, *stiffness);
+        }
         Ok(Self {
             original: body.clone(),
             body,
@@ -415,7 +419,7 @@ impl World {
             max_penetration: 0.0,
             inertia: assembly.inertia_in_body,
             original_inertia: assembly.inertia_in_body,
-            loose: LooseWorld::new(bundle)?,
+            loose,
             impulses: ImpulseProfile::load(bundle)?,
             colliders,
             materials,
@@ -514,6 +518,7 @@ impl World {
     pub fn clear_contacts(&mut self) {
         self.states.clear();
         self.block_contacts.clear();
+        self.loose.clear_character_contacts();
     }
     /// Motor angles changed: recompute the assembly mass properties (Cofm).
     pub fn refresh_assembly(&mut self, rig: &R6Rig) -> Result<(), String> {
@@ -558,6 +563,63 @@ impl World {
             }
         }
         Ok(())
+    }
+    /// The colliders as blocks at a pose, in registration order.
+    fn collider_blocks(
+        &self,
+        frames: &BTreeMap<String, CoordinateFrame>,
+    ) -> Result<Vec<Block>, String> {
+        self.colliders
+            .iter()
+            .map(|(name, size)| {
+                Ok(Block {
+                    frame: frames
+                        .get(name)
+                        .ok_or("missing block collider frame")?
+                        .clone(),
+                    size: *size,
+                })
+            })
+            .collect()
+    }
+    /// A character collider touching anything outside the character (the
+    /// HumanoidState Head test c0192c): the static blocks' stand-in first,
+    /// then the loose Parts through their contacts.
+    pub fn collider_touching(
+        &mut self,
+        name: &str,
+        frame: &CoordinateFrame,
+    ) -> Result<bool, String> {
+        let (index, size) = self
+            .colliders
+            .iter()
+            .enumerate()
+            .find(|(_, (n, _))| n == name)
+            .map(|(i, (_, s))| (i, *s))
+            .ok_or("missing touch collider")?;
+        if self.statics.touching(frame, size)? {
+            return Ok(true);
+        }
+        let block = Block {
+            frame: frame.clone(),
+            size,
+        };
+        self.loose.collider_touching(index, &block, &self.materials)
+    }
+    /// Contact::step for the character against the loose Parts (after its
+    /// static-block contacts; the native broadphase order is not recovered).
+    fn update_loose_contacts(
+        &mut self,
+        frames: &BTreeMap<String, CoordinateFrame>,
+        in_kernel: bool,
+    ) -> Result<(), String> {
+        let blocks = self.collider_blocks(frames)?;
+        self.loose.update_character_contacts(
+            &blocks,
+            in_kernel,
+            &self.statics.tables,
+            &self.materials,
+        )
     }
     /// Refresh the live block connectors' geometry for the current pose.
     fn refresh_block_contacts(
@@ -640,6 +702,7 @@ impl World {
         // Contacts still update outside the kernel stage; no connectors are
         // generated (ae32f4 checks stage 0xf).
         self.update_block_contacts(&frames, false)?;
+        self.update_loose_contacts(&frames, false)?;
         self.contacts = 0;
         // The character is outside the kernel; the loose Parts still step.
         self.step_loose()?;
@@ -700,13 +763,15 @@ impl World {
         }
         self.states.retain(|key, _| active.contains(key));
         self.update_block_contacts(&frames, true)?;
+        self.update_loose_contacts(&frames, true)?;
         self.step_loose()?;
         self.contacts = active.len()
             + self
                 .block_contacts
                 .values()
                 .map(|c| c.connectors().len())
-                .sum::<usize>();
+                .sum::<usize>()
+            + self.loose.character_connector_count();
         for _ in 0..self.kernel.physics.kernel_substeps {
             let frames = rig.pose(&self.body.frame)?;
             for (name, size) in self
@@ -757,13 +822,22 @@ impl World {
                     self.body.apply_force(force.map(|v| -v), g.point)?;
                 }
             }
+            // The character's springs against loose Parts close the
+            // realTimeConnectors pass; jointConnectors follow.
+            let blocks = self.collider_blocks(&frames)?;
+            let deepest = self
+                .loose
+                .real_time_springs(&blocks, &mut self.body, &self.kernel)?;
+            self.max_penetration = self.max_penetration.max(deepest);
+            self.loose.joint_springs(&self.kernel)?;
             // 00a9768c substep order: realTimeConnectors (the character's
-            // contact springs), then humanoidConnectors (Humanoid +0xdc,
-            // type 2, computeForce 00bddb7a -> 00bddaae), then integration.
+            // contact springs), jointConnectors, then humanoidConnectors
+            // (Humanoid +0xdc, type 2, computeForce 00bddb7a -> 00bddaae),
+            // then realTimeBodies and jointBodies integrate.
             let torso = frames.get("Torso").ok_or("missing state torso")?.clone();
             force(&mut self.body, &self.statics, &torso, self.inertia)?;
             self.body.step(&self.kernel)?;
-            self.loose.substep(&self.kernel)?;
+            self.loose.integrate(&self.kernel)?;
         }
         self.steps = self.steps.checked_add(1).ok_or("walking tick overflow")?;
         Ok(())

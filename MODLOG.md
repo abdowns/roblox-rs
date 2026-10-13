@@ -1,5 +1,45 @@
 # MODLOG
 
+## 2026-10-13 The character pushes unanchored Parts
+
+**Changed:**
+- `loose.rs`:
+  - `Prim::Character` colliders and realTimeConnectors, following 00a99514: a body that cannot throttle files its connector as realtime, with +0x110/+0x11c counts and 00a9be30 reclassification.
+  - `real_time_springs` for character/loose connectors and `joint_springs` for loose jointConnectors (this replaces the "not ported" error).
+  - `integrate` (realTimeBodies, then jointBodies).
+  - `update_character_contacts`, `collider_touching` (ae26a6 through the persistent pair) and `clear_character_contacts`.
+- `World::step`:
+  - updates character/loose contacts after the static-block ones;
+  - runs the springs in substep order (realtime, then joint), then the Humanoid force, then integration.
+- `World::step_kinematic` deletes the character/loose connectors, because the character's edges are not in the kernel stage.
+- New `World::collider_touching`. HumanoidState's Head touch test (c0192c) now also sees loose Parts.
+- New audit `audit-part-push`.
+- `LooseWorld::report` shows contact/joint/realtime/total counts.
+
+**Why:** Unanchored Parts step 4d: character ↔ loose Part contacts.
+
+**Tested how:**
+- Ran audit-part-push.
+- Re-ran audit-walking, part-wall, part-drop, baseplate, animate, player, locomotion, runtime, walking-render, camera and kernel against a build of the previous commit. All are identical apart from timing lines, evidence paths and the new report columns.
+- 74 tests pass; clippy and fmt are clean.
+
+**Result:**
+- At step 101 the Head touches the Crate and RunningNoPhysics ends: 7 realtime connectors appear, and the character bounces back at +10.9 studs/s, having gone 0.1 deep kinematically first.
+- The Crate moves Contact → RealTime → Joint and is pushed at walking speed.
+- It then tips onto its face (bouncing once into free fall) about 14.7 studs along.
+- The character walks over it because the floor ray ignores loose Parts.
+
+**Still broken / not tested:**
+- The Humanoid floor ray ignores loose Parts.
+- No sleep stage.
+- The realtime list order between static-block and loose connectors is assumed.
+- The edge-stage rule while the character is kinematic is assumed from a string.
+- The contact order in the Head test is assumed.
+- Static blocks still use the SAT touch stand-in.
+- Native parity is not tested.
+
+**Next:** Humanoid floor raycast and force reaction on loose Parts, then rendering moving Parts.
+
 ## 2026-10-13 Unanchored Parts as kernel bodies (loose.rs)
 
 **Changed:**

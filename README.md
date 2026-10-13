@@ -21,8 +21,10 @@ respawns, Escape closes). The first camera frame is a fixture offset behind the
 character until the Studio edit camera is ported; ClassicCamera takes over
 immediately. Torso and Head collide with anchored Parts (`audit-part-wall`).
 Unanchored Parts fall, land, stack and come to rest in the simulation
-(`audit-part-drop`) but are not drawn moving, and the character does not touch
-them yet. Not ported yet: the sleep stage, outlines and the Studio camera.
+(`audit-part-drop`), and the character pushes them (`audit-part-push`), but
+they are not drawn moving, and the Humanoid's floor ray does not see them yet
+(the character cannot stand on one). Not ported yet: the sleep stage, outlines
+and the Studio camera.
 Manual keys are **not tested**.
 
 ```sh
@@ -218,6 +220,17 @@ are downloaded on first build; runtime data loading uses no network requests.
   loose Part creep slowly (about 0.03 studs/s) because the sleep stage is not
   ported. High drops bounce and spin. Whether native does the same is **not
   tested**.
+- The character against unanchored Parts:
+  - realtime contact springs between Torso/Head and loose Parts;
+  - loose jointConnectors springs;
+  - the Head touch test that ends RunningNoPhysics also checks loose Parts.
+
+  Run `sh tools/cargo.sh run --locked -- audit-part-push`. Expect:
+  - `part_push_first_contact step=101`;
+  - `part_push_result ... max_character_connectors=7 lists=[Contact, RealTime, FreeFall, Joint] crate_moved=[0.061565157, -2.0029554, -14.680002]`, meaning the Crate is pushed about 14.7 studs and tips onto its face;
+  - `part_push_pass pushed=true`.
+
+  The Humanoid floor ray still ignores loose Parts. Native parity is **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,
