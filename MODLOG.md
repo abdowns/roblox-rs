@@ -1,5 +1,31 @@
 # MODLOG
 
+## 2026-10-13 Native substep order: contact springs before the Humanoid connector
+
+**Changed:**
+- Each kernel substep in `World::step` now runs the character's contact springs, then the Humanoid force callback, then the integration. Before, the callback ran first.
+- The walking audit's "wall release still rotating" check now measures the orientation change over the last 240 release ticks instead of the instantaneous angular velocity. It reports `walking_wall_release rotation_rate=… release_jitter=…`.
+
+**Why:**
+- stepWorld 00a9768c runs realTimeConnectors before humanoidConnectors in every substep.
+- The Humanoid embeds a kernel Connector at +0xdc. Its type slot (00be5f4a) returns 2, so connector insert 00a99514 files it under humanoidConnectors (KernelData +0x60). Its computeForce (00bddb7a) calls 00bddaae.
+- The Humanoid force reads the accumulated force and torque (RunningBase, balancing, Freefall), so it now sees the contact forces, as in native.
+
+**Tested how:** Rebuilt, then ran audit-walking, audit-part-wall and audit-baseplate against the previous commit's output. A temporary per-tick probe (not committed) logged the release phase. Also ran 68 tests, Clippy and fmt.
+
+**Result:**
+- audit-baseplate is byte-identical.
+- audit-part-wall: stops at z = -9.5105, max penetration 0.067, max connectors 6, upright_y 0.99999994.
+- audit-walking:
+  - the wall hold is x = 3.5104, z = 22.6231;
+  - max penetration 0.080;
+  - min animated upright_y 0.99683 (was 0.99978).
+- Against the wall, ω_y alternates between +0.078 and -0.078 rad/s every substep. The probe shows the sign flips every tick (19 substeps) and the orientation does not drift: rotation_rate = 0. This is a period-2 yaw jitter of about 1.7e-5 rad, not rotation.
+
+**Still broken / not tested:** Whether native shows the same yaw jitter is not tested. It may come from the yaw controller gain against the tangential contact spring, or from an unported detail.
+
+**Next:** Native awake-impulse schedule for contactConnectors, then loose Parts.
+
 ## 2026-10-13 Character contacts are realtime connectors (springs only)
 
 **Changed:**

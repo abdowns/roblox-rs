@@ -638,7 +638,7 @@ impl World {
     }
     /// doWorldStep. The character's connectors are realTimeConnectors, so the
     /// awake impulse pass never touches them; each kernel substep runs the
-    /// force callback (torso frame, current inertia), the contact springs,
+    /// contact springs, the force callback (torso frame, current inertia),
     /// and the integration.
     /// Every contact uses recovered per-pair ContactParams (00a43fb4);
     /// `_parameters` is unused and kept for signature stability.
@@ -686,8 +686,6 @@ impl World {
                 .sum::<usize>();
         for _ in 0..self.kernel.physics.kernel_substeps {
             let frames = rig.pose(&self.body.frame)?;
-            let torso = frames.get("Torso").ok_or("missing state torso")?.clone();
-            force(&mut self.body, &self.statics, &torso, self.inertia)?;
             for (name, size) in self
                 .colliders
                 .iter()
@@ -736,6 +734,11 @@ impl World {
                     self.body.apply_force(force.map(|v| -v), g.point)?;
                 }
             }
+            // 00a9768c substep order: realTimeConnectors (the character's
+            // contact springs), then humanoidConnectors (Humanoid +0xdc,
+            // type 2, computeForce 00bddb7a -> 00bddaae), then integration.
+            let torso = frames.get("Torso").ok_or("missing state torso")?.clone();
+            force(&mut self.body, &self.statics, &torso, self.inertia)?;
             self.body.step(&self.kernel)?;
         }
         self.steps = self.steps.checked_add(1).ok_or("walking tick overflow")?;

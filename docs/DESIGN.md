@@ -458,7 +458,12 @@ HumanoidState constructor (00bfd2a2 -> 00bfd678 -> 00b633fa) clears Body +0x44
 (canThrottle) on the character's Parts. Connector insert 00a99514 files any
 connector with a non-throttling body under KernelData realTimeConnectors. stepWorld
 00a9768c runs awake impulses over contactConnectors only, so the character
-receives only spring forces in the 19 substeps. Wall and block contacts use the
+receives only spring forces in the 19 substeps. Within each substep the springs
+(realTimeConnectors) run before the Humanoid's own connector (Humanoid +0xdc,
+type 2 = humanoidConnectors, computeForce 00bddb7a). The Humanoid force therefore
+reads accumulators that already hold the contact forces. Against a wall this
+produces a period-2 yaw jitter (±0.078 rad/s per substep, no net rotation);
+whether native does the same is not tested. Wall and block contacts use the
 recovered ContactParams 00a43fb4. The fixture wall is treated as a large Plastic
 Part, so kSpring is the collider's own stiffness. Full native adaptive/sleep/invalidation/displacement
 scheduling is not claimed. Mass/inertia remain the rigid rest-pose assembly;

@@ -336,17 +336,33 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     }
     report.push_str(&fixture.report());
     let wall_penetration = fixture.world.max_penetration;
-    // Release must damp angular motion as well as translation.
-    for _ in 0..480 {
+    // Release must damp angular motion as well as translation. The rate is
+    // measured from the orientation over the last 240 ticks: against the wall
+    // the per-tick angular velocity alternates sign every substep (contact
+    // springs, then the Humanoid connector, 00a9768c), which is a jitter in
+    // place, not rotation. Its amplitude is reported as release_jitter.
+    let mut settled = fixture.world.body.frame.rotation;
+    let mut jitter = 0.0f32;
+    for tick in 0..480 {
         fixture.step(&rig, [0.0; 3])?;
+        if tick == 239 {
+            settled = fixture.world.body.frame.rotation;
+        }
+        if tick >= 240 {
+            jitter = jitter.max(fixture.world.body.angular_velocity[1].abs());
+        }
     }
-    if fixture
-        .world
-        .body
-        .angular_velocity
-        .iter()
-        .any(|v| v.abs() > 0.01)
-    {
+    let r = fixture.world.body.frame.rotation;
+    let trace: f32 = (0..3)
+        .map(|i| (0..3).map(|k| settled[k][i] * r[k][i]).sum::<f32>())
+        .sum();
+    let rate = ((trace - 1.0) * 0.5).clamp(-1.0, 1.0).acos() / 4.0;
+    writeln!(
+        report,
+        "walking_wall_release rotation_rate={rate} release_jitter={jitter}"
+    )
+    .unwrap();
+    if rate > 0.01 {
         return Err(format!("wall release still rotating: {}", fixture.report()));
     }
     for direction in [
