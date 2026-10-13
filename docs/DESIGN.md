@@ -987,9 +987,10 @@ angular momentum from the angular velocity (ab1c28). Entering free fall sets
 both resting flags and clears the displacements. A new body has no connectors,
 so it starts in free fall.
 
-**Contacts.** Every world step, before the kernel, each (loose, static) and
-(loose, loose) pair runs `BlockBlockContact::update` (Contact::step, from
-SleepStage::stepContacts b715ac). Its events are applied in native order:
+**Contacts.** Every world step, before the kernel, SleepStage (below) runs
+`BlockBlockContact::update` (Contact::step) on the contacts it is stepping.
+A contact makes connectors only while it is CONTACTING and one of its bodies is
+in the kernel. Its events are applied in native order:
 
 - A new connector is inserted (00a99514): jointConnectors if either body is in
   jointBodies, otherwise contactConnectors. Both bodies are then reclassified.
@@ -1000,7 +1001,8 @@ SleepStage::stepContacts b715ac). Its events are applied in native order:
   with -1 if it was a contact connector, and both bodies are reclassified.
 
 A connector's bodies follow a92c26: A is the first primitive whose body is in
-the kernel; the normal is negated when only the second one is.
+the kernel; the normal is negated when only the second one is. A sleeping Part
+is outside the kernel, so it is a fixed body like a static block.
 
 **Displacement (a942ee).** d = n·len·invMass_A/(invMass_A + invMass_B) is added
 to A's linear displacement and r × d to its angular displacement; B gets the
@@ -1027,13 +1029,81 @@ opposite with its own share.
 
 The kinematic Humanoid path still steps the loose Parts.
 
+**SleepStage (sleep.rs, loose.rs).** Each loose Part is an assembly with a
+state:
+
+- RECURSIVE_WAKE_PENDING (1);
+- WAKE_PENDING (2);
+- AWAKE (3, in the kernel);
+- SLEEPING_CHECKING (4) or SLEEPING_DEEPLY (5), both outside the kernel.
+
+Each contact has an edge state:
+
+- STEPPING (1) or CONTACTING (3), the two that are stepped;
+- SLEEPING (2) or CONTACTING_SLEEPING (4), which are not stepped.
+
+`LooseWorld::sleep_stage` runs SleepStage::step 00b707f4 in native order:
+
+1. The wake passes (recursive to depth 8, then plain).
+2. The STEPPING contacts are stepped.
+3. The wake passes again.
+4. Each AWAKE assembly takes a motion-history sample, and still ones are
+   decided.
+5. Every 4th step, the SLEEPING_CHECKING ones are re-decided.
+6. A wake pass.
+7. The CONTACTING contacts are stepped.
+8. The wake passes again.
+
+Character contacts form list 0 (they cannot throttle) and are stepped before
+the others.
+
+- *Contact step (b715ac).* A contact with an awake side becomes CONTACTING if
+  it collides, otherwise STEPPING. With both sides asleep or anchored it becomes
+  CONTACTING_SLEEPING if it was touching and still collides, otherwise
+  SLEEPING.
+  - Starting to touch wakes both assemblies, recursively if either moves or
+    spins faster than 1 stud/s (b7361a).
+  - Stopping touching wakes both.
+  - Leaving CONTACTING deletes the contact's connectors.
+- *Motion history (Assembly +0x3c).* It holds 15 samples, one taken every 8th
+  step. A sample is the root position plus the rotation quaternion times the
+  assembly radius.
+  - "Still" means the countdown, restarted to 15 by every wake, has reached 0
+    and the largest squared distance from the mean is below 0.01. The mean's
+    quaternion sum starts at the identity, so a resting Part reads 1/225.
+  - "Moving" means that distance is above 0.02.
+- *Decision (b726ae).* A still assembly stays AWAKE while a touching awake
+  neighbour is moving. With a still awake neighbour it becomes
+  SLEEPING_CHECKING; with none it becomes SLEEPING_DEEPLY.
+- *setAssemblyState (b727c0).*
+  - Falling asleep zeroes the velocity and leaves the kernel.
+  - Waking zeroes the velocity and impulses and restarts the countdown.
+  - AWAKE enters the kernel through 00a9be30.
+  - Force accumulated while asleep is kept.
+  - The port deletes the live connectors of a Part entering or leaving the
+    kernel; the next Contact::step regenerates them. The native re-insertion
+    is not recovered.
+- *Wake pass (b7228e).* Each pending assembly becomes AWAKE and turns its
+  SLEEPING/CONTACTING_SLEEPING contacts back into STEPPING/CONTACTING. It then
+  either queues its sleeping neighbours (recursive) or moves deep-sleeping
+  neighbours to SLEEPING_CHECKING (plain).
+- *Character.* Its assembly is in the stage only while it is in the kernel.
+  - Humanoid::onStepped restarts its countdown every frame, so it never
+    sleeps, but its history still says whether it is moving.
+  - Leaving the stage (RunningNoPhysics) wakes the Parts it was touching.
+  - The Humanoid wakes a new floor Part (00bff784), and a floor it walks over
+    kinematically faster than 2 studs/s (00c07626).
+- AllowSleep (`LooseWorld::allow_sleep`, default true) keeps everything
+  AWAKE.
+
 **Not ported:**
 
-- the sleep stage (resting stacks creep slowly instead of sleeping);
+- the broadphase (SpatialHashMultiRes): every colliding pair is a contact for
+  the whole run, in a fixed order;
 - leaving realTimeBodies: a contact body moved there by an external force
   (for example the Humanoid's floor reaction) stays until a connector change
-  reclassifies it;
-- the broadphase pair order (pairs are visited in a fixed order).
+  or sleep reclassifies it;
+- environmental throttling (SleepStage +0x78).
 
 **The character against loose Parts.** Each character collider (Torso, Head)
 is a `Prim::Character` in the same pair map.
@@ -1055,9 +1125,9 @@ is a `Prim::Character` in the same pair map.
   Otherwise A is the kernel body and the normal is flipped (a92c26).
 - Then the Humanoid force runs, the character integrates, and the loose
   realTimeBodies and jointBodies integrate.
-- While the character is kinematic (RunningNoPhysics), its contacts with loose
-  Parts get no connectors. The string evidence is SleepStage line 790,
-  `a->inStage(IStage::HUMANOID_STAGE)`; the exact edge-stage rule is assumed.
+- While the character is kinematic (RunningNoPhysics), its assembly is in the
+  Humanoid stage (SleepStage line 790, `a->inStage(IStage::HUMANOID_STAGE)`),
+  so its contacts with loose Parts leave SleepStage and are not stepped.
 - The Head touch test that ends RunningNoPhysics (c0192c → c02209) runs
   vtable +0x24 (ae26a6) on each of the Head's contacts:
   - first the extents check, then computeIsColliding with no ignored overlap;

@@ -1,5 +1,5 @@
 //! Unanchored Parts in the legacy kernel: SimBody lists, contact connector
-//! lists and the throttling-body half of Kernel::step. No sleep stage.
+//! lists, the throttling-body half of Kernel::step, and SleepStage.
 //!
 //! Recovered from:
 //! - body classification 00a9be30 and list removal 00a9c142 (ab1c28 when a
@@ -16,6 +16,27 @@
 //! The character's colliders take part as `Prim::Character`: the character
 //! SimBody cannot throttle, so 00a99514 files every connector touching it
 //! under realTimeConnectors.
+//!
+//! SleepStage (v8world/SleepStage.cpp, step 00b707f4) owns Contact::step:
+//! - wakes: recursiveWakePending 00b70c68 (depth 8) and wakePending
+//!   00b70d62 (depth 0), both through 00b71f08 -> 00b7228e;
+//! - stepContacts 00b70e5c -> 00b715ac over the stepping lists (+0x110),
+//!   then later over the touching lists (+0x130), each split by throttle
+//!   type (character contacts cannot throttle, list 0);
+//! - the edge state machine 00b72df0 (STEPPING 1, SLEEPING 2, CONTACTING 3
+//!   in the kernel, CONTACTING_SLEEPING 4) with wakes when a contact starts
+//!   or stops touching (recursive when fast, 00b7361a);
+//! - awake assemblies that stay still go to sleep (00b70ed6, decision
+//!   00b726ae) and SLEEPING_CHECKING ones are re-decided every 4th step
+//!   (00b71158);
+//! - setAssemblyState 00b727c0: sleeping zeroes the velocity (00ab1cc2) and
+//!   leaves the kernel; waking zeroes velocity and impulses and restarts
+//!   the history countdown; AWAKE enters the kernel.
+//!
+//! The broadphase (multi-resolution spatial hash 00aecaea) is not ported:
+//! every colliding (loose, static), (loose, loose) and (character, loose)
+//! pair is a contact for the whole run.
+use crate::sleep::{self, AssemblyState, MotionHistory, SleepProfile};
 use crate::{
     assembly::{AssemblyProperties, MassPart, MassProfile},
     block_contact::{
@@ -31,7 +52,7 @@ use crate::{
     scene::CoordinateFrame,
     workspace::PartInstance,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// KernelData body lists a loose SimBody can be in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +130,16 @@ pub struct LoosePart {
     real_time: u32,
     joint: u32,
     contact: u32,
+    /// The SimBody is in the kernel lists (its assembly is AWAKE).
+    pub in_kernel: bool,
+    /// Assembly +0x40.
+    pub sleep: AssemblyState,
+    history: MotionHistory,
+    /// Assembly +0x74: the largest primitive radius (00ad853c).
+    radius: f32,
+    /// Assembly +0x68 / +0x6c: recursive wake pass id and depth.
+    pass: u32,
+    depth: i32,
 }
 
 impl LoosePart {
@@ -128,6 +159,8 @@ pub struct Link {
     pub spring: ContactSpring,
     /// Connector +0xc0: the geometry last applied to the displacements.
     applied: ContactPoint,
+    /// The kernel loose bodies counted at insert.
+    counted: Vec<usize>,
 }
 impl Default for Link {
     fn default() -> Self {
@@ -141,14 +174,69 @@ impl Default for Link {
                 length: 0.0,
                 position: [0.0; 3],
             },
+            counted: Vec::new(),
         }
     }
+}
+
+/// Contact edge states (Edge +8) a SleepStage contact can be in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeState {
+    Stepping = 1,
+    Sleeping = 2,
+    Contacting = 3,
+    ContactingSleeping = 4,
 }
 
 #[derive(Clone, Debug)]
 struct Pair {
     contact: BlockBlockContact<Link>,
     parameters: ContactParameters,
+    /// None while the contact is not in SleepStage.
+    edge: Option<EdgeState>,
+    /// Edge +0xc: 0 CAN_NOT_THROTTLE (touches the character), 1 CAN_THROTTLE.
+    throttle: usize,
+}
+
+/// An assembly SleepStage tracks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Node {
+    Character,
+    Loose(usize),
+}
+
+/// The character assembly's root primitive this step.
+#[derive(Clone, Debug)]
+pub struct CharacterMotion {
+    pub frame: CoordinateFrame,
+    pub radius: f32,
+    /// Root primitive point velocity and angular velocity.
+    pub velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+}
+
+/// The character assembly as SleepStage sees it.
+#[derive(Clone, Debug)]
+struct CharacterNode {
+    in_stage: bool,
+    state: AssemblyState,
+    history: Option<MotionHistory>,
+    motion: Option<CharacterMotion>,
+    pass: u32,
+    depth: i32,
+}
+
+impl Default for CharacterNode {
+    fn default() -> Self {
+        Self {
+            in_stage: false,
+            state: AssemblyState::Anchored,
+            history: None,
+            motion: None,
+            pass: 0,
+            depth: -1,
+        }
+    }
 }
 
 /// Last world step, for logs.
@@ -182,6 +270,18 @@ pub struct LooseWorld {
     profile: StepProfile,
     mass: MassProfile,
     pub stats: StepStats,
+    /// SleepStage +0x110 stepping and +0x130 touching contacts by throttle.
+    stepping: [Vec<(Prim, Prim)>; 2],
+    touching: [Vec<(Prim, Prim)>; 2],
+    character: CharacterNode,
+    sleep_profile: SleepProfile,
+    /// The global AllowSleep flag (01d3c2b4, default 1).
+    pub allow_sleep: bool,
+    /// SleepStage +0x168.
+    pass: u32,
+    /// Assembly state changes of the run: (step, node, new state).
+    pub transitions: Vec<(u32, Node, AssemblyState)>,
+    step_id: u32,
 }
 
 /// IndexArray::remove: the last element moves into the hole.
@@ -288,6 +388,14 @@ impl LooseWorld {
             profile: StepProfile::load(bundle)?,
             mass: MassProfile::load(bundle)?,
             stats: StepStats::default(),
+            stepping: [Vec::new(), Vec::new()],
+            touching: [Vec::new(), Vec::new()],
+            character: CharacterNode::default(),
+            sleep_profile: SleepProfile::load(bundle)?,
+            allow_sleep: true,
+            pass: 0,
+            transitions: Vec::new(),
+            step_id: 0,
         })
     }
     /// A static (anchored, colliding) block, in Statics order.
@@ -305,8 +413,10 @@ impl LooseWorld {
     pub fn add_collider(&mut self, properties: PhysicalProperties, stiffness: f32) {
         self.colliders.push((properties, stiffness));
     }
-    /// Add an unanchored Part at rest. Its SimBody enters the kernel with no
-    /// connectors, so 00a9be30 files it under freeFallBodies.
+    /// Add an unanchored Part at rest. SleepStage::onAssemblyAdded 00b73820
+    /// makes it WAKE_PENDING with a fresh history; the first wakePending
+    /// pass enters it into the kernel, where 00a9be30 files it under
+    /// freeFallBodies (no connectors yet).
     pub fn add_part(
         &mut self,
         part: &PartInstance,
@@ -326,7 +436,8 @@ impl LooseWorld {
             &[],
         )?;
         let state = FreeFallBody::new(part.frame.clone(), [0.0; 3], [0.0; 3])?;
-        let index = self.parts.len();
+        // A single-Part assembly: the root primitive is the Part itself.
+        let radius = sleep::primitive_radius(part.frame.position, part.frame.position, part.size);
         self.parts.push(LoosePart {
             name: part.name.clone(),
             size: part.size,
@@ -339,8 +450,13 @@ impl LooseWorld {
             real_time: 0,
             joint: 0,
             contact: 0,
+            in_kernel: false,
+            sleep: AssemblyState::WakePending,
+            history: MotionHistory::new(sleep::sample(&part.frame, radius)),
+            radius,
+            pass: 0,
+            depth: -1,
         });
-        self.enter(index, BodyList::FreeFall);
         self.original = self.parts.clone();
         Ok(())
     }
@@ -361,10 +477,12 @@ impl LooseWorld {
         self.joint_connectors.clear();
         self.owners.clear();
         self.stats = StepStats::default();
-        for i in 0..self.parts.len() {
-            self.parts[i].list = BodyList::FreeFall;
-            self.enter(i, BodyList::FreeFall);
-        }
+        self.stepping = [Vec::new(), Vec::new()];
+        self.touching = [Vec::new(), Vec::new()];
+        self.character = CharacterNode::default();
+        self.pass = 0;
+        self.transitions.clear();
+        self.step_id = 0;
     }
     pub fn frames(&self) -> Vec<(String, CoordinateFrame)> {
         self.parts
@@ -409,7 +527,19 @@ impl LooseWorld {
     /// SimBody classification 00a9be30 for a throttling body.
     fn classify(&mut self, index: usize) -> Result<(), String> {
         let p = &self.parts[index];
-        let target = if p.joint < 1 {
+        if !p.in_kernel {
+            return Ok(());
+        }
+        let target = Self::target(p);
+        if p.list == target {
+            return Ok(());
+        }
+        self.leave(index)?;
+        self.enter(index, target);
+        Ok(())
+    }
+    fn target(p: &LoosePart) -> BodyList {
+        if p.joint < 1 {
             if p.contact > 0 {
                 BodyList::Contact
             } else if p.total == 0 {
@@ -419,13 +549,7 @@ impl LooseWorld {
             }
         } else {
             BodyList::Joint
-        };
-        if p.list == target {
-            return Ok(());
         }
-        self.leave(index)?;
-        self.enter(index, target);
-        Ok(())
     }
     fn block(
         &self,
@@ -464,16 +588,41 @@ impl LooseWorld {
         let (pb, sb) = props(b);
         materials.contact_params(&pa, sa, &pb, sb).parameters()
     }
-    /// The loose bodies of a connector between throttling bodies and static
-    /// blocks, as a92c26 picks them: (A, B, flip normal). None for a
-    /// connector touching the character.
-    fn bodies(first: Prim, second: Prim) -> Option<(usize, Option<usize>, bool)> {
-        match (first, second) {
-            (Prim::Loose(a), Prim::Loose(b)) => Some((a, Some(b), false)),
-            (Prim::Loose(a), Prim::Static(_)) => Some((a, None, false)),
-            (Prim::Static(_), Prim::Loose(b)) => Some((b, None, true)),
+    /// The kernel loose bodies of a connector between throttling bodies,
+    /// sleeping Parts and static blocks, as a92c26 picks them: (A, B, flip
+    /// normal); a primitive outside the kernel is fixed. None for a
+    /// connector touching the character or with no kernel body.
+    fn bodies(&self, first: Prim, second: Prim) -> Option<(usize, Option<usize>, bool)> {
+        let kernel = |p: Prim| match p {
+            Prim::Loose(i) if self.parts[i].in_kernel => Some(i),
             _ => None,
+        };
+        if matches!(first, Prim::Character(_)) || matches!(second, Prim::Character(_)) {
+            return None;
         }
+        match (kernel(first), kernel(second)) {
+            (Some(a), Some(b)) => Some((a, Some(b), false)),
+            (Some(a), None) => Some((a, None, false)),
+            (None, Some(b)) => Some((b, None, true)),
+            (None, None) => None,
+        }
+    }
+    /// A primitive outside the kernel as a fixed contact body.
+    fn fixed_state(
+        &self,
+        prim: Prim,
+        statics: &[crate::world::StaticBlock],
+    ) -> Result<ContactBodyState, String> {
+        let center = match prim {
+            Prim::Static(s) => statics.get(s).ok_or("missing static block")?.frame.position,
+            Prim::Loose(i) => self.parts.get(i).ok_or("missing loose part")?.body.center,
+            Prim::Character(_) => return Err("the character is never a fixed body".into()),
+        };
+        Ok(ContactBodyState {
+            center,
+            velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+        })
     }
     fn loose_of(prims: (Prim, Prim)) -> Vec<usize> {
         [prims.0, prims.1]
@@ -494,7 +643,7 @@ impl LooseWorld {
         point: &ContactPoint,
         sign: f32,
     ) -> Result<(), String> {
-        let Some((a, b, flip)) = Self::bodies(prims.0, prims.1) else {
+        let Some((a, b, flip)) = self.bodies(prims.0, prims.1) else {
             return Ok(());
         };
         let g = geometry(point, flip);
@@ -507,13 +656,20 @@ impl LooseWorld {
     /// else jointConnectors when either body is in jointBodies, else
     /// contactConnectors; then both bodies are reclassified. A contact with
     /// no body in the kernel is not inserted.
-    fn insert(&mut self, id: u64, prims: (Prim, Prim)) -> Result<Option<ConnectorList>, String> {
-        let loose = Self::loose_of(prims);
-        if loose.is_empty() {
-            return Ok(None);
-        }
+    fn insert(
+        &mut self,
+        id: u64,
+        prims: (Prim, Prim),
+    ) -> Result<(Option<ConnectorList>, Vec<usize>), String> {
+        let loose: Vec<usize> = Self::loose_of(prims)
+            .into_iter()
+            .filter(|i| self.parts[*i].in_kernel)
+            .collect();
         let character =
             matches!(prims.0, Prim::Character(_)) || matches!(prims.1, Prim::Character(_));
+        if loose.is_empty() && !character {
+            return Ok((None, loose));
+        }
         let list = if character {
             ConnectorList::RealTime
         } else if loose.iter().any(|i| self.parts[*i].list == BodyList::Joint) {
@@ -535,10 +691,10 @@ impl LooseWorld {
                 ConnectorList::Contact => p.contact += 1,
             }
         }
-        for i in loose {
-            self.classify(i)?;
+        for i in &loose {
+            self.classify(*i)?;
         }
-        Ok(Some(list))
+        Ok((Some(list), loose))
     }
     /// Connector removal 00a99ff2.
     fn remove(
@@ -556,7 +712,7 @@ impl LooseWorld {
             ConnectorList::Joint => remove_item(&mut self.joint_connectors, &id)?,
             ConnectorList::Contact => remove_item(&mut self.contact_connectors, &id)?,
         }
-        let loose = Self::loose_of(prims);
+        let loose = link.counted.clone();
         for i in &loose {
             let p = &mut self.parts[*i];
             p.total -= 1;
@@ -643,7 +799,22 @@ impl LooseWorld {
         }
         Ok(())
     }
+    /// A contact for a primitive pair, outside SleepStage.
+    fn create_pair(&mut self, key: (Prim, Prim), materials: &MaterialProfile) {
+        let parameters = self.pair_parameters(key.0, key.1, materials);
+        let character = matches!(key.0, Prim::Character(_)) || matches!(key.1, Prim::Character(_));
+        self.pairs.insert(
+            key,
+            Pair {
+                contact: BlockBlockContact::default(),
+                parameters,
+                edge: None,
+                throttle: usize::from(!character),
+            },
+        );
+    }
     /// BlockBlockContact::update for one pair, then its events in order.
+    /// Returns whether the blocks collide.
     fn update_pair(
         &mut self,
         key: (Prim, Prim),
@@ -651,19 +822,13 @@ impl LooseWorld {
         in_kernel: bool,
         tables: &BlockTables,
         materials: &MaterialProfile,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         if !self.pairs.contains_key(&key) {
-            let parameters = self.pair_parameters(key.0, key.1, materials);
-            self.pairs.insert(
-                key,
-                Pair {
-                    contact: BlockBlockContact::default(),
-                    parameters,
-                },
-            );
+            self.create_pair(key, materials);
         }
         let pair = self.pairs.get_mut(&key).ok_or("missing contact pair")?;
-        pair.contact
+        let colliding = pair
+            .contact
             .update([&blocks[0], &blocks[1]], in_kernel, tables)?;
         let events = std::mem::take(&mut pair.contact.events);
         for event in events {
@@ -675,12 +840,13 @@ impl LooseWorld {
                     if !reused {
                         self.next_id += 1;
                         let id = self.next_id;
-                        let list = self.insert(id, prims)?;
+                        let (list, counted) = self.insert(id, prims)?;
                         let link = &mut self.pairs.get_mut(&key).unwrap().contact.connectors_mut()
                             [index]
                             .state;
                         link.id = id;
                         link.list = list;
+                        link.counted = counted;
                         self.owners.insert(id, key);
                     } else {
                         self.redisplace(key, index, prims, point)?;
@@ -700,7 +866,7 @@ impl LooseWorld {
                 }
             }
         }
-        Ok(())
+        Ok(colliding)
     }
     /// The Head touch test of HumanoidState c0192c -> c02209: each contact of
     /// the collider with a loose Part runs vtable +0x24 (ae26a6: extents,
@@ -724,14 +890,7 @@ impl LooseWorld {
             let key = (Prim::Character(collider), Prim::Loose(i));
             let other = self.block(key.1, &[], &[])?;
             if !self.pairs.contains_key(&key) {
-                let parameters = self.pair_parameters(key.0, key.1, materials);
-                self.pairs.insert(
-                    key,
-                    Pair {
-                        contact: BlockBlockContact::default(),
-                        parameters,
-                    },
-                );
+                self.create_pair(key, materials);
             }
             if !extents_overlap(&block.extents(), &other.extents()) {
                 continue;
@@ -747,7 +906,9 @@ impl LooseWorld {
     /// kernel). Pairs that still hold connectors are kept.
     pub fn clear_character_contacts(&mut self) {
         self.pairs.retain(|key, pair| {
-            !matches!(key.0, Prim::Character(_)) || !pair.contact.connectors().is_empty()
+            !matches!(key.0, Prim::Character(_))
+                || !pair.contact.connectors().is_empty()
+                || pair.edge.is_some()
         });
     }
     /// Live connectors touching the character.
@@ -892,25 +1053,21 @@ impl LooseWorld {
             .ok_or("missing kernel connector")?;
         let c = &mut pair.contact.connectors_mut()[at];
         let prims = Self::connector_prims(key, c.pair.body_a);
-        let Some((a, b, flip)) = Self::bodies(prims.0, prims.1) else {
+        let point = c.point.clone();
+        let Some((a, b, flip)) = self.bodies(prims.0, prims.1) else {
             return Ok(0.0);
         };
-        let g = geometry(&c.point, flip);
-        let fixed = match (prims.0, prims.1) {
-            (Prim::Static(s), _) | (_, Prim::Static(s)) => {
-                let s = statics.get(s).ok_or("missing static block")?;
-                ContactBodyState {
-                    center: s.frame.position,
-                    velocity: [0.0; 3],
-                    angular_velocity: [0.0; 3],
-                }
-            }
-            _ => ContactBodyState {
+        let g = geometry(&point, flip);
+        let fixed = match b {
+            Some(_) => ContactBodyState {
                 center: [0.0; 3],
                 velocity: [0.0; 3],
                 angular_velocity: [0.0; 3],
             },
+            None => self.fixed_state(if flip { prims.0 } else { prims.1 }, statics)?,
         };
+        let pair = self.pairs.get_mut(&key).ok_or("missing contact pair")?;
+        let c = &mut pair.contact.connectors_mut()[at];
         let mut link = std::mem::take(&mut c.state);
         let (pa, pb) = two_mut(&mut self.parts, a, b)?;
         let input = ImpulseInput {
@@ -1039,12 +1196,18 @@ impl LooseWorld {
             };
             let (force, g) = self.spring(id, colliders, false, a, b, kernel)?;
             deepest = deepest.max(-g.distance);
+            // a92c26: a sleeping Part is outside the kernel and stays fixed.
+            let in_kernel = self.parts[loose].in_kernel;
             let body = &mut self.parts[loose].body;
             if character_first {
                 character.apply_force(force.map(|v| -v), g.point)?;
-                body.apply_force(force, g.point)?;
+                if in_kernel {
+                    body.apply_force(force, g.point)?;
+                }
             } else {
-                body.apply_force(force.map(|v| -v), g.point)?;
+                if in_kernel {
+                    body.apply_force(force.map(|v| -v), g.point)?;
+                }
                 character.apply_force(force, g.point)?;
             }
         }
@@ -1056,20 +1219,23 @@ impl LooseWorld {
         for at in 0..self.joint_connectors.len() {
             let id = self.joint_connectors[at];
             let prims = self.prims_of(id)?;
-            let Some((a, b, flip)) = Self::bodies(prims.0, prims.1) else {
+            let Some((a, b, flip)) = self.bodies(prims.0, prims.1) else {
                 return Err("unexpected joint connector".into());
             };
             let fixed = |p: Prim| -> Result<ContactBodyState, String> {
-                let Prim::Static(s) = p else {
-                    return Err("unexpected joint connector".into());
+                let center = match p {
+                    Prim::Static(s) => {
+                        self.static_blocks
+                            .get(s)
+                            .ok_or("missing static block")?
+                            .frame
+                            .position
+                    }
+                    Prim::Loose(i) => self.parts.get(i).ok_or("missing loose part")?.body.center,
+                    Prim::Character(_) => return Err("unexpected joint connector".into()),
                 };
                 Ok(ContactBodyState {
-                    center: self
-                        .static_blocks
-                        .get(s)
-                        .ok_or("missing static block")?
-                        .frame
-                        .position,
+                    center,
                     velocity: [0.0; 3],
                     angular_velocity: [0.0; 3],
                 })
@@ -1107,13 +1273,669 @@ impl LooseWorld {
         self.joint_springs(kernel)?;
         self.integrate(kernel)
     }
+    /// The colliding (loose, static) and (loose, loose) pairs in the
+    /// update_contacts order.
+    fn loose_keys(&self, statics: usize) -> Vec<(Prim, Prim)> {
+        let mut keys = Vec::new();
+        for i in 0..self.parts.len() {
+            if !self.parts[i].can_collide {
+                continue;
+            }
+            for j in 0..statics {
+                keys.push((Prim::Loose(i), Prim::Static(j)));
+            }
+            for k in i + 1..self.parts.len() {
+                if self.parts[k].can_collide {
+                    keys.push((Prim::Loose(i), Prim::Loose(k)));
+                }
+            }
+        }
+        keys
+    }
+    /// SleepStage::onEdgeAdded 00b73cfe: a contact enters STEPPING.
+    fn add_edge(&mut self, key: (Prim, Prim)) -> Result<(), String> {
+        let pair = self.pairs.get_mut(&key).ok_or("missing contact pair")?;
+        if pair.edge.is_some() {
+            return Ok(());
+        }
+        pair.edge = Some(EdgeState::Stepping);
+        let throttle = pair.throttle;
+        self.stepping[throttle].push(key);
+        Ok(())
+    }
+    /// SleepStage::onEdgeRemoving 00b73f08 for a contact.
+    fn remove_edge(&mut self, key: (Prim, Prim)) -> Result<(), String> {
+        let Some(edge) = self.pairs.get(&key).ok_or("missing contact pair")?.edge else {
+            return Ok(());
+        };
+        if matches!(edge, EdgeState::Contacting | EdgeState::ContactingSleeping) {
+            self.wake_both(key)?;
+        }
+        if edge != EdgeState::Sleeping {
+            self.set_edge(key, EdgeState::Sleeping)?;
+        }
+        self.pairs.get_mut(&key).ok_or("missing contact pair")?.edge = None;
+        Ok(())
+    }
+    /// Assemblies entering or leaving the stage, and their contacts.
+    fn update_membership(
+        &mut self,
+        character: Option<&CharacterMotion>,
+        colliders: usize,
+        statics: usize,
+        materials: &MaterialProfile,
+    ) -> Result<(), String> {
+        for key in self.loose_keys(statics) {
+            if !self.pairs.contains_key(&key) {
+                self.create_pair(key, materials);
+            }
+            self.add_edge(key)?;
+        }
+        let keys: Vec<(Prim, Prim)> = (0..colliders)
+            .flat_map(|c| (0..self.parts.len()).map(move |i| (c, i)))
+            .filter(|(_, i)| self.parts[*i].can_collide)
+            .map(|(c, i)| (Prim::Character(c), Prim::Loose(i)))
+            .collect();
+        match (character, self.character.in_stage) {
+            (Some(motion), false) => {
+                // 00b73820: WAKE_PENDING with a fresh history (00ad88c4).
+                self.character.in_stage = true;
+                self.character.history = Some(MotionHistory::new(sleep::sample(
+                    &motion.frame,
+                    motion.radius,
+                )));
+                self.set_state(Node::Character, AssemblyState::WakePending)?;
+                for key in keys {
+                    if !self.pairs.contains_key(&key) {
+                        self.create_pair(key, materials);
+                    }
+                    self.add_edge(key)?;
+                }
+            }
+            (None, true) => {
+                for key in keys {
+                    if self.pairs.contains_key(&key) {
+                        self.remove_edge(key)?;
+                    }
+                }
+                self.character = CharacterNode::default();
+            }
+            _ => {}
+        }
+        if let Some(motion) = character {
+            self.character.motion = Some(motion.clone());
+        }
+        Ok(())
+    }
+    fn node(prim: Prim) -> Option<Node> {
+        match prim {
+            Prim::Loose(i) => Some(Node::Loose(i)),
+            Prim::Character(_) => Some(Node::Character),
+            Prim::Static(_) => None,
+        }
+    }
+    /// Assembly +0x40 (ANCHORED for a static block).
+    fn state(&self, node: Option<Node>) -> AssemblyState {
+        match node {
+            Some(Node::Loose(i)) => self.parts[i].sleep,
+            Some(Node::Character) => self.character.state,
+            None => AssemblyState::Anchored,
+        }
+    }
+    fn in_stage(&self, node: Node) -> bool {
+        match node {
+            Node::Loose(_) => true,
+            Node::Character => self.character.in_stage,
+        }
+    }
+    fn nodes(&self) -> Vec<Node> {
+        let mut nodes = Vec::new();
+        if self.character.in_stage {
+            nodes.push(Node::Character);
+        }
+        nodes.extend((0..self.parts.len()).map(Node::Loose));
+        nodes
+    }
+    /// The assembly's contacts in the stage (Assembly edge list 00ad9bf6;
+    /// its native order is not recovered).
+    fn edges_of(&self, node: Node) -> Vec<(Prim, Prim)> {
+        self.pairs
+            .iter()
+            .filter(|(key, pair)| {
+                pair.edge.is_some()
+                    && (Self::node(key.0) == Some(node) || Self::node(key.1) == Some(node))
+            })
+            .map(|(key, _)| *key)
+            .collect()
+    }
+    fn other(key: (Prim, Prim), node: Node) -> Option<Node> {
+        if Self::node(key.0) == Some(node) {
+            Self::node(key.1)
+        } else {
+            Self::node(key.0)
+        }
+    }
+    /// 00b72d00: the contact touches (CONTACTING or CONTACTING_SLEEPING).
+    fn touching_edge(&self, key: (Prim, Prim)) -> bool {
+        matches!(
+            self.pairs.get(&key).and_then(|p| p.edge),
+            Some(EdgeState::Contacting | EdgeState::ContactingSleeping)
+        )
+    }
+    fn moving(&self, node: Node) -> bool {
+        let history = match node {
+            Node::Loose(i) => Some(&self.parts[i].history),
+            Node::Character => self.character.history.as_ref(),
+        };
+        history.is_some_and(|h| h.moving(&self.sleep_profile))
+    }
+    /// 00b7357c.
+    fn wake(&mut self, node: Node) -> Result<(), String> {
+        if self.state(Some(node)) > AssemblyState::Awake {
+            self.set_state(node, AssemblyState::WakePending)?;
+        }
+        Ok(())
+    }
+    /// 00b735e6.
+    fn wake_recursive(&mut self, node: Node) -> Result<(), String> {
+        if self.state(Some(node)) > AssemblyState::RecursiveWakePending {
+            self.set_state(node, AssemblyState::RecursiveWakePending)?;
+        }
+        Ok(())
+    }
+    /// 00b73544 / 00b735ae over both primitives' assemblies.
+    fn wake_both(&mut self, key: (Prim, Prim)) -> Result<(), String> {
+        for prim in [key.0, key.1] {
+            if let Some(node) = Self::node(prim) {
+                self.wake(node)?;
+            }
+        }
+        Ok(())
+    }
+    /// World::wakeAssembly 00ba7fb0 -> 00b737c4 (not recursive): the
+    /// history countdown restarts and a sleeping assembly becomes
+    /// WAKE_PENDING.
+    pub fn wake_assembly(&mut self, index: usize) -> Result<(), String> {
+        let part = self.parts.get_mut(index).ok_or("missing loose part")?;
+        part.history.reset_countdown();
+        self.wake(Node::Loose(index))
+    }
+    /// 00b7361a: either primitive's assembly moves faster than 1 stud/s or
+    /// spins faster than 1 stud/s at its radius.
+    fn fast(&self, key: (Prim, Prim)) -> bool {
+        [key.0, key.1].into_iter().any(|prim| {
+            let (v, w, r) = match prim {
+                Prim::Static(_) => return false,
+                Prim::Loose(i) => {
+                    let p = &self.parts[i];
+                    (p.body.velocity, p.body.angular_velocity, p.radius)
+                }
+                Prim::Character(_) => match &self.character.motion {
+                    Some(m) => (m.velocity, m.angular_velocity, m.radius),
+                    None => return false,
+                },
+            };
+            v.iter().any(|x| 1.0 < x.abs()) || w.iter().any(|x| 1.0 < (x * r).abs())
+        })
+    }
+    /// Contact edge state change 00b72df0.
+    fn set_edge(&mut self, key: (Prim, Prim), new: EdgeState) -> Result<(), String> {
+        let pair = self.pairs.get(&key).ok_or("missing contact pair")?;
+        let current = pair.edge.ok_or("contact outside SleepStage")?;
+        if current == new {
+            return Err("contact edge state unchanged".into());
+        }
+        let t = pair.throttle;
+        if current == EdgeState::Stepping {
+            remove_item(&mut self.stepping[t], &key)?;
+        }
+        if current == EdgeState::Contacting {
+            remove_item(&mut self.touching[t], &key)?;
+            // The contact leaves the kernel stage with its connectors.
+            self.drop_connectors(key)?;
+        }
+        if new == EdgeState::Stepping {
+            self.stepping[t].push(key);
+        }
+        if new == EdgeState::Contacting {
+            // Kernel insert: connectors follow at its next Contact::step.
+            self.touching[t].push(key);
+        }
+        if new == EdgeState::Contacting && current == EdgeState::Stepping {
+            if self.fast(key) {
+                for prim in [key.0, key.1] {
+                    if let Some(node) = Self::node(prim) {
+                        self.wake_recursive(node)?;
+                    }
+                }
+            } else {
+                self.wake_both(key)?;
+            }
+        } else if new == EdgeState::Stepping && current == EdgeState::Contacting {
+            self.wake_both(key)?;
+        }
+        self.pairs.get_mut(&key).ok_or("missing contact pair")?.edge = Some(new);
+        Ok(())
+    }
+    /// Delete a contact's connectors from the kernel (a99ff2 for each).
+    fn drop_connectors(&mut self, key: (Prim, Prim)) -> Result<(), String> {
+        let connectors = self
+            .pairs
+            .get_mut(&key)
+            .ok_or("missing contact pair")?
+            .contact
+            .take_connectors();
+        for connector in connectors {
+            let prims = Self::connector_prims(key, connector.pair.body_a);
+            let link = connector.state;
+            self.remove(link.id, &link, prims, &connector.point)?;
+            self.owners.remove(&link.id);
+        }
+        Ok(())
+    }
+    /// Re-bind the connectors of every contact of a Part whose SimBody
+    /// enters or leaves the kernel. The native re-insert of live connectors
+    /// is not recovered: they are deleted, and Contact::step regenerates
+    /// them for touching contacts.
+    fn drop_part_connectors(&mut self, index: usize) -> Result<(), String> {
+        let keys: Vec<(Prim, Prim)> = self
+            .pairs
+            .iter()
+            .filter(|(k, p)| {
+                (k.0 == Prim::Loose(index) || k.1 == Prim::Loose(index))
+                    && !p.contact.connectors().is_empty()
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        for key in keys {
+            self.drop_connectors(key)?;
+        }
+        Ok(())
+    }
+    /// setAssemblyState 00b727c0.
+    fn set_state(&mut self, node: Node, new: AssemblyState) -> Result<(), String> {
+        let current = self.state(Some(node));
+        if current == new {
+            return Err("assembly state unchanged".into());
+        }
+        if let Node::Loose(i) = node {
+            if current.sleeping() && !new.sleeping() {
+                // 00b63bf2 velocity 0, 00ad8aa0 history, SimBody J and Ja 0.
+                let body = &mut self.parts[i].body;
+                body.velocity = [0.0; 3];
+                body.angular_velocity = [0.0; 3];
+                body.linear_impulse = [0.0; 3];
+                body.angular_impulse = [0.0; 3];
+                self.parts[i].history.reset_countdown();
+            }
+            if new == AssemblyState::Awake {
+                if !self.parts[i].in_kernel {
+                    // b6ee0a -> Kernel insertBody 00a957ce: classify 00a9be30.
+                    self.drop_part_connectors(i)?;
+                    self.parts[i].in_kernel = true;
+                    let target = Self::target(&self.parts[i]);
+                    self.enter(i, target);
+                }
+            } else if new.sleeping() && self.parts[i].in_kernel {
+                // 00ab1cc2 then removeBody 00a95a32.
+                let body = &mut self.parts[i].body;
+                body.velocity = [0.0; 3];
+                body.angular_velocity = [0.0; 3];
+                self.drop_part_connectors(i)?;
+                self.leave(i)?;
+                let part = &mut self.parts[i];
+                part.in_kernel = false;
+                part.body.resting = [true, true];
+                part.body.angular_displacement = [0.0; 3];
+                part.body.linear_displacement = [0.0; 3];
+            }
+            self.parts[i].sleep = new;
+        } else {
+            self.character.state = new;
+        }
+        self.transitions.push((self.step_id, node, new));
+        Ok(())
+    }
+    /// 00b726ae: AWAKE (3) while a touching awake assembly moves; else
+    /// SLEEPING_CHECKING (4) with a still awake neighbour or SLEEPING_DEEPLY
+    /// (5) with none.
+    fn decide(&self, node: Node) -> AssemblyState {
+        if !self.allow_sleep {
+            return AssemblyState::Awake;
+        }
+        let mut neighbour = false;
+        for key in self.edges_of(node) {
+            if !self.touching_edge(key) {
+                continue;
+            }
+            let Some(other) = Self::other(key, node) else {
+                continue;
+            };
+            if self.state(Some(other)) == AssemblyState::Awake && self.in_stage(other) {
+                if self.moving(other) {
+                    return AssemblyState::Awake;
+                }
+                neighbour = true;
+            }
+        }
+        if neighbour {
+            AssemblyState::SleepingChecking
+        } else {
+            AssemblyState::SleepingDeeply
+        }
+    }
+    /// 00b70ed6: sample every awake assembly; still ones go to sleep.
+    fn sleep_awake(&mut self) -> Result<(), String> {
+        let mut deep = Vec::new();
+        let mut checking = Vec::new();
+        for node in self.nodes() {
+            if self.state(Some(node)) != AssemblyState::Awake {
+                continue;
+            }
+            let still = match node {
+                Node::Loose(i) => {
+                    let part = &mut self.parts[i];
+                    let (frame, radius) = (part.body.frame.clone(), part.radius);
+                    part.history
+                        .step(&self.sleep_profile, || sleep::sample(&frame, radius))
+                }
+                Node::Character => {
+                    let motion = self
+                        .character
+                        .motion
+                        .clone()
+                        .ok_or("missing character motion")?;
+                    let history = self
+                        .character
+                        .history
+                        .as_mut()
+                        .ok_or("missing character history")?;
+                    history.step(&self.sleep_profile, || {
+                        sleep::sample(&motion.frame, motion.radius)
+                    });
+                    // Humanoid::onStepped 00c0072c restarts the countdown
+                    // every frame (00ad8aa0), so it never reaches 0.
+                    false
+                }
+            };
+            if still {
+                match self.decide(node) {
+                    AssemblyState::SleepingDeeply => deep.push(node),
+                    AssemblyState::SleepingChecking => checking.push(node),
+                    _ => {}
+                }
+            }
+        }
+        for node in deep {
+            self.set_state(node, AssemblyState::SleepingDeeply)?;
+        }
+        for node in checking {
+            self.set_state(node, AssemblyState::SleepingChecking)?;
+        }
+        Ok(())
+    }
+    /// 00b71158: re-decide SLEEPING_CHECKING assemblies.
+    fn recheck(&mut self) -> Result<(), String> {
+        let mut wake = Vec::new();
+        let mut deep = Vec::new();
+        for node in self.nodes() {
+            if self.state(Some(node)) != AssemblyState::SleepingChecking {
+                continue;
+            }
+            match self.decide(node) {
+                AssemblyState::SleepingDeeply => deep.push(node),
+                AssemblyState::Awake => wake.push(node),
+                _ => {}
+            }
+        }
+        for node in wake {
+            self.set_state(node, AssemblyState::WakePending)?;
+        }
+        for node in deep {
+            self.set_state(node, AssemblyState::SleepingDeeply)?;
+        }
+        Ok(())
+    }
+    fn pass_depth(&mut self, node: Node) -> (&mut u32, &mut i32) {
+        match node {
+            Node::Loose(i) => {
+                let p = &mut self.parts[i];
+                (&mut p.pass, &mut p.depth)
+            }
+            Node::Character => (&mut self.character.pass, &mut self.character.depth),
+        }
+    }
+    /// 00b71f08: wake the pending assemblies, breadth first through
+    /// touching contacts up to `max_depth` (8 recursive, 0 otherwise).
+    fn wake_pending(&mut self, recursive: bool) -> Result<(), String> {
+        let (check, max_depth) = if recursive {
+            (AssemblyState::RecursiveWakePending, 8)
+        } else {
+            (AssemblyState::WakePending, 0)
+        };
+        self.pass += 1;
+        let pass = self.pass;
+        let mut queue = VecDeque::new();
+        for node in self.nodes() {
+            if self.state(Some(node)) == check {
+                let (p, d) = self.pass_depth(node);
+                *p = pass;
+                *d = 0;
+                queue.push_back(node);
+            }
+        }
+        while let Some(node) = queue.pop_front() {
+            self.wake_node(node, max_depth, &mut queue)?;
+            *self.pass_depth(node).1 = -1;
+        }
+        Ok(())
+    }
+    /// 00b7228e.
+    fn wake_node(
+        &mut self,
+        node: Node,
+        max_depth: i32,
+        queue: &mut VecDeque<Node>,
+    ) -> Result<(), String> {
+        let depth = *self.pass_depth(node).1;
+        if self.state(Some(node)) != AssemblyState::Awake {
+            self.set_state(node, AssemblyState::Awake)?;
+        }
+        for key in self.edges_of(node) {
+            // 00b72b82: SLEEPING -> STEPPING, CONTACTING_SLEEPING -> CONTACTING.
+            match self.pairs[&key].edge {
+                Some(EdgeState::Sleeping) => self.set_edge(key, EdgeState::Stepping)?,
+                Some(EdgeState::ContactingSleeping) => self.set_edge(key, EdgeState::Contacting)?,
+                _ => {}
+            }
+            if !self.touching_edge(key) {
+                continue;
+            }
+            let Some(other) = Self::other(key, node) else {
+                continue;
+            };
+            if depth < max_depth {
+                let pass = self.pass;
+                let state = self.state(Some(other));
+                let (p, d) = self.pass_depth(other);
+                if *p != pass && state != AssemblyState::Awake {
+                    *p = pass;
+                    *d = depth + 1;
+                    queue.push_back(other);
+                }
+            } else if self.state(Some(other)) == AssemblyState::SleepingDeeply {
+                self.set_state(other, AssemblyState::SleepingChecking)?;
+            }
+        }
+        Ok(())
+    }
+    /// The block of a contact primitive for Contact::step.
+    fn step_block(
+        &self,
+        prim: Prim,
+        colliders: &[Block],
+        statics: &[crate::world::StaticBlock],
+    ) -> Result<Block, String> {
+        self.block(prim, statics, colliders)
+    }
+    /// Contact::step ae2510 -> BlockBlockContact::update: connectors only
+    /// while the contact is CONTACTING and touches a kernel body.
+    fn step_contact(
+        &mut self,
+        key: (Prim, Prim),
+        colliders: &[Block],
+        statics: &[crate::world::StaticBlock],
+        tables: &BlockTables,
+        materials: &MaterialProfile,
+    ) -> Result<bool, String> {
+        let edge = self.pairs.get(&key).and_then(|p| p.edge);
+        let kernel_body = |p: Prim| match p {
+            Prim::Loose(i) => self.parts[i].in_kernel,
+            Prim::Character(_) => self.character.in_stage,
+            Prim::Static(_) => false,
+        };
+        let in_kernel =
+            edge == Some(EdgeState::Contacting) && (kernel_body(key.0) || kernel_body(key.1));
+        let blocks = [
+            self.step_block(key.0, colliders, statics)?,
+            self.step_block(key.1, colliders, statics)?,
+        ];
+        self.update_pair(key, blocks, in_kernel, tables, materials)
+    }
+    /// stepContacts 00b715ac over one list, then its edge changes in the
+    /// native order (to SLEEPING, STEPPING, CONTACTING, CONTACTING_SLEEPING).
+    fn step_contacts(
+        &mut self,
+        touching: bool,
+        throttle: usize,
+        colliders: &[Block],
+        statics: &[crate::world::StaticBlock],
+        tables: &BlockTables,
+        materials: &MaterialProfile,
+    ) -> Result<(), String> {
+        let list = if touching {
+            self.touching[throttle].clone()
+        } else {
+            self.stepping[throttle].clone()
+        };
+        let mut changes: [Vec<(Prim, Prim)>; 4] = Default::default();
+        for key in list {
+            let awake = |s: AssemblyState| {
+                matches!(
+                    s,
+                    AssemblyState::RecursiveWakePending
+                        | AssemblyState::WakePending
+                        | AssemblyState::Awake
+                )
+            };
+            let awake_side =
+                awake(self.state(Self::node(key.0))) || awake(self.state(Self::node(key.1)));
+            let colliding = self.step_contact(key, colliders, statics, tables, materials)?;
+            let current = self.pairs[&key].edge.ok_or("contact outside SleepStage")?;
+            // Both primitives collide (pairs exist only for CanCollide
+            // Parts, and nothing is dragged).
+            let new = if awake_side {
+                if colliding {
+                    EdgeState::Contacting
+                } else {
+                    EdgeState::Stepping
+                }
+            } else if colliding && current == EdgeState::Contacting {
+                EdgeState::ContactingSleeping
+            } else {
+                EdgeState::Sleeping
+            };
+            if new != current {
+                let slot = match new {
+                    EdgeState::Sleeping => 0,
+                    EdgeState::Stepping => 1,
+                    EdgeState::Contacting => 2,
+                    EdgeState::ContactingSleeping => 3,
+                };
+                changes[slot].push(key);
+            }
+        }
+        for (slot, state) in [
+            EdgeState::Sleeping,
+            EdgeState::Stepping,
+            EdgeState::Contacting,
+            EdgeState::ContactingSleeping,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for key in std::mem::take(&mut changes[slot]) {
+                self.set_edge(key, state)?;
+            }
+        }
+        Ok(())
+    }
+    /// SleepStage::step 00b707f4 (throttling off, so both throttle lists
+    /// step), with the character assembly in the stage when `character` is
+    /// given (it is in the Humanoid stage while placed kinematically).
+    #[allow(clippy::too_many_arguments)] // The stage's world inputs.
+    pub fn sleep_stage(
+        &mut self,
+        step: u32,
+        character: Option<&CharacterMotion>,
+        colliders: &[Block],
+        statics: &[crate::world::StaticBlock],
+        tables: &BlockTables,
+        materials: &MaterialProfile,
+    ) -> Result<(), String> {
+        if statics.len() != self.statics.len() || colliders.len() != self.colliders.len() {
+            return Err("SleepStage inputs out of step".into());
+        }
+        self.step_id = step;
+        self.static_blocks = statics
+            .iter()
+            .map(|b| Block {
+                frame: b.frame.clone(),
+                size: b.size,
+            })
+            .collect();
+        self.update_membership(character, colliders.len(), statics.len(), materials)?;
+        self.wake_pending(true)?;
+        self.wake_pending(false)?;
+        for t in 0..2 {
+            self.step_contacts(false, t, colliders, statics, tables, materials)?;
+        }
+        self.wake_pending(true)?;
+        self.wake_pending(false)?;
+        self.sleep_awake()?;
+        if step & 3 == 0 {
+            self.recheck()?;
+        }
+        self.wake_pending(false)?;
+        for t in 0..2 {
+            self.step_contacts(true, t, colliders, statics, tables, materials)?;
+        }
+        self.wake_pending(true)?;
+        self.wake_pending(false)
+    }
+    pub fn sleep_profile(&self) -> &SleepProfile {
+        &self.sleep_profile
+    }
+    /// Contacts per edge state, for logs.
+    pub fn edge_counts(&self) -> [usize; 4] {
+        let mut counts = [0; 4];
+        for pair in self.pairs.values() {
+            if let Some(edge) = pair.edge {
+                counts[edge as usize - 1] += 1;
+            }
+        }
+        counts
+    }
     /// One line per part for logs.
     pub fn report(&self) -> String {
         let mut out = String::new();
         for p in &self.parts {
             out.push_str(&format!(
-                "[{} list={:?} position={:?} velocity={:?} angular_velocity={:?} up_y={} resting={:?} connectors={}/{}/{}/{}]",
+                "[{} sleep={:?} in_kernel={} spread={} list={:?} position={:?} velocity={:?} angular_velocity={:?} up_y={} resting={:?} connectors={}/{}/{}/{}]",
                 p.name,
+                p.sleep,
+                p.in_kernel,
+                p.history.spread(),
                 p.list,
                 p.body.frame.position,
                 p.body.velocity,

@@ -33,8 +33,8 @@ character until the Studio edit camera is ported; ClassicCamera takes over
 immediately. Torso and Head collide with anchored Parts (`audit-part-wall`).
 Unanchored Parts fall, land, stack and come to rest in the simulation
 (`audit-part-drop`), the character pushes them (`audit-part-push`) and stands
-on them (`audit-part-stand`). Not ported yet: the sleep stage, outlines and the
-Studio camera.
+on them (`audit-part-stand`), and still Parts fall asleep (SleepStage). Not
+ported yet: the broadphase, outlines and the Studio camera.
 Manual keys are **not tested**.
 
 ```sh
@@ -225,11 +225,16 @@ are downloaded on first build; runtime data loading uses no network requests.
   Part/Baseplate contacts. Run
   `sh tools/cargo.sh run --locked -- audit-part-drop`; expect
   `part_drop_first_contact` lines for Rest (step 7), Stack (10), Drop (67) and
-  Tumble (71), `part_drop_result ... heights=[0.5822041, 1.7608731, 0.98807293, 0.58391684]`
-  and `part_drop_pass rested=4 stacked=true`. Resting Parts that touch another
-  loose Part creep slowly (about 0.03 studs/s) because the sleep stage is not
-  ported. High drops bounce and spin. Whether native does the same is **not
-  tested**.
+  Tumble (71), `part_drop_result ... heights=[0.58259946, 1.7632093, 0.98582256, 0.5856628] ... speeds=[0.0, 0.0, 0.0, 0.0]`,
+  `part_drop_sleep` with every Part `final=SleepingDeeply in_kernel=false`
+  (Rest and Stack at world step 120, Tumble 271, Drop 303), and
+  `part_drop_pass rested=4 stacked=true asleep=4`. High drops bounce and spin.
+  Whether native does the same is **not tested**.
+- SleepStage: still Parts leave the kernel (SLEEPING_CHECKING or
+  SLEEPING_DEEPLY), contacts follow the native edge states, and touching,
+  separating or Humanoid floor events wake them. The `part_*_sleep` lines of
+  the three loose audits list each Part's state changes by world step.
+  Native parity is **not tested**.
 - The character against unanchored Parts:
   - realtime contact springs between Torso/Head and loose Parts;
   - loose jointConnectors springs;
@@ -237,7 +242,11 @@ are downloaded on first build; runtime data loading uses no network requests.
 
   Run `sh tools/cargo.sh run --locked -- audit-part-push`. Expect:
   - `part_push_first_contact step=101`;
-  - `part_push_result ... max_character_connectors=7 lists=[Contact, RealTime, FreeFall, Joint] crate_moved=[0.886339, -2.0041766, -12.955814]`, meaning the Crate is pushed about 13 studs and tips onto its face (the character rides up on it while it tips, then walks off);
+  - `part_push_result ... max_character_connectors=7 lists=[FreeFall, Joint, Contact, RealTime] crate_moved=[0.9231087, -2.0064368, -37.150524]`.
+    The Crate is asleep when the character reaches it. The touch wakes it, and
+    the character's realtime connector is its first, so 00a9be30 files it under
+    jointBodies. Its ground contact then uses joint springs, and it slides about
+    37 studs ahead of the character before it tips;
   - `part_push_pass pushed=true`.
 
   Native parity is **not tested**.
@@ -255,14 +264,18 @@ are downloaded on first build; runtime data loading uses no network requests.
   - `part_stand_start character_mass=9.9 part_masses=[7.56, 25.199999]`: the
     Pad is lighter than the character, so the support force uses its mass;
   - `part_stand_landed step=241 ... floor=Some(Loose(0))`: it lands on the Pad;
-  - `part_stand_result ... root_on_pad=[..., 3.1828773, ...] pad_top=0.18790008 lowest_between=2.9965982 step_floor_at=Some(148) root_on_step=[..., 4.001119, ...] step_top=0.9860703`:
+  - `part_stand_result ... root_on_pad=[..., 3.2311025, ...] pad_top=0.21530852 lowest_between=2.9965973 step_floor_at=Some(144) root_on_step=[..., 3.9999352, ...] step_top=0.98490196`:
     it stands at Part top + 3 on both Parts and walks up the 1-stud Step;
-  - `part_stand_pass`.
+  - `part_stand_sleep ... [Pad final=SleepingDeeply ... (239, WakePending), (240, Awake), (367, SleepingDeeply)] [Step final=SleepingDeeply ...]`:
+    landing wakes the sleeping Pad, and both Parts sleep again under the idle
+    character;
+  - `part_stand_pass ... sleep=sleep_stage`.
 
-  The Pad sinks about 0.11 into the Baseplate under the character (its connectors
-  stay contactConnectors while the body is in realTimeBodies, and there is no
-  sleep stage); whether native does the same is **not tested**. The jump floor
-  reaction is **not tested**. Native parity is **not tested**.
+  The Pad still sinks about 0.085 into the Baseplate, then sleeps there. At the
+  landing it wakes with the 19 substep reactions of that step accumulated, and
+  afterwards it sits in realTimeBodies against contactConnectors. Whether
+  native does the same is **not tested**. The jump floor reaction is **not
+  tested**. Native parity is **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,

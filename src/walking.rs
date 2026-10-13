@@ -913,7 +913,17 @@ pub fn audit_part_drop(bundle: &Bundle) -> Result<String, String> {
     {
         return Err(format!("part drop failed\n{report}"));
     }
-    writeln!(report, "part_drop_pass rested=4 stacked=true sleep=not_implemented broadphase_order=assumed native_differential=not_tested").unwrap();
+    writeln!(
+        report,
+        "{}",
+        sleep_summary("part_drop_sleep", &fixture.world.loose)
+    )
+    .unwrap();
+    // SleepStage: every Part comes to rest and leaves the kernel.
+    if parts.iter().any(|p| !p.sleep.sleeping() || p.in_kernel) {
+        return Err(format!("part drop: a resting Part never slept\n{report}"));
+    }
+    writeln!(report, "part_drop_pass rested=4 stacked=true asleep=4 sleep=sleep_stage broadphase_order=assumed native_differential=not_tested").unwrap();
     Ok(report)
 }
 
@@ -1017,7 +1027,13 @@ pub fn audit_part_push(bundle: &Bundle) -> Result<String, String> {
     {
         return Err(format!("part push failed\n{report}"));
     }
-    writeln!(report, "part_push_pass pushed=true connectors=realtime floor_raycast=static_and_loose sleep=not_implemented broadphase_order=assumed native_differential=not_tested").unwrap();
+    writeln!(
+        report,
+        "{}",
+        sleep_summary("part_push_sleep", &fixture.world.loose)
+    )
+    .unwrap();
+    writeln!(report, "part_push_pass pushed=true connectors=realtime floor_raycast=static_and_loose sleep=sleep_stage broadphase_order=assumed native_differential=not_tested").unwrap();
     Ok(report)
 }
 
@@ -1026,6 +1042,26 @@ pub fn audit_part_push(bundle: &Bundle) -> Result<String, String> {
 /// on it, walks off and up onto a heavier loose "Step" 1 stud high, and idles
 /// there into RunningNoPhysics. Logs the floor Part, heights and how far the
 /// Parts were pushed.
+/// SleepStage assembly state changes per Part: (world step, state), and
+/// the final state.
+fn sleep_summary(label: &str, loose: &crate::loose::LooseWorld) -> String {
+    let mut out = format!("{label} allow_sleep={}", loose.allow_sleep);
+    for (i, p) in loose.parts.iter().enumerate() {
+        let changes: Vec<(u32, crate::sleep::AssemblyState)> = loose
+            .transitions
+            .iter()
+            .filter(|(_, node, _)| *node == crate::loose::Node::Loose(i))
+            .map(|(step, _, state)| (*step, *state))
+            .collect();
+        out.push_str(&format!(
+            " [{} final={:?} in_kernel={} changes={changes:?}]",
+            p.name, p.sleep, p.in_kernel
+        ));
+    }
+    out.push_str(&format!(" edges={:?}", loose.edge_counts()));
+    out
+}
+
 pub fn audit_part_stand(bundle: &Bundle) -> Result<String, String> {
     use crate::humanoid_state::FloorPart;
     let bytes = bundle.read(
@@ -1177,6 +1213,24 @@ pub fn audit_part_stand(bundle: &Bundle) -> Result<String, String> {
     {
         return Err(format!("part stand failed\n{report}"));
     }
-    writeln!(report, "part_stand_pass floor_raycast=static_and_loose floor_velocity=c02c28 floor_reaction=running_and_jump sleep=not_implemented native_differential=not_tested").unwrap();
+    writeln!(
+        report,
+        "{}",
+        sleep_summary("part_stand_sleep", &fixture.world.loose)
+    )
+    .unwrap();
+    // Standing kinematically on a sleeping Part leaves it asleep.
+    if fixture
+        .world
+        .loose
+        .parts
+        .iter()
+        .any(|p| !p.sleep.sleeping())
+    {
+        return Err(format!(
+            "part stand: the Parts are not asleep at the end\n{report}"
+        ));
+    }
+    writeln!(report, "part_stand_pass floor_raycast=static_and_loose floor_velocity=c02c28 floor_reaction=running_and_jump sleep=sleep_stage native_differential=not_tested").unwrap();
     Ok(report)
 }

@@ -1,5 +1,47 @@
 # MODLOG
 
+## 2026-10-13 SleepStage: still unanchored Parts fall asleep
+
+**Changed:**
+- New `sleep.rs`: Sim::AssemblyState, the assembly motion history (00adafbc, 00adb06a, 00adb118, 00adb2d8), the sample (root position and quaternion times the assembly radius, 00adaf4a / 00ad9d72), and the native thresholds (0.01 still, 0.02 moving, 2.0 kinematic wake).
+- `LooseWorld::sleep_stage` runs SleepStage::step 00b707f4 in native order:
+  - wake passes;
+  - stepContacts over the STEPPING contacts, then later the CONTACTING ones;
+  - the sleep check of awake assemblies;
+  - the 4-step recheck.
+  It replaces the per-step `update_contacts` / `update_character_contacts` calls in `World` (both functions are kept).
+- Contacts carry the native edge states. A contact makes connectors only while CONTACTING with a kernel body.
+- Sleeping Parts leave the kernel and act as fixed bodies for connectors; waking re-enters them through 00a9be30.
+- The character assembly is in the stage only while it is in the kernel. Its history marks it moving or still; it never sleeps (Humanoid::onStepped restarts its countdown).
+- The Humanoid wakes a new floor Part (00bff784) and a floor it walks over kinematically faster than 2 studs/s (00c07626). New `World::wake_floor` and `LooseWorld::wake_assembly`.
+- `BlockBlockContact::take_connectors`; `LooseWorld::{transitions, allow_sleep, edge_counts, sleep_profile}`.
+- The loose audits print `part_*_sleep` lines. part-drop and part-stand now require the Parts to end asleep.
+
+**Why:** The user asked for the sleep stage, so resting Parts and Parts being stood on settle.
+
+**Tested how:**
+- Ran the three loose audits.
+- Re-ran audit-walking, part-wall, baseplate, animate, player, locomotion, runtime, walking-render, camera, kernel and baseplate-render: identical to the previous build apart from evidence paths and timing.
+- viewport-baseplate-smoke: exit 0, and the five demo Parts end asleep.
+- 77 tests pass; clippy and fmt are clean.
+
+**Result:**
+- audit-part-drop: all four Parts sleep (Rest and Stack at world step 120, Tumble 271, Drop 303) with zero velocity. The slow creep of resting stacks (about 0.15 studs over the run) is gone.
+- audit-part-stand:
+  - the Pad sleeps before the character arrives, the landing wakes it (step 239), and it sleeps again at 367;
+  - the Step does the same;
+  - the Pad still sinks about 0.085 into the Baseplate. At wake it carries the landing step's 19 accumulated substep reactions, then it rests in realTimeBodies against contactConnectors until it sleeps.
+- audit-part-push: the Crate is asleep when the character reaches it. The touch wakes it with the character's realtime connector first, so 00a9be30 (re-checked in Ghidra) files it under jointBodies. Its ground contact uses joint springs and it slides about 37 studs ahead of the character before tipping (it was 13 studs, tipping early).
+
+**Still broken / not tested:**
+- Native parity is not tested.
+- The broadphase is not ported: every colliding pair is a contact for the whole run, in a fixed order, so edge-add and edge-remove wakes from grid changes do not happen.
+- The native re-binding of live connectors when a Part enters or leaves the kernel is not recovered. The port deletes them and regenerates them on the next Contact::step.
+- The awake-set iteration order (native: by pointer) is assumed: character first, then Parts by index.
+- Environmental throttling is not ported.
+
+**Next:** Floor friction in RunningBase (a43f4c / a43e10), the PopperCam ray against loose Parts, and audits for the jump floor reaction and the steep-floor rule.
+
 ## 2026-10-13 The character stands on unanchored Parts
 
 **Changed:**

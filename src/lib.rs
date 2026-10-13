@@ -33,6 +33,7 @@ pub mod scene;
 pub mod scheduler;
 pub mod shader_pack;
 pub mod sky;
+pub mod sleep;
 pub mod surface;
 pub mod texture;
 pub mod walking;

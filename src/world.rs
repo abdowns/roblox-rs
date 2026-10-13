@@ -11,7 +11,7 @@ use crate::{
     humanoid_state::{FloorPart, Hit},
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
     legacy_contact::{BlockContactProfile, ContactGeometry, ImpulseProfile},
-    loose::LooseWorld,
+    loose::{CharacterMotion, LooseWorld},
     material::{MaterialProfile, Shape},
     physics,
     rig::{R6Rig, compose},
@@ -461,6 +461,8 @@ pub struct World {
     /// BlockBlockContact per (character collider, static block index).
     block_contacts: BTreeMap<(String, usize), BlockBlockContact<ContactState>>,
     mass_parts: BTreeMap<String, MassPart>,
+    /// Every character Part's size, for the assembly radius (00ad853c).
+    part_sizes: Vec<(String, [f32; 3])>,
 }
 
 impl World {
@@ -483,9 +485,11 @@ impl World {
         let materials = MaterialProfile::load(bundle)?;
         let mut colliders = Vec::new();
         let mut collider_materials = Vec::new();
+        let mut part_sizes = Vec::new();
         let mut floor_y = f32::INFINITY;
         for instance in &scene.instances {
             let Some(part) = &instance.part else { continue };
+            part_sizes.push((instance.name.clone(), part.size));
             if instance.name.ends_with(" Leg") {
                 floor_y = floor_y.min(part.frame.position[1] - part.size[1] * 0.5);
             }
@@ -571,6 +575,7 @@ impl World {
             states: BTreeMap::new(),
             block_contacts: BTreeMap::new(),
             mass_parts: parts,
+            part_sizes,
         })
     }
     /// The character in a Workspace instead of the fixture: the fixture
@@ -757,8 +762,58 @@ impl World {
         };
         self.loose.collider_touching(index, &block, &self.materials)
     }
+    /// The character assembly for SleepStage: its root primitive
+    /// (HumanoidRootPart) frame and point velocity, and the assembly radius
+    /// 00ad853c over every character Part at the current pose.
+    fn character_motion(&self, rig: &R6Rig) -> Result<CharacterMotion, String> {
+        let frames = rig.pose(&self.body.frame)?;
+        let root = self.body.frame.position;
+        let mut radius = 0.0f32;
+        for (name, size) in &self.part_sizes {
+            let frame = frames.get(name).ok_or("missing character Part frame")?;
+            let r = crate::sleep::primitive_radius(frame.position, root, *size);
+            // 00ad9d72 keeps the old value unless the new one is larger.
+            if r > radius {
+                radius = r;
+            }
+        }
+        Ok(CharacterMotion {
+            frame: self.body.frame.clone(),
+            radius,
+            velocity: self.point_velocity(root),
+            angular_velocity: self.body.angular_velocity,
+        })
+    }
+    /// SleepStage::step for the loose Parts, the character in the stage
+    /// unless it is placed kinematically.
+    fn sleep_stage(&mut self, rig: &R6Rig, in_stage: bool) -> Result<(), String> {
+        let frames = rig.pose(&self.body.frame)?;
+        let blocks = self.collider_blocks(&frames)?;
+        let motion = if in_stage {
+            Some(self.character_motion(rig)?)
+        } else {
+            None
+        };
+        self.loose.sleep_stage(
+            self.steps,
+            motion.as_ref(),
+            &blocks,
+            &self.statics.blocks,
+            &self.statics.tables,
+            &self.materials,
+        )
+    }
+    /// World::wakeAssembly 00ba7fb0 (not recursive) for a Humanoid floor.
+    pub fn wake_floor(&mut self, part: FloorPart) -> Result<(), String> {
+        match part {
+            FloorPart::Loose(index) => self.loose.wake_assembly(index),
+            // Anchored assemblies are not in SleepStage.
+            FloorPart::Static(_) | FloorPart::Fixture => Ok(()),
+        }
+    }
     /// Contact::step for the character against the loose Parts (after its
     /// static-block contacts; the native broadphase order is not recovered).
+    #[allow(dead_code)] // Replaced by SleepStage; kept for the old order.
     fn update_loose_contacts(
         &mut self,
         frames: &BTreeMap<String, CoordinateFrame>,
@@ -853,9 +908,10 @@ impl World {
         // Contacts still update outside the kernel stage; no connectors are
         // generated (ae32f4 checks stage 0xf).
         self.update_block_contacts(&frames, false)?;
-        self.update_loose_contacts(&frames, false)?;
         self.contacts = 0;
-        // The character is outside the kernel; the loose Parts still step.
+        // The character is in the Humanoid stage, outside SleepStage; the
+        // loose Parts still step.
+        self.sleep_stage(rig, false)?;
         self.step_loose()?;
         for _ in 0..self.kernel.physics.kernel_substeps {
             self.loose.substep(&self.kernel)?;
@@ -863,11 +919,9 @@ impl World {
         self.steps = self.steps.checked_add(1).ok_or("walking tick overflow")?;
         Ok(())
     }
-    /// The loose Parts' contacts (Contact::step), Kernel::step pre-step and
-    /// stepWorld up to the substeps.
+    /// Kernel::step pre-step and stepWorld up to the substeps for the loose
+    /// Parts (SleepStage already stepped their contacts).
     fn step_loose(&mut self) -> Result<(), String> {
-        self.loose
-            .update_contacts(&self.statics.blocks, &self.statics.tables, &self.materials)?;
         self.loose.prestep(&self.kernel)?;
         self.loose
             .step_world(&self.kernel, &self.impulses, &self.statics.blocks)
@@ -930,7 +984,7 @@ impl World {
         }
         self.states.retain(|key, _| active.contains(key));
         self.update_block_contacts(&frames, true)?;
-        self.update_loose_contacts(&frames, true)?;
+        self.sleep_stage(rig, true)?;
         self.step_loose()?;
         self.contacts = active.len()
             + self

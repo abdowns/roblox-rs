@@ -599,6 +599,11 @@ impl<T: Default> BlockBlockContact<T> {
         self.events.push(ContactEvent::Kept { index, reused });
         Ok(())
     }
+    /// Take every live connector out of the contact (the contact left the
+    /// kernel stage); the cached features are kept.
+    pub fn take_connectors(&mut self) -> Vec<Connector<T>> {
+        self.buffers[self.current].drain(..).collect()
+    }
     /// Delete the unmatched connectors of the current buffer (+0x1c).
     fn remove_leftovers(&mut self) {
         for connector in self.buffers[self.current].drain(..) {

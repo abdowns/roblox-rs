@@ -318,8 +318,9 @@ impl Humanoid {
         self.state_events(world, rig)
     }
     /// HumanoidState::onStepped 00bff424: findFloor 00bff784, then timers.
-    fn state_stepped(&mut self, world: &World, rig: &R6Rig, dt: f32) -> Result<(), String> {
+    fn state_stepped(&mut self, world: &mut World, rig: &R6Rig, dt: f32) -> Result<(), String> {
         let had_floor = self.state.floor.floor.is_some();
+        let old_part = self.state.floor.part;
         self.state.floor = FloorQuery::default();
         if self.profile.searches_floor(self.state.kind) {
             let torso = Self::torso(world, rig)?;
@@ -338,6 +339,11 @@ impl Humanoid {
                 self.last_floor_normal = normal;
             }
             self.state.floor = query;
+        }
+        // 00bff784: a new floor Part wakes its assembly (00ba7fb0, not
+        // recursive).
+        if let Some(part) = self.state.floor.part.filter(|p| Some(*p) != old_part) {
+            world.wake_floor(part)?;
         }
         self.state.timer -= dt;
         self.state.elapsed += dt;
@@ -688,7 +694,16 @@ impl Humanoid {
             velocity: std::array::from_fn(|a| v[a] + offset[a]),
             angular_velocity: spin,
         };
-        world.body.set_body_state(&state)
+        world.body.set_body_state(&state)?;
+        // 00c07626: moving faster than 2 over a floor wakes the floor
+        // (00ba7fb0; recursive only with the PGS solver).
+        if let Some(part) = floor.part {
+            let speed = (v[2] * v[2] + (v[1] * v[1] + v[0] * v[0])).sqrt();
+            if world.loose.sleep_profile().kinematic_wake_speed < speed {
+                world.wake_floor(part)?;
+            }
+        }
+        Ok(())
     }
     /// Whether the current state keeps the assembly in the kernel.
     pub fn is_kinematic(&self) -> bool {
