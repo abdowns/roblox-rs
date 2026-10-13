@@ -94,7 +94,20 @@ pub struct Humanoid {
     pub transitions: Vec<(u32, StateType)>,
     /// Every Jumping push (00c05e0e) since the last reset, for the audits.
     pub jump_pushes: Vec<JumpPush>,
+    /// Every steep-floor rewrite (00c0a498 / 00c07626) since the last reset.
+    pub steep_floors: Vec<SteepFloor>,
     events: Vec<HumanoidEvent>,
+}
+
+/// One steep-floor velocity rewrite.
+#[derive(Clone, Debug)]
+pub struct SteepFloor {
+    pub normal: [f32; 3],
+    /// up . normal and cos(MaxSlopeAngle).
+    pub d: f32,
+    pub limit: f32,
+    pub before: [f32; 3],
+    pub after: [f32; 3],
 }
 
 /// One Jumping force call that pushed (00c05e0e).
@@ -191,6 +204,7 @@ impl Humanoid {
             camera: None,
             transitions: Vec::new(),
             jump_pushes: Vec::new(),
+            steep_floors: Vec::new(),
             events: Vec::new(),
             balancing,
             profile,
@@ -209,6 +223,7 @@ impl Humanoid {
         self.last_floor_normal = [0.0; 3];
         self.transitions.clear();
         self.jump_pushes.clear();
+        self.steep_floors.clear();
         self.events.clear();
     }
     /// ControlScript's jump key: while held, MasterControl sets Humanoid.Jump
@@ -603,10 +618,11 @@ impl Humanoid {
     /// cos(MaxSlopeAngle) (00bfd9b4), the velocity loses its component along
     /// the normal and its downhill component becomes WalkSpeed (+0x194).
     /// Walkable floors leave it unchanged.
-    fn steep_floor(&self, velocity: [f32; 3], n: [f32; 3], d: f32) -> [f32; 3] {
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // The native branches on `<`.
+    fn steep_floor(&mut self, velocity: [f32; 3], n: [f32; 3], d: f32) -> [f32; 3] {
         let limit =
             f64::from(self.properties.max_slope_angle * std::f32::consts::PI / 180.0).cos() as f32;
-        if d >= limit {
+        if !(d < limit) {
             return velocity;
         }
         let up = [0.0f32, 1.0, 0.0];
@@ -630,7 +646,15 @@ impl Humanoid {
         ];
         let w = self.properties.walk_speed;
         let downhill = (p[2] * t[2] + p[1] * t[1]) + p[0] * t[0];
-        std::array::from_fn(|a| (t[a] * w + p[a]) - t[a] * downhill)
+        let after = std::array::from_fn(|a| (t[a] * w + p[a]) - t[a] * downhill);
+        self.steep_floors.push(SteepFloor {
+            normal: n,
+            d,
+            limit,
+            before: velocity,
+            after,
+        });
+        after
     }
     /// MovingNoPhysicsBase 00c07626: place the Torso assembly kinematically.
     fn kinematic_update(

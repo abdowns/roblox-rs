@@ -1408,3 +1408,144 @@ pub fn audit_part_jump(bundle: &Bundle) -> Result<String, String> {
     writeln!(report, "part_jump_pass floor_mass=min(root,floor) reaction=force_minus_existing native_differential=not_tested").unwrap();
     Ok(report)
 }
+
+/// The steep-floor rules on a 35-degree anchored slope, once with the
+/// default MaxSlopeAngle (89) and once with MaxSlopeAngle = 30 (a script
+/// can set it):
+/// - RunningBase 00c0a498 / MovingNoPhysicsBase 00c07626 rewrite the desired
+///   velocity when up . n < cos(MaxSlopeAngle): its normal component goes and
+///   its downhill component becomes WalkSpeed (`Humanoid::steep_floors`);
+/// - the jump event (00c0177e) is refused in Running / RunningNoPhysics when
+///   up . n <= cos(MaxSlopeAngle).
+pub fn audit_humanoid_slope(bundle: &Bundle) -> Result<String, String> {
+    use crate::humanoid_state::FloorPart;
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut report = String::new();
+    let angle = 35.0f32.to_radians();
+    let (s, c) = angle.sin_cos();
+    for max_slope in [89.0f32, 30.0] {
+        let mut rig = R6Rig::character(bundle, &scene)?;
+        let mut workspace = Workspace::studio_new_document();
+        let mut slope = crate::workspace::PartInstance {
+            name: "Slope".into(),
+            ..Default::default()
+        };
+        slope.set_size([24.0, 2.0, 24.0]);
+        slope.anchored = true;
+        slope.frame = crate::scene::CoordinateFrame {
+            position: [0.0, 6.0, 0.0],
+            // About X: the top face normal is (0, cos, sin), downhill +z.
+            rotation: [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]],
+        };
+        workspace.parts.push(slope);
+        let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+        let slope_part = FloorPart::Static(fixture.world.statics.blocks.len() - 1);
+        fixture.humanoid.properties.max_slope_angle = max_slope;
+        let walk_speed = fixture.humanoid.properties.walk_speed;
+        // 1. Fall onto the slope.
+        let mut fell = false;
+        let mut landed = None;
+        for step in 1..=1200u32 {
+            fixture.step_animated(&mut rig, [0.0; 3])?;
+            fell |= fixture.state_type() == StateType::Freefall;
+            if fell && fixture.state_type() != StateType::Freefall {
+                landed = Some(step);
+                break;
+            }
+        }
+        let Some(landed) = landed else {
+            return Err(format!("slope {max_slope}: never landed\n{report}"));
+        };
+        let at_landing = fixture.world.body.frame.position;
+        writeln!(
+            report,
+            "humanoid_slope_{max_slope}_landed step={landed} root={at_landing:?} floor={:?} state={:?}",
+            fixture.humanoid.floor_part(),
+            fixture.state_type()
+        )
+        .unwrap();
+        // 2. Idle 8 steps, hold jump for one 60 Hz frame, run 40 more.
+        let transitions_before = fixture.humanoid.transitions.len();
+        let mut slope_steps = 0u32;
+        let mut jump_on_slope = false;
+        for step in 0..52u32 {
+            fixture.set_jump((8..12).contains(&step));
+            fixture.step_animated(&mut rig, [0.0; 3])?;
+            let on_slope = fixture.humanoid.floor_part() == Some(slope_part);
+            slope_steps += u32::from(on_slope);
+            if step % 4 == 3 {
+                writeln!(
+                    report,
+                    "humanoid_slope_{max_slope}_step step={} root={:?} velocity={:?} state={:?} floor={:?}",
+                    step + 1,
+                    fixture.world.body.frame.position,
+                    fixture.world.body.velocity,
+                    fixture.state_type(),
+                    fixture.humanoid.floor_part()
+                )
+                .unwrap();
+            }
+            jump_on_slope |= on_slope && fixture.state_type() == StateType::Jumping;
+        }
+        let jumped = fixture.humanoid.transitions[transitions_before..]
+            .iter()
+            .any(|(_, s)| *s == StateType::Jumping);
+        let steep = fixture.humanoid.steep_floors.clone();
+        for (i, f) in steep.iter().enumerate().take(3) {
+            writeln!(
+                report,
+                "humanoid_slope_{max_slope}_steep index={i} normal={:?} d={} limit={} before={:?} after={:?}",
+                f.normal, f.d, f.limit, f.before, f.after
+            )
+            .unwrap();
+        }
+        // The rewritten velocity has no normal part and WalkSpeed downhill.
+        let mut worst = [0.0f32; 2];
+        for f in &steep {
+            let n = f.normal;
+            let t = [
+                -(0.0 - n[0] * f.d),
+                -(1.0 - n[1] * f.d),
+                -(0.0 - n[2] * f.d),
+            ];
+            let length = dot3(t, t).sqrt();
+            let t = t.map(|v| v / length);
+            worst[0] = worst[0].max(dot3(f.after, n).abs());
+            worst[1] = worst[1].max((dot3(f.after, t) - walk_speed).abs());
+        }
+        writeln!(
+            report,
+            "humanoid_slope_{max_slope}_result slope_steps={slope_steps} steep_rewrites={} jumped={jumped} worst_normal_speed={} worst_downhill_error={} moved={:?} state={:?}",
+            steep.len(),
+            worst[0],
+            worst[1],
+            std::array::from_fn::<f32, 3, _>(|a| fixture.world.body.frame.position[a] - at_landing[a]),
+            fixture.state_type()
+        )
+        .unwrap();
+        let ok = if max_slope > 35.0 {
+            steep.is_empty() && jumped
+        } else {
+            !steep.is_empty()
+                && !jump_on_slope
+                && worst[0] < 1e-3
+                && worst[1] < 1e-3
+                && slope_steps > 0
+        };
+        if !ok {
+            return Err(format!(
+                "slope {max_slope}: steep-floor rules failed\n{report}"
+            ));
+        }
+    }
+    writeln!(report, "humanoid_slope_pass walkable_jumps=true steep_rewrite=walk_speed_downhill steep_jump_refused=true native_differential=not_tested").unwrap();
+    Ok(report)
+}
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]
+}

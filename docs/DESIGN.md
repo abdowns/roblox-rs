@@ -672,7 +672,14 @@ as `FloorQuery::part`).
   standing Humanoid therefore stays a realtime body while it is pushed.
 - Steep floors (00c0a498/00c07626): when up . n < cos(MaxSlopeAngle), the
   velocity loses its normal component and its downhill component becomes
-  WalkSpeed. Walkable slopes are left alone.
+  WalkSpeed. Walkable slopes are left alone. The test is written `!(d < limit)`
+  so a NaN skips the rewrite, as the native `<` does. Each rewrite is logged
+  in `Humanoid::steep_floors` for audit-humanoid-slope.
+- Jump event 2 (00c0177e): the slope is c0215e:
+  - with a floor: up . floor normal;
+  - otherwise: the stored last normal (+0x22c) when 01d409c4 is set, else 0.
+  In Running (8) or RunningNoPhysics (10), the event is false when the
+  slope <= cos(MaxSlopeAngle). Otherwise it is Jump && JumpPower > 0.
 - Event 17/22's new-contact test (00be141e) counts HumanoidRootPart contacts.
   CanCollide-off Parts get no contacts (00ae714a), so it stays false.
 

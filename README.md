@@ -300,6 +300,20 @@ are downloaded on first build; runtime data loading uses no network requests.
   Each push is checked against the native arithmetic bit for bit. Native jump
   height and parity are **not tested**.
 
+- Steep floors (RunningBase 00c0a498, MovingNoPhysicsBase 00c07626, jump
+  event 00c0177e) on a 35-degree anchored slope. Run
+  `sh tools/cargo.sh run --locked -- audit-humanoid-slope`. Expect:
+  - `humanoid_slope_89_result ... steep_rewrites=0 jumped=true`: with the
+    default MaxSlopeAngle the slope is walkable and the jump fires;
+  - `humanoid_slope_30_steep index=0 normal=[0.0, 0.81915206, 0.57357645] d=0.81915206 limit=0.8660254 before=[0.0, 0.0, 0.0] after=[0.0, -9.177222, 13.106433]`:
+    with MaxSlopeAngle 30 the desired velocity becomes WalkSpeed (16) straight
+    downhill;
+  - `humanoid_slope_30_result slope_steps=48 steep_rewrites=13 jumped=false ... moved=[..., -4.304735, 2.3139892]`:
+    the jump is refused and the character slides down;
+  - `humanoid_slope_pass`.
+
+  Native parity is **not tested**.
+
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,
   inertia, angular momentum, restitution and friction. Run

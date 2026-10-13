@@ -1,5 +1,24 @@
 # MODLOG
 
+## 2026-10-13 audit-humanoid-slope: the steep-floor rules
+
+**Changed:**
+- `Humanoid::steep_floors` (`SteepFloor`) logs every steep-floor rewrite: normal, d, limit, velocity before and after.
+- `steep_floor` now branches like the native `d < limit`, written `!(d < limit)`, so a NaN skips the rewrite. It takes `&mut self` (private).
+- New `audit-humanoid-slope`: a 35-degree anchored slope, run with MaxSlopeAngle 89 and again with 30.
+- Re-checked against Ghidra: 00c0a498 (operation order, unitize 1e-6, WalkSpeed +0x194), 00c0177e (event 2) and 00c0215e (its slope).
+
+**Why:** The user listed "the steep-slope rule have no audit of their own."
+
+**Tested how:**
+- Ran audit-humanoid-slope and all other audits: unchanged.
+- 77 tests pass; clippy and fmt are clean.
+
+**Result:**
+- 89: no rewrites; the jump fires.
+- 30: 13 rewrites to (0, -9.177, 13.106), which has a normal part of 1e-6 and WalkSpeed downhill to within 1e-6. The jump is refused and the character slides 2.31 studs downhill in 52 steps.
+- Native parity is **not tested**.
+
 ## 2026-10-13 audit-part-jump: the Jumping floor push
 
 **Changed:**
