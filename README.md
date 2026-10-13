@@ -46,7 +46,9 @@ PopperCam occlusion. The fixture camera
 follows translation. Movement uses native Humanoid command math, WalkSpeed=16,
 RunningBase forces, R6 assembly mass/inertia and constrained SimBody substeps.
 The two original collidable bodies (Head/Torso) generate vertex/plane wall
-connectors and receive native awake impulses/spring forces. Arms and legs play
+connectors. Like the original, these are realtime connectors (the Humanoid makes
+its Parts non-throttling), so they get spring forces only, never awake impulses.
+Arms and legs play
 the August 2016 keyframe clips through the shipped Animate script (see below).
 Animated poses update the assembly center of mass and inertia.
 
@@ -70,8 +72,8 @@ sh tools/cargo.sh run --locked -- viewport-walking-smoke
 ```
 
 Expect `walking_balance_pass sustained_wall_seconds=30` and
-`walking_pass walk_speed=16`, `input_release_stopped=true` and nonzero wall
-impulses, plus `walking_animation_pass limbs=4` and `release_pose=Standing`.
+`walking_pass walk_speed=16`, `input_release_stopped=true` and a small
+`wall_max_penetration` (about 0.08), plus `walking_animation_pass limbs=4` and `release_pose=Standing`.
 The render audit prints `walking_limb_readback` for three poses at identical root
 frames and `walking_render_pass` with an exact reset comparison.
 The automatic window test presses toward the wall, presents 120 frames,

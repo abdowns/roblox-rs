@@ -49,7 +49,7 @@ to preserve as implementation grows.
 ## Module layout follows the native classes
 
 The character runtime is split the way the original client splits it:
-`world.rs` is RBX::World (the assembly, contact impulses, kernel substeps and
+`world.rs` is RBX::World (the assembly, realtime contact springs, kernel substeps and
 collision queries against the static contents), `humanoid.rs` is RBX::Humanoid
 with its HumanoidState objects (onStepped dispatch, per-state update, the
 per-substep kernel force callback, and the Lua signals fired on state edges by
@@ -451,9 +451,16 @@ An explicitly defined infinite plane at x=4 generates collidable-body face
 vertices. Face selection 006b2077 prefers Y over X on a tie, then Z on ties with
 the largest component; live decompilation corrected the initially strict-first
 selection. Vertex-plane points use the existing native contract; normals point
-from the dynamic character into the wall. Awake impulses precede 19 force/contact
-spring passes. Material coefficients, zero reference impulses and up-to-60 awake
-iterations are fixture inputs. Full native adaptive/sleep/invalidation/displacement
+from the dynamic character into the wall.
+
+Character contacts are realtime connectors, so they get springs only. Every
+HumanoidState constructor (00bfd2a2 -> 00bfd678 -> 00b633fa) clears Body +0x44
+(canThrottle) on the character's Parts. Connector insert 00a99514 files any
+connector with a non-throttling body under KernelData realTimeConnectors. stepWorld
+00a9768c runs awake impulses over contactConnectors only, so the character
+receives only spring forces in the 19 substeps. Wall and block contacts use the
+recovered ContactParams 00a43fb4. The fixture wall is treated as a large Plastic
+Part, so kSpring is the collider's own stiffness. Full native adaptive/sleep/invalidation/displacement
 scheduling is not claimed. Mass/inertia remain the rigid rest-pose assembly;
 walking poses do not play guessed clips or substitute procedural animation for
 the missing default keyframe data. AutoRotate, jump, stairs, slopes and complete

@@ -1,5 +1,35 @@
 # MODLOG
 
+## 2026-10-13 Character contacts are realtime connectors (springs only)
+
+**Changed:**
+- `World::step` no longer runs the awake impulse pass for the character's wall and block connectors. It keeps the connector bookkeeping, then runs the 19 substeps of force callback, springs and integration.
+- Removed the now-unused per-connector `AwakeContact` state and the `ImpulseProfile` from World.
+- `impulse_applications` stays public and is always 0.
+- The walking audit's wall check is now "the wall was reached (max_penetration > 0) and penetration ≤ 0.5" instead of "impulses > 0". Its failure message prints the fixture report.
+
+**Why:** Native evidence:
+- Every HumanoidState ctor (00bfd2a2 -> 00bfd678 -> 00b633fa) sets canThrottle (Body +0x44) false on the character's Parts.
+- Connector insert 00a99514 puts a connector with a non-throttling body into realTimeConnectors.
+- stepWorld 00a9768c runs impulses only over contactConnectors.
+
+**Tested how:** Rebuilt, then ran audit-walking, audit-part-wall and audit-baseplate against the previous commit's output. Also ran 68 tests, Clippy and fmt.
+
+**Result:**
+- audit-baseplate is byte-identical.
+- audit-part-wall: the root still stops at z = -9.5104, upright_y 0.99999994, impulses 0. Max penetration is 0.069 (was 0.0507).
+- audit-walking:
+  - the wall root holds at x = 3.5104 from step 480 to step 7680, with z constant at 22.6307;
+  - max wall penetration is 0.080 (was 0.067);
+  - min animated upright_y is 0.99978;
+  - impulses 0.
+
+**Still broken / not tested:**
+- The substep order is still force callback, then springs. Native runs realTimeConnectors before the Humanoid connector; that is the next fix.
+- Native parity is not tested.
+
+**Next:** Native substep order.
+
 ## 2026-10-13 Fixture wall uses recovered Plastic ContactParams
 
 **Changed:**

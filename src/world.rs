@@ -1,5 +1,5 @@
-//! RBX::World subset: one character assembly, the static contents, awake
-//! contact impulses, and kernel substeps with a per-substep force callback
+//! RBX::World subset: one character assembly, the static contents, realtime
+//! contact springs, and kernel substeps with a per-substep force callback
 //! (the Humanoid state's kernel connector, vtable +0xc). The static contents
 //! are either the walking fixture (floor plane, wall half-space) or the
 //! anchored Parts of a Workspace (`World::in_workspace`).
@@ -10,9 +10,7 @@ use crate::{
     collision::ContactBodyState,
     humanoid_state::Hit,
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
-    legacy_contact::{
-        AwakeContact, BlockContactProfile, ContactGeometry, ImpulseInput, ImpulseProfile,
-    },
+    legacy_contact::{BlockContactProfile, ContactGeometry},
     material::{MaterialProfile, Shape},
     physics,
     rig::{R6Rig, compose},
@@ -24,7 +22,6 @@ use std::collections::BTreeMap;
 #[derive(Default)]
 struct ContactState {
     spring: ContactSpring,
-    impulse: AwakeContact,
 }
 
 /// An anchored, colliding block Part in the world.
@@ -306,7 +303,6 @@ pub struct World {
     pub inertia: Tensor,
     original: KernelBody,
     original_inertia: Tensor,
-    impulses: ImpulseProfile,
     colliders: Vec<(String, [f32; 3])>,
     materials: MaterialProfile,
     /// Material defaults and Primitive stiffness per collider (Plastic).
@@ -415,7 +411,6 @@ impl World {
             max_penetration: 0.0,
             inertia: assembly.inertia_in_body,
             original_inertia: assembly.inertia_in_body,
-            impulses: ImpulseProfile::load(bundle)?,
             colliders,
             materials,
             collider_materials,
@@ -641,8 +636,10 @@ impl World {
         self.steps = self.steps.checked_add(1).ok_or("walking tick overflow")?;
         Ok(())
     }
-    /// doWorldStep: awake contact impulses, then the kernel substeps with the
-    /// force callback (torso frame, current inertia) before each integration.
+    /// doWorldStep. The character's connectors are realTimeConnectors, so the
+    /// awake impulse pass never touches them; each kernel substep runs the
+    /// force callback (torso frame, current inertia), the contact springs,
+    /// and the integration.
     /// Every contact uses recovered per-pair ContactParams (00a43fb4);
     /// `_parameters` is unused and kept for signature stability.
     pub fn step(
@@ -659,110 +656,34 @@ impl World {
         };
         let frames = rig.pose(&self.body.frame)?;
         let mut active = Vec::new();
-        // Block/block contacts with Workspace Parts are not ported yet; only
-        // the fixture wall generates connectors.
+        // Character Parts cannot throttle (every HumanoidState ctor 00bfd2a2
+        // clears Body +0x44), so 00a99514 files their contacts under
+        // realTimeConnectors: spring forces every substep, never the awake
+        // impulse pass, which 00a9768c runs over contactConnectors only.
         for (name, size) in self
             .colliders
             .iter()
             .filter(|_| self.statics.wall_enabled())
         {
-            for (vertex, g) in self.statics.geometry.plane_vertices(
+            for (vertex, _) in self.statics.geometry.plane_vertices(
                 frames.get(name).ok_or("missing wall collider frame")?,
                 *size,
                 &wall,
                 3,
             )? {
                 let key = (name.clone(), vertex);
-                self.states
-                    .entry(key.clone())
-                    .or_insert_with(|| ContactState {
-                        spring: ContactSpring::default(),
-                        impulse: AwakeContact::default(),
-                    })
-                    .impulse
-                    .invalidate();
-                active.push((key, g));
+                self.states.entry(key.clone()).or_default();
+                active.push(key);
             }
         }
-        self.states
-            .retain(|key, _| active.iter().any(|(k, _)| k == key));
+        self.states.retain(|key, _| active.contains(key));
         self.update_block_contacts(&frames, true)?;
-        let mut blocks = Vec::new();
-        for (key, contact) in &mut self.block_contacts {
-            for (at, c) in contact.connectors_mut().iter_mut().enumerate() {
-                c.state.impulse.invalidate();
-                blocks.push((key.clone(), at));
-            }
-        }
-        self.contacts = active.len() + blocks.len();
-        // Explicit bounded awake fixture scheduling; full native adaptive/sleep
-        // scheduling and +0xf0 reference-impulse accumulation remain unported.
-        for _ in 0..60 {
-            let mut applied = false;
-            for (key, g) in &active {
-                let input = ImpulseInput {
-                    geometry: g.clone(),
-                    parameters: *self
-                        .wall_parameters
-                        .get(&key.0)
-                        .ok_or("missing wall contact parameters")?,
-                    reference_impulse_a: [0.0; 3],
-                    reference_impulse_b: [0.0; 3],
-                    friction_enabled: true,
-                };
-                if self
-                    .states
-                    .get_mut(key)
-                    .ok_or("missing walking contact")?
-                    .impulse
-                    .solve(
-                        &input,
-                        &mut self.body,
-                        None,
-                        &fixed,
-                        &self.kernel,
-                        &self.impulses,
-                    )?
-                {
-                    self.impulse_applications += 1;
-                    applied = true;
-                }
-            }
-            for (key, at) in &blocks {
-                let fixed = block_body(&self.statics.blocks[key.1]);
-                let c = &mut self
-                    .block_contacts
-                    .get_mut(key)
-                    .ok_or("missing block contact")?
-                    .connectors_mut()[*at];
-                let input = ImpulseInput {
-                    geometry: character_geometry(c),
-                    parameters: pair_parameters(
-                        &self.colliders,
-                        &self.block_parameters,
-                        &key.0,
-                        key.1,
-                    )?,
-                    reference_impulse_a: [0.0; 3],
-                    reference_impulse_b: [0.0; 3],
-                    friction_enabled: true,
-                };
-                if c.state.impulse.solve(
-                    &input,
-                    &mut self.body,
-                    None,
-                    &fixed,
-                    &self.kernel,
-                    &self.impulses,
-                )? {
-                    self.impulse_applications += 1;
-                    applied = true;
-                }
-            }
-            if !applied {
-                break;
-            }
-        }
+        self.contacts = active.len()
+            + self
+                .block_contacts
+                .values()
+                .map(|c| c.connectors().len())
+                .sum::<usize>();
         for _ in 0..self.kernel.physics.kernel_substeps {
             let frames = rig.pose(&self.body.frame)?;
             let torso = frames.get("Torso").ok_or("missing state torso")?.clone();

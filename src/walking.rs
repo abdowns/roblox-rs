@@ -308,11 +308,16 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
             report.push_str(&fixture.report());
         }
     }
-    if fixture.world.impulse_applications == 0
+    // Realtime springs only (no impulses on character connectors): the wall
+    // must have been reached, and held to a shallow penetration.
+    if fixture.world.max_penetration <= 0.0
         || fixture.world.max_penetration > 0.5
         || fixture.world.body.frame.position[0] > fixture.world.statics.wall_x
     {
-        return Err("walking wall response failed".into());
+        return Err(format!(
+            "walking wall response failed: {}",
+            fixture.report()
+        ));
     }
     let mut minimum_up = 1.0f32;
     let mut maximum_spin = 0.0f32;
@@ -330,7 +335,7 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
         }
     }
     report.push_str(&fixture.report());
-    let wall_impulses = fixture.world.impulse_applications;
+    let wall_penetration = fixture.world.max_penetration;
     // Release must damp angular motion as well as translation.
     for _ in 0..480 {
         fixture.step(&rig, [0.0; 3])?;
@@ -590,7 +595,7 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     }
     writeln!(report,"walking_state_pass running_no_physics_speed=16 jump_rise={jump_rise} drop_landed=true states=Running,RunningNoPhysics,Jumping,Freefall,Landed").unwrap();
     writeln!(report,"walking_animation_pass limbs=4 swing_radians={swing:?} pivot_error={pivot_error} min_animated_upright_y={animated_minimum_up} wall_seconds=32 release_pose=Standing animated_cofm=true reset_identical=true default_keyframes=animate_keyframe2").unwrap();
-    writeln!(report,"walking_pass walk_speed={} distance_one_second={distance} input_release_stopped=true wall_impulses={} walking_animation=animate_keyframe2 native_differential=not_tested",fixture.humanoid.properties.walk_speed,wall_impulses).unwrap();
+    writeln!(report,"walking_pass walk_speed={} distance_one_second={distance} input_release_stopped=true wall_max_penetration={} walking_animation=animate_keyframe2 native_differential=not_tested",fixture.humanoid.properties.walk_speed,wall_penetration).unwrap();
     Ok(report)
 }
 
