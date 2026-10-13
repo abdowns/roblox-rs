@@ -1,10 +1,12 @@
 //! Explicit flat-floor / infinite-wall walking fixture: the game loop that
 //! runs the native jobs (Heartbeat, WaitingScripts, PhysicsJob) over a World
-//! with one character, its Humanoid and the bundled animation script. The
+//! with one character, its Humanoid, its Animator and the shipped R6 Animate
+//! LocalScript (keyframe clips). The
 //! world contents (floor plane, wall half-space, materials, awake scheduling)
 //! are a fixture, not native Workspace contents.
 use crate::{
-    animation::{Pose, ProceduralAnimation, ProceduralScript},
+    animate_script::{AnimateProfile, AnimateScript, ScriptPose},
+    animator::Animator,
     bundle::Bundle,
     humanoid::Humanoid,
     humanoid_state::StateType,
@@ -18,8 +20,10 @@ use std::fmt::Write;
 pub struct WalkingFixture {
     pub world: World,
     pub humanoid: Humanoid,
-    animation: ProceduralAnimation,
-    script: ProceduralScript,
+    animate: AnimateProfile,
+    script: AnimateScript,
+    animator: Animator,
+    joints: Vec<(String, String)>,
     animation_ticks: u32,
     joint_callbacks: u32,
     limb_angles: [f32; 4],
@@ -29,14 +33,20 @@ pub struct WalkingFixture {
 }
 impl WalkingFixture {
     pub fn new(bundle: &Bundle, scene: &Scene, rig: &R6Rig) -> Result<Self, String> {
-        let animation = ProceduralAnimation::load(bundle)?;
-        let schedule =
-            NativeSchedule::new(&SchedulerProfile::load(bundle)?, animation.wait_seconds)?;
+        let animate = AnimateProfile::load(bundle)?;
+        let schedule = NativeSchedule::new(&SchedulerProfile::load(bundle)?, animate.wait_seconds)?;
+        let joints = rig
+            .joints
+            .iter()
+            .map(|j| (j.part0.clone(), j.part1.clone()))
+            .collect();
         let mut fixture = Self {
             world: World::new(bundle, scene, rig)?,
             humanoid: Humanoid::new(bundle, scene)?,
-            animation,
-            script: ProceduralScript::default(),
+            animate,
+            script: AnimateScript::default(),
+            animator: Animator::default(),
+            joints,
             animation_ticks: 0,
             joint_callbacks: 0,
             limb_angles: [0.0; 4],
@@ -50,7 +60,13 @@ impl WalkingFixture {
     pub fn reset(&mut self) {
         self.world.reset();
         self.humanoid.reset();
-        self.script = ProceduralScript::default();
+        // A respawned character gets a fresh Animator and Animate script,
+        // which runs to its first wait: idle starts playing.
+        self.animator = Animator::new(self.joints.clone());
+        self.script = AnimateScript::default();
+        self.script
+            .start(&self.animate, &mut self.animator)
+            .expect("Animate idle start");
         self.animation_ticks = 0;
         self.joint_callbacks = 0;
         self.limb_angles = [0.0; 4];
@@ -86,34 +102,57 @@ impl WalkingFixture {
     pub fn state_type(&self) -> StateType {
         self.humanoid.state_type()
     }
-    /// Humanoid::onStepped, then deliver its signals to the script handlers.
+    /// Humanoid::onStepped (Stepped), then its signals run the Animate
+    /// handlers synchronously.
     fn humanoid_stepped(&mut self, rig: &R6Rig, input: [f32; 3], dt: f32) -> Result<(), String> {
         self.humanoid.on_stepped(&mut self.world, rig, input, dt)?;
         for event in self.humanoid.take_events() {
-            self.script.on_event(event);
+            self.script
+                .on_event(&self.animate, &mut self.animator, event)?;
         }
         Ok(())
     }
-    /// Play the bundled procedural branch while integrating walking. This is an
-    /// explicit offline choice: native R6 default keyframe payloads are absent.
+    /// Animator::onStepped on RunService's Animation signal: step tracks
+    /// (KeyframeReached handlers run inside), then pose every Motor6D.
+    fn animator_stepped(&mut self, rig: &mut R6Rig, dt: f32) -> Result<(), String> {
+        let (script, profile) = (&mut self.script, &self.animate);
+        let mut failure = None;
+        let poses = self.animator.on_stepped(dt, &mut |animator, track, event| {
+            if let Err(e) = script.on_track_event(profile, animator, track, event) {
+                failure.get_or_insert(e);
+            }
+        });
+        if let Some(e) = failure {
+            return Err(e);
+        }
+        for pose in poses {
+            rig.joints[pose.joint].animate(&pose.pose);
+        }
+        Ok(())
+    }
+    /// One world step with the shipped Animate script and keyframe clips.
     pub fn step_animated(&mut self, rig: &mut R6Rig, input: [f32; 3]) -> Result<(), String> {
         // Each call is one native world step. A new ideal 60 Hz frame runs the
         // Heartbeat and WaitingScripts jobs, then PhysicsJob: gameStepped
-        // (Humanoid::onStepped), World::uiStep (Motor6D stepUi once,
-        // 00ba8c68/00b39318) and its world steps (00ba9892).
+        // (Stepped -> Humanoid::onStepped, Animation -> Animator::onStepped),
+        // World::uiStep (Motor6D stepUi once, 00ba8c68/00b39318) and its
+        // world steps (00ba9892).
         while self.schedule.world_steps_remaining == 0 {
             let frame = self.schedule.begin_frame()?;
             if let Some(time) = frame.resumed_time {
-                // humanoidAnimateLocal: `local _, time = wait(0.1); move(time)`.
-                self.animation.apply(rig, self.script.pose, time)?;
+                // Animate: `local _, time = wait(0.1); move(time)`.
+                self.script
+                    .resume(&self.animate, &mut self.animator, rig, time)?;
                 self.animation_ticks += 1;
             }
             self.last_frame = Some(frame);
             if frame.world_steps == 0 {
                 continue; // physicsStep returns before World::step.
             }
-            self.humanoid_stepped(rig, input, self.stepped_dt(&frame))?;
-            let before: Vec<_> = rig.joints.iter().map(|j| j.current_angle).collect();
+            let dt = self.stepped_dt(&frame);
+            self.humanoid_stepped(rig, input, dt)?;
+            self.animator_stepped(rig, dt)?;
+            let before: Vec<_> = rig.joints.iter().map(|j| j.link_state()).collect();
             for joint in &mut rig.joints {
                 joint.step()?;
             }
@@ -123,7 +162,7 @@ impl WalkingFixture {
                 .joints
                 .iter()
                 .zip(before)
-                .any(|(j, old)| j.current_angle != old)
+                .any(|(j, old)| j.link_state() != old)
             {
                 self.world.refresh_assembly(rig)?;
             }
@@ -139,7 +178,12 @@ impl WalkingFixture {
     pub fn animation_report(&self) -> String {
         let inertia = self.world.inertia;
         format!(
-            "walking_animation profile=bundled_procedural_no_tools pose={:?} state={:?} event_speed={} script_resumes={} joint_step_ui={} limb_angles={:?} local_inertia={:?} schedule={:?} heartbeat_time={} game_time={} schedule_source=native_jobs_ideal_clock native_default_keyframes=unavailable\n",
+            "walking_animation profile=animate_keyframe2 animation={} tracks={} loads={} clips_loaded={} clips_missing={:?} pose={:?} state={:?} event_speed={} script_resumes={} joint_step_ui={} limb_angles={:?} local_inertia={:?} schedule={:?} heartbeat_time={} game_time={} schedule_source=native_jobs_ideal_clock\n",
+            self.script.current_animation(),
+            self.animator.active_tracks().len(),
+            self.script.loads,
+            self.animate.loaded(),
+            self.animate.missing,
             self.script.pose,
             self.humanoid.state_type(),
             self.humanoid.running_speed(),
@@ -152,8 +196,8 @@ impl WalkingFixture {
             self.schedule.game_time
         )
     }
-    /// One world step with the rest-pose rig: same Humanoid dispatch, no
-    /// procedural script or motor stepping.
+    /// One world step with the rest-pose rig: same Humanoid dispatch and
+    /// script handlers, no Animator or motor stepping.
     pub fn step(&mut self, rig: &R6Rig, input: [f32; 3]) -> Result<(), String> {
         while self.schedule.world_steps_remaining == 0 {
             let frame = self.schedule.begin_frame()?;
@@ -181,7 +225,7 @@ impl WalkingFixture {
     pub fn report(&self) -> String {
         let w = &self.world;
         format!(
-            "walking_state step={} state={:?} root_position={:?} velocity={:?} contacts={} impulses={} max_wall_penetration={} floor_y={} wall_x={} upright_y={} angular_velocity={:?} support_height={} fixture=flat_floor_rays_and_infinite_wall humanoid_dispatch=native_subset mass_tensor={} keyframe_playback=not_implemented native_differential=not_tested\n",
+            "walking_state step={} state={:?} root_position={:?} velocity={:?} contacts={} impulses={} max_wall_penetration={} floor_y={} wall_x={} upright_y={} angular_velocity={:?} support_height={} fixture=flat_floor_rays_and_infinite_wall humanoid_dispatch=native_subset mass_tensor={} keyframe_playback=animator native_differential=not_tested\n",
             w.steps,
             self.humanoid.state_type(),
             w.body.frame.position,
@@ -355,7 +399,9 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
             high[a] = high[a].max(joint.current_angle);
         }
         for joint in &moving_rig.joints {
-            let parent = frames[&joint.part0].transform_point(joint.c0.position);
+            // The animated link may translate: child*C1 = parent*C0*link.
+            let pivot = crate::rig::compose(&frames[&joint.part0], &joint.c0);
+            let parent = pivot.transform_point(joint.link_state().1);
             let child = frames[&joint.part1].transform_point(joint.c1.position);
             for a in 0..3 {
                 pivot_error = pivot_error.max((parent[a] - child[a]).abs());
@@ -372,7 +418,7 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     for _ in 0..480 {
         fixture.step_animated(&mut moving_rig, [0.0; 3])?;
     }
-    if !matches!(fixture.script.pose, Pose::Standing) {
+    if !matches!(fixture.script.pose, ScriptPose::Standing) {
         return Err("walking animation did not become Standing on release".into());
     }
     report.push_str(&fixture.animation_report());
@@ -409,7 +455,7 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     for _ in 0..480 {
         fixture.step_animated(&mut moving_rig, [0.0; 3])?;
     }
-    if !matches!(fixture.script.pose, Pose::Standing)
+    if !matches!(fixture.script.pose, ScriptPose::Standing)
         || fixture
             .world
             .body
@@ -427,12 +473,14 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     fixture.reset();
     moving_rig = rig.clone();
     let rest_y = fixture.world.body.frame.position[1];
+    let rest_torso_y = fixture.torso_frame(&rig)?.position[1];
     for _ in 0..120 {
         fixture.step_animated(&mut moving_rig, [0.0; 3])?;
     }
     fixture.set_jump(true);
     let mut apex = rest_y;
     let mut poses = Vec::new();
+    let mut clips: Vec<String> = Vec::new();
     for tick in 0..720 {
         if tick == 4 {
             fixture.set_jump(false);
@@ -442,7 +490,12 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
         if poses.last() != Some(&format!("{:?}", fixture.script.pose)) {
             poses.push(format!("{:?}", fixture.script.pose));
         }
+        let clip = fixture.script.current_animation();
+        if clips.last().map(String::as_str) != Some(clip) {
+            clips.push(clip.to_string());
+        }
     }
+    let final_torso_y = fixture.torso_frame(&moving_rig)?.position[1];
     let jump_states: Vec<_> = fixture
         .humanoid
         .transitions
@@ -451,7 +504,7 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
         .collect();
     writeln!(
         report,
-        "walking_jump transitions={:?} apex_rise={} poses={poses:?} final_y={}",
+        "walking_jump transitions={:?} apex_rise={} poses={poses:?} clips={clips:?} final_root_y={} final_torso_y={final_torso_y} rest_torso_y={rest_torso_y}",
         fixture.humanoid.transitions,
         apex - rest_y,
         fixture.world.body.frame.position[1]
@@ -467,11 +520,19 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
             ][..],
         )
         || !(4.0..9.0).contains(&(apex - rest_y))
-        || (fixture.world.body.frame.position[1] - rest_y).abs() > 0.01
+        || (final_torso_y - rest_torso_y).abs() > 0.01
+        || clips.first().map(String::as_str) != Some("jump")
+        || !clips.iter().any(|c| c == "fall")
+        || clips.last().map(String::as_str) != Some("idle")
         || !poses.iter().any(|p| p == "Jumping")
         || !poses.iter().any(|p| p == "FreeFall")
     {
-        return Err(format!("native jump sequence failed: {}", fixture.report()));
+        return Err(format!(
+            "native jump sequence failed: transitions={:?} apex_rise={} poses={poses:?} clips={clips:?} final_torso_y={final_torso_y} {}",
+            fixture.humanoid.transitions,
+            apex - rest_y,
+            fixture.report()
+        ));
     }
     let jump_rise = apex - rest_y;
     // Drop 10 studs: Running loses its floor, Freefall, Landed, Running.
@@ -503,7 +564,7 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
         return Err(format!("native fall/landing failed: {}", fixture.report()));
     }
     writeln!(report,"walking_state_pass running_no_physics_speed=16 jump_rise={jump_rise} drop_landed=true states=Running,RunningNoPhysics,Jumping,Freefall,Landed").unwrap();
-    writeln!(report,"walking_animation_pass limbs=4 swing_radians={swing:?} pivot_error={pivot_error} min_animated_upright_y={animated_minimum_up} wall_seconds=32 release_pose=Standing animated_cofm=true reset_identical=true default_keyframes=unavailable").unwrap();
-    writeln!(report,"walking_pass walk_speed={} distance_one_second={distance} input_release_stopped=true wall_impulses={} walking_animation=bundled_procedural default_keyframes=unavailable native_differential=not_tested",fixture.humanoid.properties.walk_speed,wall_impulses).unwrap();
+    writeln!(report,"walking_animation_pass limbs=4 swing_radians={swing:?} pivot_error={pivot_error} min_animated_upright_y={animated_minimum_up} wall_seconds=32 release_pose=Standing animated_cofm=true reset_identical=true default_keyframes=animate_keyframe2").unwrap();
+    writeln!(report,"walking_pass walk_speed={} distance_one_second={distance} input_release_stopped=true wall_impulses={} walking_animation=animate_keyframe2 native_differential=not_tested",fixture.humanoid.properties.walk_speed,wall_impulses).unwrap();
     Ok(report)
 }

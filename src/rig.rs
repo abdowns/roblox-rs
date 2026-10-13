@@ -1,7 +1,9 @@
-//! Recovered R6 construction and the unsmoothed Motor6D angle branch.
-//! Assembly selection, animated pose blending and contact forces are separate.
+//! Recovered R6 construction and Motor6DJoint: setAnimatedPose (00b37700),
+//! stepUi (00b3717c) and the link transform (00b36fde).
 use crate::{
+    animator::CachedPose,
     bundle::Bundle,
+    g3d,
     native_data::NativeImage,
     scene::{CoordinateFrame, Scene},
 };
@@ -144,8 +146,68 @@ pub struct Motor6D {
     pub desired_angle: f32,
     pub max_velocity: f32,
     threshold: f32,
+    link: MotorLink,
+}
+/// Motor6DJoint fields behind the link: the animated pose (+0x9c translation,
+/// +0xa8 rotation vector, both already weighted), motor weight +0xb4,
+/// countdown +0xb8, and the link's rotation vector x/y and translation (its
+/// z component is `current_angle`, +0xd0).
+#[derive(Clone, Debug, PartialEq)]
+struct MotorLink {
+    animated_translation: [f32; 3],
+    animated_rotation: [f32; 3],
+    motor_weight: f32,
+    countdown: i32,
+    rotation_xy: [f32; 2],
+    translation: [f32; 3],
+}
+impl Default for MotorLink {
+    fn default() -> Self {
+        Self {
+            animated_translation: [0.0; 3],
+            animated_rotation: [0.0; 3],
+            motor_weight: 1.0,
+            countdown: 0,
+            rotation_xy: [0.0; 2],
+            translation: [0.0; 3],
+        }
+    }
 }
 impl Motor6D {
+    /// Motor6DJoint::setAnimatedPose 00b37700.
+    pub fn set_animated_pose(
+        &mut self,
+        translation: [f32; 3],
+        rotation: [f32; 3],
+        weight: f32,
+        motor_weight: f32,
+    ) {
+        self.link.animated_translation = translation.map(|v| v * weight);
+        self.link.animated_rotation = [
+            rotation[0] * weight,
+            rotation[1] * weight,
+            weight * rotation[2],
+        ];
+        self.link.motor_weight = motor_weight;
+        self.link.countdown = 32;
+    }
+    /// Motor6D's IAnimatableJoint pose slot (00923fb8): the motor angle only
+    /// counts when the animation weight is zero.
+    pub fn animate(&mut self, pose: &CachedPose) {
+        let motor_weight = if 0.0 < pose.weight { 0.0 } else { 1.0 };
+        self.set_animated_pose(pose.translation, pose.rotation, pose.weight, motor_weight);
+    }
+    /// Link rotation vector and translation (what the joint frame uses).
+    pub fn link_state(&self) -> ([f32; 3], [f32; 3]) {
+        (
+            [
+                self.link.rotation_xy[0],
+                self.link.rotation_xy[1],
+                self.current_angle,
+            ],
+            self.link.translation,
+        )
+    }
     /// SetDesiredAngle has a relative two-degree dead zone in this version.
     pub fn set_desired_angle(&mut self, value: f32) -> Result<bool, String> {
         if !value.is_finite() {
@@ -160,8 +222,9 @@ impl Motor6D {
             Ok(false)
         }
     }
-    /// MaxVelocity is an angular limit per native joint callback, not rad/s.
-    /// This covers the constructor's zero-offset, unit-weight branch only.
+    /// Motor6DJoint::stepUi 00b3717c. MaxVelocity is an angular limit per
+    /// native joint callback, not rad/s. Without fresh animator poses for 32
+    /// callbacks the animated offsets decay and the motor weight returns to 1.
     pub fn step(&mut self) -> Result<(), String> {
         if !self.max_velocity.is_finite()
             || !self.current_angle.is_finite()
@@ -171,7 +234,7 @@ impl Motor6D {
         }
         let change = self.desired_angle - self.current_angle;
         let limit = self.max_velocity.abs();
-        self.current_angle = if limit <= change.abs() {
+        let angle = if limit <= change.abs() {
             if change <= 0.0 {
                 self.current_angle - limit
             } else {
@@ -180,13 +243,43 @@ impl Motor6D {
         } else {
             self.desired_angle
         };
+        let link = &mut self.link;
+        if link.countdown < 1 {
+            let squared = |v: [f32; 3]| v[2] * v[2] + v[1] * v[1] + v[0] * v[0];
+            let settled = 1.0 <= link.motor_weight
+                && g3d::fuzzy_zero(squared(link.animated_rotation))
+                && g3d::fuzzy_zero(squared(link.animated_translation));
+            if !settled {
+                link.motor_weight = (link.motor_weight + 0.03125).min(1.0);
+                for v in [&mut link.animated_rotation, &mut link.animated_translation] {
+                    let s = squared(*v);
+                    if s != 0.0 {
+                        let mut f = s * 0.96875 + -0.01;
+                        if f <= 0.0 {
+                            f = 0.0;
+                        }
+                        let f = f / s;
+                        *v = [v[0] * f, v[1] * f, f * v[2]];
+                    }
+                }
+            }
+        } else {
+            link.countdown -= 1;
+        }
+        link.rotation_xy = [
+            link.animated_rotation[0] + 0.0,
+            link.animated_rotation[1] + 0.0,
+        ];
+        link.translation = link.animated_translation;
+        self.current_angle = angle * link.motor_weight + link.animated_rotation[2];
         Ok(())
     }
+    /// The link CFrame (00b36fde): fromAxisAngleFast of the rotation vector.
     pub fn transform(&self) -> CoordinateFrame {
-        let (s, c) = self.current_angle.sin_cos();
+        let (rotation, translation) = self.link_state();
         CoordinateFrame {
-            position: [0.0; 3],
-            rotation: [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]],
+            position: translation,
+            rotation: g3d::rotation_vector_matrix(rotation),
         }
     }
 }
@@ -245,6 +338,7 @@ impl R6Rig {
                 desired_angle: 0.0,
                 max_velocity,
                 threshold,
+                link: MotorLink::default(),
             });
         }
         Ok(Self { joints })
@@ -272,6 +366,7 @@ impl R6Rig {
         for joint in &mut self.joints {
             joint.current_angle = 0.0;
             joint.desired_angle = 0.0;
+            joint.link = MotorLink::default();
         }
     }
 }
@@ -337,7 +432,7 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     if rig.pose(root)? != frames {
         return Err("rig reset changed rest frames".into());
     }
-    writeln!(report,"rig_pass joints=6 parts=7 rest_error={error} pivot_error={residual} reset_identical=true native_callback_cadence=not_tested blend_offsets=not_implemented contacts=not_implemented").unwrap();
+    writeln!(report,"rig_pass joints=6 parts=7 rest_error={error} pivot_error={residual} reset_identical=true native_callback_cadence=not_tested animated_pose=see_audit_animate contacts=not_implemented").unwrap();
     Ok(report)
 }
 
@@ -365,6 +460,7 @@ mod tests {
             desired_angle: 0.0,
             max_velocity: -0.1,
             threshold: 0.034906585,
+            link: MotorLink::default(),
         };
         assert!(!m.set_desired_angle(0.01).unwrap());
         assert!(m.set_desired_angle(0.25).unwrap());

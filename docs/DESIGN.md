@@ -691,6 +691,50 @@ lighting so their regression hashes stay comparable. Not implemented: the voxel
 light grid (OutdoorAmbient skylight and local lights, LightBorder), shadows,
 FrameRateManager fog culling and the PGS/high-quality material paths.
 
+## Keyframe animation (Animator, AnimationTrack, Animate script)
+
+The R6 character animates with the August 2016 keyframe clips, not the old
+procedural motor script. The 0.255 loader picks
+`content/fonts/humanoidAnimateLocalKeyframe2.rbxm` for R6; that LocalScript
+names remote Animation ids (idle 180435571/180435792 weighted 9:1, walk
+180426354, jump 125750702, fall 180436148, climb 180436334, sit 178130996,
+tool and emote clips). `tools/fetch_animations.py` downloads them into
+`RobloxStudio/assets/<id>` (untracked, outside the read-only install) and
+refuses any asset updated after the build's content date (2016-08-04); all 23
+were last updated in 2013-2015, so their current versions are the ones the
+2016 client loaded. `rbxm.rs` reads both binary and XML model files.
+
+`animator.rs` ports the native classes. A KeyframeSequence is cached as
+keyframes sorted by time, each holding per-track poses of (translation,
+axis*angle rotation vector from G3D toAxisAngle, weight clamped to [0,1]);
+tracks are (parent Pose name or "__Root", Pose name) pairs and match a joint by
+(Part0.Name, Part1.Name), so the root Pose drives nothing and the Torso Pose
+drives RootJoint. Sampling interpolates linearly between the surrounding
+keyframes that contain the track, blending rotation vectors with a short-way
+wrap. An AnimationTrack advances `time += speed*dt` (looped clips wrap with
+fmodf, others clamp), fades its weight linearly toward the target, fires
+KeyframeReached for keyframes not named "Keyframe", and a non-looped clip at
+its end fires its last keyframe, fades out over 0.3 s and stops.
+Animator::onStepped runs on RunService's Animation signal right after the
+Humanoid's Stepped handler: it drops faded-out tracks, then for priorities
+Core(1000), Idle, Movement, Action blends each priority's tracks into a layer
+and the layer over the result (later layers win by weight), and hands every
+Motor6D its pose. Motor6DJoint stores the pose pre-multiplied by weight, sets
+the motor-angle weight to 0 while animated (1 otherwise) and a 32-step
+countdown; stepUi then builds the link rotation vector (anim.x, anim.y,
+angle*motorWeight + anim.z) and translation, and the joint frame is
+fromAxisAngleFast of that vector. If poses stop arriving the offsets decay
+back to the plain motor angle.
+
+`animate_script.rs` ports the Animate script as a state machine over that
+Animator, reading its table and literals (transition 0.1, fall 0.3, jump
+duration 0.3, walk speed/14.5, climb speed/12) from the shipped Lua source.
+Humanoid signals run its handlers synchronously, its `wait(0.1)` loop runs
+`move(time)` on WaitingScripts resumes, and the "End" keyframe re-rolls the
+weighted choice. Assumptions: Lua math.random uses Darwin rand() seeded 1
+(native seed unknown); clips are available immediately (native asset loading
+is asynchronous); `run.xml` in the table is never played and is not loaded.
+
 ## Default sky (Sky::render)
 
 sky.rs ports RBX::Graphics::Sky for the case with no Sky instance in Lighting.

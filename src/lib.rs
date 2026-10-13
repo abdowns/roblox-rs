@@ -1,5 +1,7 @@
 //! Version-specific, offline data boundaries. Original data is read at runtime.
+pub mod animate_script;
 pub mod animation;
+pub mod animator;
 pub mod assembly;
 mod balancing;
 pub mod bundle;
@@ -7,6 +9,7 @@ pub mod camera;
 pub mod camera_script;
 pub mod collision;
 pub mod dds;
+pub mod g3d;
 pub mod geometry;
 pub mod humanoid;
 pub mod humanoid_state;
@@ -19,6 +22,7 @@ mod motion;
 pub mod native_data;
 pub mod physics;
 pub mod player;
+pub mod rbxm;
 pub mod render;
 pub mod rig;
 pub mod runtime;

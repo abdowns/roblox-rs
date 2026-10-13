@@ -115,6 +115,16 @@ are downloaded on first build; runtime data loading uses no network requests.
   `lighting_render_pass changed_pixels=6613 repeat_identical=true`. The voxel
   light grid, shadows and fog quality culling are not implemented.
 
+- August 2016 R6 keyframe animations: the shipped Animate script drives a
+  port of the native Animator/AnimationTrack with the original clips. Fetch
+  the clips once with `python3 tools/fetch_animations.py` (downloads 23 small
+  files into `RobloxStudio/assets/`), then run
+  `sh tools/cargo.sh run --locked -- audit-animate`; expect `animate_walk
+  speed=1.1034483 ... arm_link_rotation` equal to `arm_sample_rotation`, and
+  `animate_pass`. Without the fetched clips the character stays in the rest
+  pose (like a failed asset load). Native pixel parity is not tested; the Lua
+  random seed is assumed.
+
 - Default sky: the original 512px skybox faces, sun and moon billboards
   (Roblox's Sky::render). Run `sh tools/cargo.sh run --locked -- audit-sky`;
   expect `sky_spawn_view ... clear_after=0 repeat_identical=true` and

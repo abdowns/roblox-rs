@@ -1659,9 +1659,7 @@ pub fn audit_walking(bundle: &Bundle) -> Result<String, String> {
             return Err("walking upload/readback mismatch".into());
         }
         let saved = app.world().resource::<R6Rig>().clone();
-        for joint in &mut app.world_mut().resource_mut::<R6Rig>().joints {
-            joint.current_angle = 0.0;
-        }
+        app.world_mut().resource_mut::<R6Rig>().reset();
         app.update();
         gpu.update_geometry(
             &app.world().resource::<Extracted>().0,
@@ -1966,7 +1964,7 @@ impl ApplicationHandler for Viewport {
             self.config = Some(config);
             self.motion_clock = Instant::now();
             if self.motion_active {
-                self.log_event(if self.app.world().resource::<MotionControl>().walking_probe {"walking_fixture_started input=WASD floor_support=explicit wall_contacts=legacy_vertex_plane default_keyframes=false".into()} else {"motion_probe_started limit_steps=60 contacts=false joints=6 gravity=explicit_legacy".into()})?;
+                self.log_event(if self.app.world().resource::<MotionControl>().walking_probe {"walking_fixture_started input=WASD floor_support=explicit wall_contacts=legacy_vertex_plane animation=animate_keyframe2".into()} else {"motion_probe_started limit_steps=60 contacts=false joints=6 gravity=explicit_legacy".into()})?;
             }
             self.window.as_ref().unwrap().request_redraw();
             Ok(())

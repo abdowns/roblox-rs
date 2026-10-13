@@ -1,5 +1,36 @@
 # MODLOG
 
+## 2026-10-12 August 2016 keyframe animations (Animator + Animate script)
+
+**Changed:** Added `rbxm.rs` (binary/XML model reader), `g3d.rs` (exact
+toAxisAngle, fromAxisAngleFast, unitize, fuzzyEq), `animator.rs`
+(KeyframeSequence cache, AnimationTrack, Animator::onStepped),
+`animate_script.rs` (the shipped R6 Animate LocalScript) and
+`tools/fetch_animations.py`. Motor6D now has the native animated pose and
+full stepUi; its frame comes from the link rotation vector. Walking uses the
+keyframe script instead of the legacy procedural one. Added `audit-animate`.
+**Why:** The character used the legacy procedural animation; the 0.255 loader
+selects the keyframe script for R6.
+**Tested how:** Ghidra: 00f6660c, AnimationTrack.cpp/KeyframeSequence.cpp
+functions, Animator::onStepped, Motor/Motor6D IAnimatableJoint vtables,
+Motor6DJoint setAnimatedPose/stepUi/link, toAxisAngle, fromAxisAngleFast (see
+RobloxStudio/analysis/animator-native-20261012.md). Asset dates from the
+Roblox economy API. 58 tests, Clippy, fmt; audit-animate, audit-walking,
+audit-walking-render, audit-camera, audit-lighting, audit-sky,
+audit-scheduler, audit-rig, audit-animation, audit-motion, bundle check.
+**Result:** 23 clips load (run.xml is a never-played local id). Idle loops with
+End events; Running(16) plays walk at speed 1.1034483 and the Right Shoulder
+link equals the sampled clip pose exactly; the 0.625 s jump ends on frame 37
+and fades to rest. Walking: one second of W still 15.746414 studs; jump plays
+jump -> fall -> idle with apex 8.69 studs; limb swings 1.48-2.08 rad.
+Test: `python3 tools/fetch_animations.py`, then
+`sh tools/cargo.sh run --locked -- audit-animate`; expect `animate_pass`.
+**Still broken / not tested:** Window smoke could not run (surface reported
+Occluded twice, display likely asleep): **not tested** in the window. Lua RNG
+seed and asset-load latency assumed; native pixel parity not tested; climb,
+sit, emotes and tools are loaded but their states are not reachable yet.
+**Next:** Remaining Humanoid states (Climbing, Seated, FallingDown), then Parts.
+
 ## 2026-10-12 Split walking.rs into World and Humanoid (refactor only)
 
 **Changed:** Moved RBX::World behavior (contacts, kernel substeps, fixture
