@@ -1,5 +1,30 @@
 # MODLOG
 
+## 2026-10-12 Play Solo on the Baseplate (Part statics and native ray test)
+
+**Changed:** World statics can hold anchored Parts (`StaticBlock`);
+`Statics::raycast` adds the native block hit test; `World::in_workspace` and
+`WalkingFixture::baseplate` spawn the character in the Studio default place.
+Added `audit-baseplate`.
+**Why:** Parts step 2: the character must stand on real Parts, not the fixture
+floor plane.
+**Tested how:** Ghidra: getFastHit 00ae8274, getSlowHit 00ae7d08, Primitive
+hitTest 00b631de, Block vtable 01c866e8 (+0x70 00adeffe), G3D
+collisionLocationForMovingPointFixedAABox 0124e766. Two new unit tests (65
+total), Clippy, fmt; audit-baseplate; audit-walking, audit-camera,
+audit-animate and audit-walking-render byte-identical to before the change.
+**Result:** Head spawns at (0,107,0); Freefall after 0.12 s; lands at world
+step 241 (1.004 s, -196.2 studs/s) with the root never below y=3; settles at
+root y 3.0 upright; animations idle -> fall -> idle; one second of W walks
+15.87 studs; jump apex 8.66 studs.
+Test: `sh tools/cargo.sh run --locked -- audit-baseplate`; expect `baseplate_pass`.
+**Still broken / not tested:** Baseplate not rendered yet; no Torso/Head
+contacts with Parts (touching is a box-overlap stand-in); unanchored Parts
+rejected; grid-walk ordering of equal-distance hits not modeled; native
+differential not tested.
+**Next:** Render the Baseplate (addBlock studs/inlets on large faces) and add
+it to the walking viewport.
+
 ## 2026-10-12 Studio default world data (Part defaults, Baseplate, spawn)
 
 **Changed:** Added `workspace.rs` (PartInstance defaults, Workspace with the

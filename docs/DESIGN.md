@@ -781,3 +781,19 @@ vector. In the default world the Head lands at (0, 107, 0) with identity
 rotation, so the character faces -Z. Evidence:
 RobloxStudio/analysis/workspace-native-20261012.md. `tools/macho_exports.py`
 lists the binary's 9,471 exported names (mostly RBX::Graphics and G3D).
+
+World statics can be the walking fixture or a Workspace. `World::in_workspace`
+disables the fixture planes (infinite floor_y/wall_x), turns every anchored,
+colliding Part into a `StaticBlock`, and places the character with the spawn
+transform above. Ray queries follow ContactManager::getSlowHit (00ae7d08): a
+bounding-sphere test, then Primitive hitTest (00b631de), which moves the unit
+ray into part space and calls the Block geometry's hitTest (vtable +0x70,
+00adeffe) = G3D collisionLocationForMovingPointFixedAABox (0124e766, Woo's
+algorithm: a ray starting inside misses; the sign-bit test on t; the hit normal
+is -1/+1 on the chosen axis). The hit with distance > 0 and strictly below
+min(length, 5000) and below the best so far wins. The spatial-grid walk of
+getFastHit (00ae8274) is not modeled: it only orders candidates, so ties
+between equally distant hits on different Parts could resolve differently.
+Unanchored Parts are rejected for now. Torso/Head contacts with Parts are not
+generated (BlockBlockContact is not ported); `touching` uses a box-overlap test
+as a stand-in. `WalkingFixture::baseplate` runs Play Solo in that world.

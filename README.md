@@ -113,8 +113,15 @@ are downloaded on first build; runtime data loading uses no network requests.
   `sh tools/cargo.sh run --locked -- audit-workspace`; expect
   `workspace_part name="Baseplate" ... size=[512.0, 20.0, 512.0]
   brick_color=199 anchored=true locked=true surfaces=[0, 3, 0, 0, 4, 0]` and
-  `spawn_location position=[0.0, 100.0, 0.0]`. Data only so far: the
-  Baseplate is not yet rendered or simulated.
+  `spawn_location position=[0.0, 100.0, 0.0]`.
+
+- Play Solo on the Baseplate (headless): the character spawns with its Head
+  at (0, 107, 0), falls, lands on the Baseplate through the native floor
+  raycast and stands, walks and jumps with the keyframe animations. Run
+  `sh tools/cargo.sh run --locked -- audit-baseplate`; expect
+  `baseplate_landing landed_step=Some(241) lowest_root_y=3 ...
+  animations=["idle", "fall", "idle"]` and `baseplate_pass`. The Baseplate is
+  not drawn yet; Torso/Head contacts with Parts are not ported.
 
 - Native Lighting defaults and day cycle: Roblox's LightingParameters::setTime,
   presetLighting and setFog, recovered from the binary. Run

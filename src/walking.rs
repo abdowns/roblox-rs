@@ -13,6 +13,7 @@ use crate::{
     rig::R6Rig,
     scene::{CoordinateFrame, Scene},
     scheduler::{FrameEvents, NativeSchedule, SchedulerProfile},
+    workspace::Workspace,
     world::World,
 };
 use std::fmt::Write;
@@ -33,6 +34,21 @@ pub struct WalkingFixture {
 }
 impl WalkingFixture {
     pub fn new(bundle: &Bundle, scene: &Scene, rig: &R6Rig) -> Result<Self, String> {
+        Self::with_world(bundle, scene, rig, World::new(bundle, scene, rig)?)
+    }
+    /// Play Solo in the Studio new-document place: the character spawns over
+    /// the Baseplate (`World::in_workspace`).
+    pub fn baseplate(bundle: &Bundle, scene: &Scene, rig: &R6Rig) -> Result<Self, String> {
+        let workspace = Workspace::studio_new_document();
+        let world = World::in_workspace(bundle, scene, rig, &workspace)?;
+        Self::with_world(bundle, scene, rig, world)
+    }
+    fn with_world(
+        bundle: &Bundle,
+        scene: &Scene,
+        rig: &R6Rig,
+        world: World,
+    ) -> Result<Self, String> {
         let animate = AnimateProfile::load(bundle)?;
         let schedule = NativeSchedule::new(&SchedulerProfile::load(bundle)?, animate.wait_seconds)?;
         let joints = rig
@@ -41,7 +57,7 @@ impl WalkingFixture {
             .map(|j| (j.part0.clone(), j.part1.clone()))
             .collect();
         let mut fixture = Self {
-            world: World::new(bundle, scene, rig)?,
+            world,
             humanoid: Humanoid::new(bundle, scene)?,
             animate,
             script: AnimateScript::default(),
@@ -566,5 +582,129 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     writeln!(report,"walking_state_pass running_no_physics_speed=16 jump_rise={jump_rise} drop_landed=true states=Running,RunningNoPhysics,Jumping,Freefall,Landed").unwrap();
     writeln!(report,"walking_animation_pass limbs=4 swing_radians={swing:?} pivot_error={pivot_error} min_animated_upright_y={animated_minimum_up} wall_seconds=32 release_pose=Standing animated_cofm=true reset_identical=true default_keyframes=animate_keyframe2").unwrap();
     writeln!(report,"walking_pass walk_speed={} distance_one_second={distance} input_release_stopped=true wall_impulses={} walking_animation=animate_keyframe2 native_differential=not_tested",fixture.humanoid.properties.walk_speed,wall_impulses).unwrap();
+    Ok(report)
+}
+
+/// Play Solo in the Studio default place: spawn over the Baseplate, fall,
+/// land, stand, walk and jump, with the keyframe Animate script.
+pub fn audit_baseplate(bundle: &Bundle) -> Result<String, String> {
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut fixture = WalkingFixture::baseplate(bundle, &scene, &rig)?;
+    let mut report = String::new();
+    let head = fixture.torso_frame(&rig)?;
+    writeln!(
+        report,
+        "baseplate_spawn root={:?} torso={:?} blocks={:?} velocity={:?}",
+        fixture.world.body.frame.position,
+        head.position,
+        fixture
+            .world
+            .statics
+            .blocks
+            .iter()
+            .map(|b| (b.name.as_str(), b.frame.position, b.size))
+            .collect::<Vec<_>>(),
+        fixture.world.body.velocity
+    )
+    .unwrap();
+    let mut states = vec![fixture.state_type()];
+    let mut animations = vec![fixture.script.current_animation().to_string()];
+    let mut landed_step = None;
+    let mut lowest = f32::INFINITY;
+    let mut fastest = 0.0f32;
+    // 3 seconds of world steps (240 Hz): fall, land and settle.
+    for step in 0..720u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        let state = fixture.state_type();
+        if states.last() != Some(&state) {
+            states.push(state);
+            writeln!(
+                report,
+                "baseplate_state step={} time={:.4} state={state:?} root_y={} velocity_y={}",
+                step + 1,
+                (step + 1) as f32 / 240.0,
+                fixture.world.body.frame.position[1],
+                fixture.world.body.velocity[1]
+            )
+            .unwrap();
+            if landed_step.is_none()
+                && matches!(state, StateType::Landed | StateType::Running)
+                && step > 0
+            {
+                landed_step = Some(step + 1);
+            }
+        }
+        let animation = fixture.script.current_animation().to_string();
+        if animations.last() != Some(&animation) {
+            animations.push(animation);
+        }
+        lowest = lowest.min(fixture.world.body.frame.position[1]);
+        fastest = fastest.min(fixture.world.body.velocity[1]);
+        if step % 60 == 59 {
+            report.push_str(&fixture.report());
+        }
+    }
+    let rest = fixture.world.body.frame.position;
+    writeln!(
+        report,
+        "baseplate_landing landed_step={landed_step:?} lowest_root_y={lowest} fastest_fall={fastest} rest_root={rest:?} upright_y={} states={states:?} animations={animations:?}",
+        fixture.world.body.frame.rotation[1][1]
+    )
+    .unwrap();
+    if landed_step.is_none()
+        || !(2.9..3.1).contains(&rest[1])
+        || fixture.world.body.frame.rotation[1][1] < 0.99
+        || !matches!(
+            fixture.state_type(),
+            StateType::Running | StateType::RunningNoPhysics
+        )
+        || !animations.iter().any(|a| a == "fall")
+        || animations.last().map(String::as_str) != Some("idle")
+    {
+        return Err(format!("baseplate landing failed:\n{report}"));
+    }
+    // One second of W (camera-less world input -Z), then release.
+    let start = fixture.world.body.frame.position;
+    for _ in 0..240 {
+        fixture.step_animated(&mut rig, [0.0, 0.0, -1.0])?;
+    }
+    let walked = start[2] - fixture.world.body.frame.position[2];
+    report.push_str(&fixture.report());
+    if !(15.0..16.1).contains(&walked)
+        || (fixture.world.body.frame.position[1] - start[1]).abs() > 0.05
+    {
+        return Err(format!("baseplate walk failed distance={walked}\n{report}"));
+    }
+    for _ in 0..240 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+    }
+    let before_jump = fixture.world.body.frame.position[1];
+    fixture.set_jump(true);
+    let mut apex = before_jump;
+    for step in 0..480 {
+        if step == 2 {
+            fixture.set_jump(false);
+        }
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        apex = apex.max(fixture.world.body.frame.position[1]);
+    }
+    let after_jump = fixture.world.body.frame.position[1];
+    writeln!(
+        report,
+        "baseplate_walk_jump walked={walked} jump_apex={} rest_before={before_jump} rest_after={after_jump} state={:?} animation={}",
+        apex - before_jump,
+        fixture.state_type(),
+        fixture.script.current_animation()
+    )
+    .unwrap();
+    if !(7.0..10.0).contains(&(apex - before_jump)) || (after_jump - before_jump).abs() > 0.05 {
+        return Err(format!("baseplate jump failed\n{report}"));
+    }
+    writeln!(report, "baseplate_pass spawn=native_no_spawnlocation floor=baseplate_block_raycast block_contacts=not_ported native_differential=not_tested").unwrap();
     Ok(report)
 }
