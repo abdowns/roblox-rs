@@ -1,5 +1,25 @@
 # MODLOG
 
+## 2026-10-13 Fixture wall uses recovered Plastic ContactParams
+
+**Changed:**
+- The synthetic fixture wall now uses Contact::computeContactParams (00a43fb4) for each collider against Plastic, in both the impulse pass and the springs.
+- Block stiffness (00a92640) grows with size, so a large wall's MINSS picks the collider's own stiffness. The wall's stiffness is therefore passed as equal to the collider's. This is an assumption about a non-native fixture.
+- `World::step`'s `parameters` argument is now unused; the signature is kept stable.
+
+**Why:** This was the last contact still using the unrecovered 7500/3750 spring constants. It is needed before the character's connectors become springs-only realtime connectors: with 7500 the wall penetration reaches 0.63.
+
+**Tested how:** Ran audit-walking, audit-part-wall and audit-baseplate, then 68 tests, Clippy and fmt.
+
+**Result:**
+- audit-part-wall and audit-baseplate are byte-identical.
+- In audit-walking, the root holds against the wall at x = 3.5104. That is the same 0.0104 standoff as the Part wall. Before, it was 3.5399 and drifted along z from 22.77 to 23.34 over 7680 steps; now it stays at 22.654 to 22.664.
+- Max wall penetration is 0.067 (was 0.113). Wall impulses dropped from 37932 to 17525.
+
+**Still broken / not tested:** Native parity is not tested (the wall itself is a fixture).
+
+**Next:** The character's connectors become realtime connectors (springs only).
+
 ## 2026-10-13 Recovered ContactParams for character/Part contacts
 
 **Changed:**

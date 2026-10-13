@@ -313,6 +313,8 @@ pub struct World {
     collider_materials: Vec<(crate::material::PhysicalProperties, f32)>,
     /// Contact::computeContactParams per (collider, static block).
     block_parameters: BTreeMap<(usize, usize), ContactParameters>,
+    /// Recovered ContactParams of each collider against the fixture wall.
+    wall_parameters: BTreeMap<String, ContactParameters>,
     states: BTreeMap<(String, usize), ContactState>,
     /// BlockBlockContact per (character collider, static block index).
     block_contacts: BTreeMap<(String, usize), BlockBlockContact<ContactState>>,
@@ -387,6 +389,15 @@ impl World {
         if colliders.len() != 2 || !floor_y.is_finite() {
             return Err("unexpected walking fixture geometry".into());
         }
+        // The fixture wall stands in for a large Plastic Part. Block stiffness
+        // (00a92640) grows with size, so kSpring = MINSS(...) is the
+        // collider's own stiffness; the wall's is passed as equal to it.
+        let plastic = materials.defaults(crate::material::PLASTIC)?;
+        let mut wall_parameters = BTreeMap::new();
+        for ((name, _), (own, stiffness)) in colliders.iter().zip(&collider_materials) {
+            let params = materials.contact_params(own, *stiffness, &plastic, *stiffness);
+            wall_parameters.insert(name.clone(), params.parameters());
+        }
         Ok(Self {
             original: body.clone(),
             body,
@@ -409,6 +420,7 @@ impl World {
             materials,
             collider_materials,
             block_parameters: BTreeMap::new(),
+            wall_parameters,
             states: BTreeMap::new(),
             block_contacts: BTreeMap::new(),
             mass_parts: parts,
@@ -631,12 +643,12 @@ impl World {
     }
     /// doWorldStep: awake contact impulses, then the kernel substeps with the
     /// force callback (torso frame, current inertia) before each integration.
-    /// `parameters` applies only to the fixture wall; contacts with Workspace
-    /// Parts use the recovered per-pair ContactParams.
+    /// Every contact uses recovered per-pair ContactParams (00a43fb4);
+    /// `_parameters` is unused and kept for signature stability.
     pub fn step(
         &mut self,
         rig: &R6Rig,
-        parameters: ContactParameters,
+        _parameters: ContactParameters,
         mut force: impl FnMut(&mut KernelBody, &Statics, &CoordinateFrame, Tensor) -> Result<(), String>,
     ) -> Result<(), String> {
         let wall = self.statics.wall();
@@ -690,7 +702,10 @@ impl World {
             for (key, g) in &active {
                 let input = ImpulseInput {
                     geometry: g.clone(),
-                    parameters,
+                    parameters: *self
+                        .wall_parameters
+                        .get(&key.0)
+                        .ok_or("missing wall contact parameters")?,
                     reference_impulse_a: [0.0; 3],
                     reference_impulse_b: [0.0; 3],
                     friction_enabled: true,
@@ -767,7 +782,10 @@ impl World {
                     if let Some(state) = self.states.get_mut(&(name.clone(), vertex)) {
                         let force = state.spring.force(
                             &self.kernel,
-                            parameters,
+                            *self
+                                .wall_parameters
+                                .get(name)
+                                .ok_or("missing wall contact parameters")?,
                             g.distance,
                             g.normal,
                             g.point,
