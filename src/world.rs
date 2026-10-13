@@ -13,6 +13,7 @@ use crate::{
     legacy_contact::{
         AwakeContact, BlockContactProfile, ContactGeometry, ImpulseInput, ImpulseProfile,
     },
+    material::{MaterialProfile, Shape},
     physics,
     rig::{R6Rig, compose},
     scene::{CoordinateFrame, Scene},
@@ -265,6 +266,23 @@ fn block_body(block: &StaticBlock) -> ContactBodyState {
     }
 }
 
+/// The recovered ContactParams of a (collider, static block) contact.
+fn pair_parameters(
+    colliders: &[(String, [f32; 3])],
+    parameters: &BTreeMap<(usize, usize), ContactParameters>,
+    name: &str,
+    block: usize,
+) -> Result<ContactParameters, String> {
+    let collider = colliders
+        .iter()
+        .position(|(n, _)| n == name)
+        .ok_or("missing block collider")?;
+    parameters
+        .get(&(collider, block))
+        .copied()
+        .ok_or_else(|| "missing block contact parameters".into())
+}
+
 /// Connector geometry with the character Part as contact body A: the normal
 /// points from A into B, so it is negated when the static block is A.
 fn character_geometry(c: &Connector<ContactState>) -> ContactGeometry {
@@ -290,6 +308,11 @@ pub struct World {
     original_inertia: Tensor,
     impulses: ImpulseProfile,
     colliders: Vec<(String, [f32; 3])>,
+    materials: MaterialProfile,
+    /// Material defaults and Primitive stiffness per collider (Plastic).
+    collider_materials: Vec<(crate::material::PhysicalProperties, f32)>,
+    /// Contact::computeContactParams per (collider, static block).
+    block_parameters: BTreeMap<(usize, usize), ContactParameters>,
     states: BTreeMap<(String, usize), ContactState>,
     /// BlockBlockContact per (character collider, static block index).
     block_contacts: BTreeMap<(String, usize), BlockBlockContact<ContactState>>,
@@ -313,7 +336,9 @@ impl World {
         )?;
         let xml = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
         let doc = roxmltree::Document::parse(xml).map_err(|e| e.to_string())?;
+        let materials = MaterialProfile::load(bundle)?;
         let mut colliders = Vec::new();
+        let mut collider_materials = Vec::new();
         let mut floor_y = f32::INFINITY;
         for instance in &scene.instances {
             let Some(part) = &instance.part else { continue };
@@ -330,12 +355,29 @@ impl World {
                 .children()
                 .find(|n| n.has_tag_name("Properties"))
                 .ok_or("missing collider properties")?;
-            match properties
-                .children()
-                .find(|n| n.attribute("name") == Some("CanCollide"))
-                .and_then(|n| n.text())
-            {
+            let property = |name| {
+                properties
+                    .children()
+                    .find(|n| n.attribute("name") == Some(name))
+            };
+            match property("CanCollide").and_then(|n| n.text()) {
                 Some("true") if part.shape == 1 => {
+                    // Contact params read CustomPhysicalProperties (+0xc4) or
+                    // the material (+0xc8); only the material branch occurs.
+                    let custom = property("CustomPhysicalProperties")
+                        .and_then(|n| n.children().find(|c| c.has_tag_name("CustomPhysics")))
+                        .and_then(|n| n.text());
+                    let material: u32 = property("Material")
+                        .and_then(|n| n.text())
+                        .and_then(|t| t.parse().ok())
+                        .ok_or("missing collider material")?;
+                    if custom != Some("false") {
+                        return Err("unsupported custom collider physical properties".into());
+                    }
+                    collider_materials.push((
+                        materials.defaults(material)?,
+                        materials.stiffness(part.size, Shape::Block)?,
+                    ));
                     colliders.push((instance.name.clone(), part.size))
                 }
                 Some("false") => {}
@@ -364,6 +406,9 @@ impl World {
             original_inertia: assembly.inertia_in_body,
             impulses: ImpulseProfile::load(bundle)?,
             colliders,
+            materials,
+            collider_materials,
+            block_parameters: BTreeMap::new(),
             states: BTreeMap::new(),
             block_contacts: BTreeMap::new(),
             mass_parts: parts,
@@ -390,6 +435,19 @@ impl World {
                 ));
             }
             if part.can_collide {
+                let properties = world.materials.defaults(part.material)?;
+                let stiffness = world.materials.stiffness(part.size, Shape::Block)?;
+                let index = world.statics.blocks.len();
+                for (collider, (own, own_stiffness)) in world.collider_materials.iter().enumerate()
+                {
+                    let params =
+                        world
+                            .materials
+                            .contact_params(own, *own_stiffness, &properties, stiffness);
+                    world
+                        .block_parameters
+                        .insert((collider, index), params.parameters());
+                }
                 world.statics.blocks.push(StaticBlock {
                     name: part.name.clone(),
                     frame: part.frame.clone(),
@@ -573,6 +631,8 @@ impl World {
     }
     /// doWorldStep: awake contact impulses, then the kernel substeps with the
     /// force callback (torso frame, current inertia) before each integration.
+    /// `parameters` applies only to the fixture wall; contacts with Workspace
+    /// Parts use the recovered per-pair ContactParams.
     pub fn step(
         &mut self,
         rig: &R6Rig,
@@ -662,7 +722,12 @@ impl World {
                     .connectors_mut()[*at];
                 let input = ImpulseInput {
                     geometry: character_geometry(c),
-                    parameters,
+                    parameters: pair_parameters(
+                        &self.colliders,
+                        &self.block_parameters,
+                        &key.0,
+                        key.1,
+                    )?,
                     reference_impulse_a: [0.0; 3],
                     reference_impulse_b: [0.0; 3],
                     friction_enabled: true,
@@ -716,12 +781,13 @@ impl World {
             self.refresh_block_contacts(&frames)?;
             for (key, contact) in &mut self.block_contacts {
                 let fixed = block_body(&self.statics.blocks[key.1]);
+                let pair = pair_parameters(&self.colliders, &self.block_parameters, &key.0, key.1)?;
                 for c in contact.connectors_mut() {
                     let g = character_geometry(c);
                     self.max_penetration = self.max_penetration.max(-g.distance);
                     let force = c.state.spring.force(
                         &self.kernel,
-                        parameters,
+                        pair,
                         g.distance,
                         g.normal,
                         g.point,

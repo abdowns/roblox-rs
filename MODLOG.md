@@ -1,5 +1,31 @@
 # MODLOG
 
+## 2026-10-13 Recovered ContactParams for character/Part contacts
+
+**Changed:**
+- At construction the World computes Contact::computeContactParams for every (character collider, Workspace block) pair. The inputs are the collider's material read from character3 (Plastic, no custom properties) and the Part's material, with Primitive stiffness from the sizes.
+- Block connectors use these values in the awake impulse pass and in the contact springs.
+- The `parameters` argument of `World::step` now applies only to the synthetic fixture wall. Its signature is unchanged.
+- `MaterialProfile` resolves every material at load and keeps no copy of the binary. The audit-material output is byte-identical.
+
+**Why:** Parts step 6. The 7500/3750 fixture spring was not native. Torso against the Baseplate is kSpring 3,360,000, kNeg 1,915,200, friction 0.3.
+
+**Tested how:** Compared before and after for audit-part-wall, audit-baseplate and audit-walking. Also ran 68 tests and Clippy.
+
+**Result:**
+- audit-baseplate and audit-walking are byte-identical: the character never touches the Baseplate through connectors.
+- audit-part-wall changed:
+  - first contact is still at step 145;
+  - the root holds at z = -9.5104 (was -9.5405, creeping at -0.71 studs/s);
+  - penetration is about 0.010-0.011 (maximum 0.0507, was 0.064);
+  - upright_y 0.99999994;
+  - impulses 757, maximum connectors 8.
+- The root height shows a small vertical bob of 2.98-3.03.
+
+**Still broken / not tested:** Native parity of the bob and of the wall standoff is not tested. The broadphase pair order is assumed.
+
+**Next:** Unanchored Parts as kernel bodies.
+
 ## 2026-10-13 Material properties and contact parameters (material.rs)
 
 **Changed:**

@@ -15,7 +15,7 @@
 //! that reaches the exit. It never executes native code.
 use crate::{bundle::Bundle, kernel::ContactParameters, native_data::NativeImage};
 use iced_x86::{Code, Decoder, DecoderOptions, Mnemonic, OpKind, Register};
-use std::fmt::Write;
+use std::{collections::BTreeMap, fmt::Write};
 
 /// RBX::PartMaterial codes accepted by every switch of 00a4331a.
 pub const PLASTIC: u32 = 0x100;
@@ -69,7 +69,10 @@ const FRICTION: (u32, u32, Register) = (0x00a43766, 0x00a43a9d, Register::EAX);
 const ELASTICITY: (u32, u32, Register) = (0x00a43aac, 0x00a43daf, Register::EAX);
 
 pub struct MaterialProfile {
-    image: NativeImage,
+    /// Material switch results, resolved once at load.
+    materials: BTreeMap<u32, Result<PhysicalProperties, String>>,
+    /// Stiffness-table words read by 00a92276, keyed by address.
+    tables: BTreeMap<u32, f32>,
     density_max: f32,
     density_min: f32,
     one: f32,
@@ -210,7 +213,16 @@ impl MaterialProfile {
     pub fn load(bundle: &Bundle) -> Result<Self, String> {
         let image = NativeImage::load(bundle)?;
         let f = |at| float(&image, at);
-        let profile = Self {
+        let mut tables = BTreeMap::new();
+        for at in (0x0179fc00..0x0179fcb4)
+            .step_by(4)
+            .chain([0x016f7538, 0x016f753c, 0x016f7544, 0x016ff160, 0x01836338])
+        {
+            tables.insert(at, f(at)?);
+        }
+        let mut profile = Self {
+            materials: BTreeMap::new(),
+            tables,
             density_max: f(0x01705dd0)?,
             density_min: f(0x01705dcc)?,
             one: f(0x015d8978)?,
@@ -226,7 +238,6 @@ impl MaterialProfile {
             restitution_table: [f(0x0179fc30)?, f(0x0179fc34)?],
             stiffness_scale: f(0x0179fc04)?,
             stiffness_factor: f(0x0179fc08)?,
-            image,
         };
         if profile.density_min <= 0.0
             || profile.density_max <= profile.density_min
@@ -239,33 +250,24 @@ impl MaterialProfile {
         {
             return Err("unexpected native material profile".into());
         }
+        for (code, _) in MATERIALS {
+            let resolved = profile.resolve(&image, code);
+            profile.materials.insert(code, resolved);
+        }
         Ok(profile)
     }
 
-    fn switch(
-        &self,
-        (start, exit, register): (u32, u32, Register),
-        code: u32,
-    ) -> Result<f32, String> {
-        follow_switch(
-            &self.image,
-            start,
-            exit,
-            register,
-            None,
-            Register::XMM0,
-            code,
-        )
-    }
-
     /// PhysicalProperties(material), 00a4331a, with its SSE clamps.
-    pub fn defaults(&self, material: u32) -> Result<PhysicalProperties, String> {
-        let density = self.switch(DENSITY, material)?;
-        let friction = self.switch(FRICTION, material)?;
-        let elasticity = self.switch(ELASTICITY, material)?;
+    fn resolve(&self, image: &NativeImage, material: u32) -> Result<PhysicalProperties, String> {
+        let switch = |(start, exit, register): (u32, u32, Register)| {
+            follow_switch(image, start, exit, register, None, Register::XMM0, material)
+        };
+        let density = switch(DENSITY)?;
+        let friction = switch(FRICTION)?;
+        let elasticity = switch(ELASTICITY)?;
         // The friction-weight tree is inlined; EDI holds the PIC base 00a43328.
         let friction_weight = follow_switch(
-            &self.image,
+            image,
             0x00a43369,
             0x00a433e9,
             Register::EBX,
@@ -297,6 +299,14 @@ impl MaterialProfile {
         })
     }
 
+    /// The material defaults a Part without CustomPhysicalProperties uses.
+    pub fn defaults(&self, material: u32) -> Result<PhysicalProperties, String> {
+        self.materials
+            .get(&material)
+            .cloned()
+            .unwrap_or_else(|| Err(format!("unknown material {material:#x}")))
+    }
+
     /// 00a43e7e: (w2*v2 + w1*v1) / (w1 + w2), zero unless 1e-6 < w1 + w2.
     fn weighted(&self, w1: f32, v1: f32, w2: f32, v2: f32) -> f32 {
         let denominator = w1 + w2;
@@ -321,8 +331,8 @@ impl MaterialProfile {
     }
 
     fn table(&self, at: u32) -> f32 {
-        // Addresses are inside the verified constant region checked by load.
-        float(&self.image, at).unwrap_or(f32::NAN)
+        // Every index 00a92276 can form is bounded and was read at load.
+        self.tables.get(&at).copied().unwrap_or(f32::NAN)
     }
 
     /// 00a92276: stiffness units for a clipped, sorted size (Vector3int16).
