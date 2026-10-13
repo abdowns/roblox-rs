@@ -1,5 +1,23 @@
 # MODLOG
 
+## 2026-10-13 Public-facing README; detail moved to docs/
+
+**Changed:**
+- `README.md` rewritten, modeled on the IW4L README the user supplied. It has a short description, a minimal status, install/build/run steps (clone, the Roblonium archive link for 0.255.0.82159, placing the app at `RobloxStudio/`, the optional checksum and animation fetch, then run), the documentation links, and acknowledgements/license.
+- The old README content moved verbatim into three files (relative links fixed):
+  - `docs/RUNNING.md`: the viewports and the first diagnostic;
+  - `docs/FEATURES.md`: what works / doesn't work;
+  - `docs/DATA.md`: data and rollback.
+- `AGENTS.md`: the "keep updated" rules now point detailed status at `docs/FEATURES.md`.
+
+**Why:** The user asked for a shorter, public-facing README.
+
+**Tested how:**
+- Every relative link in the four files resolves.
+- The install steps were **not tested** from a fresh clone. Which of the two archive zips matches the local copy, and the zip's internal layout, are **not tested**.
+
+**Result:** Documentation only; no code changes.
+
 ## 2026-10-13 audit-humanoid-slope: the steep-floor rules
 
 **Changed:**

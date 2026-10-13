@@ -47,8 +47,11 @@ This is a 1:1 rewrite of the 2016 Roblox Studio MacOS client in Rust and built o
   `MODLOG-template.md`.
 - `docs/DESIGN.md`: how the project works, in plain language. Update when the
   architecture changes, not on every commit.
-- `README.md`: the "what works / what doesn't work" list. Test before you claim
-  something works.
+- `README.md`: short and public facing. A minimal status, install/build/run and
+  acknowledgements. Test before you claim something works.
+- `docs/FEATURES.md`: the detailed "what works / what doesn't work" list, with
+  the test command and expected output for each entry.
+- `docs/RUNNING.md`: the viewports and diagnostics and their expected output.
 
 ## Environment
 
