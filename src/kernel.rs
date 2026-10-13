@@ -180,6 +180,22 @@ impl KernelBody {
     pub fn inverse_mass(&self) -> f32 {
         self.inverse_mass
     }
+    /// Dirty SimBody refresh (00ab16aa): publish root origin state, rebuild
+    /// Cofm/inertia and momentum from angular velocity, preserve accumulators.
+    pub fn refresh_assembly(
+        &mut self,
+        assembly: &AssemblyProperties,
+        profile: &KernelProfile,
+    ) -> Result<(), String> {
+        let mut refreshed = Self::new(assembly, &self.body_state(), profile)?;
+        refreshed.force = self.force;
+        refreshed.torque = self.torque;
+        refreshed.linear_impulse = self.linear_impulse;
+        refreshed.angular_impulse = self.angular_impulse;
+        refreshed.validate()?;
+        *self = refreshed;
+        Ok(())
+    }
     /// FUN_00ab267c: momentum damping occurs on each contact impulse.
     pub fn contact_impulse(
         &mut self,
@@ -544,6 +560,35 @@ mod tests {
         b.angular_velocity = [0.0, 0.0, 2.0];
         b.velocity = [0.0, 2.0, 0.0];
         assert_eq!(b.body_state().velocity, [0.0; 3]);
+    }
+    #[test]
+    fn animated_cofm_refresh_preserves_origin_motion_and_pending_forces() {
+        let mut b = body();
+        b.angular_velocity = [0.0, 0.0, 2.0];
+        b.velocity = [3.0, 4.0, 5.0];
+        b.apply_force([0.0, 10.0, 0.0], [2.0, 0.0, 0.0]).unwrap();
+        b.linear_impulse = [1.0, 2.0, 3.0];
+        b.angular_impulse = [4.0, 5.0, 6.0];
+        let origin = b.body_state();
+        let assembly = AssemblyProperties {
+            mass: 2.0,
+            center_world: [1.0, 0.0, 0.0],
+            center_in_body: [1.0, 0.0, 0.0],
+            inertia_in_body: diagonal([3.0, 4.0, 10.0]),
+            body_frame: b.frame.clone(),
+            parts: 2,
+        };
+        b.refresh_assembly(&assembly, &profile()).unwrap();
+        assert_eq!(b.body_state().frame, origin.frame);
+        assert_eq!(b.body_state().velocity, origin.velocity);
+        assert_eq!(b.angular_velocity, origin.angular_velocity);
+        assert_eq!(b.center, [1.0, 0.0, 0.0]);
+        assert_eq!(b.velocity, [3.0, 6.0, 5.0]);
+        assert_eq!(b.angular_momentum, [0.0, 0.0, 20.0]);
+        assert_eq!(b.force, [0.0, -10.0, 0.0]);
+        assert_eq!(b.torque, [0.0, 0.0, 20.0]);
+        assert_eq!(b.linear_impulse, [1.0, 2.0, 3.0]);
+        assert_eq!(b.angular_impulse, [4.0, 5.0, 6.0]);
     }
     #[test]
     fn contact_history_limits_friction_using_previous_normal_force() {

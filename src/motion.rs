@@ -1,5 +1,5 @@
-//! Part-space geometry to recovered physics frames. The driver is an explicitly
-//! unconstrained diagnostic; it does not classify native assemblies or contacts.
+//! Part-space geometry to recovered root/joint frames for explicit probes and
+//! the walking fixture; native world/state dispatch remains separate.
 use crate::{
     animation::{Pose, ProceduralAnimation},
     bundle::Bundle,
@@ -151,7 +151,7 @@ pub(crate) fn advance(
     for _ in 0..steps {
         if control.walking_probe {
             let input = control.walking_input;
-            if let Err(error) = control.walking.step(&rig, input) {
+            if let Err(error) = control.walking.step_animated(&mut rig, input) {
                 control.error = Some(error);
                 return;
             }
@@ -266,7 +266,9 @@ pub(crate) fn timestep(world: &World) -> f64 {
 
 pub(crate) fn walking_report(world: &World) -> Option<String> {
     let control = world.resource::<MotionControl>();
-    control.walking_probe.then(|| control.walking.report())
+    control
+        .walking_probe
+        .then(|| control.walking.report() + &control.walking.animation_report())
 }
 pub(crate) fn walking_frame(world: &World) -> Option<CoordinateFrame> {
     let control = world.resource::<MotionControl>();

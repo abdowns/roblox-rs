@@ -1,6 +1,7 @@
 //! Explicit flat-floor / infinite-wall walking fixture, not native world dispatch.
 use crate::{
-    assembly::{AssemblyProperties, MassProfile},
+    animation::{Pose, ProceduralAnimation, RunningSignal},
+    assembly::{AssemblyProperties, MassPart, MassProfile},
     balancing::Balancing,
     bundle::Bundle,
     collision::ContactBodyState,
@@ -44,6 +45,13 @@ pub struct WalkingFixture {
     turn_gain: f32,
     yaw_gain: f32,
     yaw_limit: f32,
+    mass_parts: BTreeMap<String, MassPart>,
+    original_inertia: crate::assembly::Tensor,
+    animation: ProceduralAnimation,
+    signal: RunningSignal,
+    animation_ticks: u32,
+    joint_callbacks: u32,
+    limb_angles: [f32; 4],
 }
 impl WalkingFixture {
     pub fn new(bundle: &Bundle, scene: &Scene, rig: &R6Rig) -> Result<Self, String> {
@@ -129,6 +137,13 @@ impl WalkingFixture {
             turn_gain: float(0x016f7530)?,
             yaw_gain: float(0x0179fc24)?,
             yaw_limit: float(0x0177ed40)?,
+            mass_parts: parts,
+            original_inertia: assembly.inertia_in_body,
+            animation: ProceduralAnimation::load(bundle)?,
+            signal: RunningSignal::load(bundle)?,
+            animation_ticks: 0,
+            joint_callbacks: 0,
+            limb_angles: [0.0; 4],
         })
     }
     pub fn reset(&mut self) {
@@ -140,6 +155,80 @@ impl WalkingFixture {
         self.states.clear();
         self.motion = HumanoidMotion::default();
         self.balancing.reset();
+        self.inertia = self.original_inertia;
+        self.signal.speed = 0.0;
+        self.animation_ticks = 0;
+        self.joint_callbacks = 0;
+        self.limb_angles = [0.0; 4];
+    }
+    /// Play the bundled procedural branch while integrating walking. This is an
+    /// explicit offline choice: native R6 default keyframe payloads are absent.
+    pub fn step_animated(&mut self, rig: &mut R6Rig, input: [f32; 3]) -> Result<(), String> {
+        let velocity = self.body.body_state().velocity;
+        self.signal
+            .observe((velocity[2] * velocity[2] + velocity[0] * velocity[0]).sqrt())?;
+        let next = self
+            .steps
+            .checked_add(1)
+            .ok_or("walking animation tick overflow")?;
+        let time = f64::from(next) / 240.0;
+        let ticks = (time / self.animation.wait_seconds + 1e-9).floor() as u32;
+        if ticks > self.animation_ticks {
+            self.animation.apply(
+                rig,
+                if self.signal.speed > 0.0 {
+                    Pose::Running
+                } else {
+                    Pose::Standing
+                },
+                time,
+            )?;
+            self.animation_ticks = ticks;
+        }
+        // Existing procedural probe uses 60 Hz callbacks. Keep this research
+        // cadence explicit; never advance MaxVelocity 19 times per kernel tick.
+        if next.is_multiple_of(4) {
+            let before: Vec<_> = rig.joints.iter().map(|j| j.current_angle).collect();
+            for joint in &mut rig.joints {
+                joint.step()?;
+            }
+            self.joint_callbacks += 1;
+            self.limb_angles = std::array::from_fn(|a| rig.joints[a + 1].current_angle);
+            if rig
+                .joints
+                .iter()
+                .zip(before)
+                .any(|(j, old)| j.current_angle != old)
+            {
+                let frames = rig.pose(&self.body.frame)?;
+                let mut parts = self.mass_parts.clone();
+                for (name, part) in &mut parts {
+                    part.frame = frames
+                        .get(name)
+                        .ok_or("missing animated mass part")?
+                        .clone();
+                }
+                let assembly = AssemblyProperties::from_rig(&parts, rig)?;
+                self.body.refresh_assembly(&assembly, &self.kernel)?;
+                self.inertia = assembly.inertia_in_body;
+            }
+        }
+        self.step(rig, input)
+    }
+    pub fn animation_report(&self) -> String {
+        format!(
+            "walking_animation profile=bundled_procedural_no_tools pose={} event_speed={} script_ticks={} joint_callbacks={} limb_angles={:?} local_inertia={:?} callback_hz=explicit_60 native_default_keyframes=unavailable\n",
+            if self.signal.speed > 0.0 {
+                "Running"
+            } else {
+                "Standing"
+            },
+            self.signal.speed,
+            self.animation_ticks,
+            self.joint_callbacks,
+            self.limb_angles,
+            [self.inertia[0][0], self.inertia[1][1], self.inertia[2][2]]
+        )
     }
     pub fn step(&mut self, rig: &R6Rig, input: [f32; 3]) -> Result<(), String> {
         self.motion.move_input(
@@ -315,7 +404,7 @@ impl WalkingFixture {
     }
     pub fn report(&self) -> String {
         format!(
-            "walking_state step={} root_position={:?} velocity={:?} contacts={} impulses={} max_wall_penetration={} floor_y={} wall_x={} upright_y={} angular_velocity={:?} fixture=flat_support_and_infinite_wall balancing=native_legacy mass_tensor=rest_pose keyframe_playback=not_implemented native_differential=not_tested\n",
+            "walking_state step={} root_position={:?} velocity={:?} contacts={} impulses={} max_wall_penetration={} floor_y={} wall_x={} upright_y={} angular_velocity={:?} fixture=flat_support_and_infinite_wall balancing=native_legacy mass_tensor={} keyframe_playback=not_implemented native_differential=not_tested\n",
             self.steps,
             self.body.frame.position,
             self.body.velocity,
@@ -325,7 +414,12 @@ impl WalkingFixture {
             self.floor_y,
             self.wall_x,
             self.body.frame.rotation[1][1],
-            self.body.angular_velocity
+            self.body.angular_velocity,
+            if self.joint_callbacks > 0 {
+                "animated_cofm"
+            } else {
+                "rest_pose"
+            }
         )
     }
 }
@@ -439,6 +533,88 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
         return Err("balance failed to recover from angular impulse".into());
     }
     writeln!(report,"walking_balance_pass sustained_wall_seconds=30 directions=4 min_upright_y={minimum_up} max_wall_yaw_speed={maximum_spin} angular_impulse_recovered=true").unwrap();
-    writeln!(report,"walking_pass walk_speed={} distance_one_second={distance} input_release_stopped=true wall_impulses={} default_animation=not_implemented native_differential=not_tested",fixture.humanoid.walk_speed,wall_impulses).unwrap();
+    fixture.reset();
+    let mut moving_rig = rig.clone();
+    let mut low = [f32::INFINITY; 4];
+    let mut high = [f32::NEG_INFINITY; 4];
+    let mut pivot_error = 0.0f32;
+    let mut animated_minimum_up = 1.0f32;
+    for _ in 0..480 {
+        fixture.step_animated(&mut moving_rig, [0.0, 0.0, -1.0])?;
+        let frames = moving_rig.pose(&fixture.body.frame)?;
+        for (a, joint) in moving_rig.joints[1..5].iter().enumerate() {
+            low[a] = low[a].min(joint.current_angle);
+            high[a] = high[a].max(joint.current_angle);
+        }
+        for joint in &moving_rig.joints {
+            let parent = frames[&joint.part0].transform_point(joint.c0.position);
+            let child = frames[&joint.part1].transform_point(joint.c1.position);
+            for a in 0..3 {
+                pivot_error = pivot_error.max((parent[a] - child[a]).abs());
+            }
+        }
+    }
+    let swing: [f32; 4] = std::array::from_fn(|a| high[a] - low[a]);
+    if swing.iter().any(|s| *s < 1.0)
+        || pivot_error > 0.0001
+        || fixture.inertia == fixture.original_inertia
+    {
+        return Err(format!(
+            "walking animation did not propagate swing={swing:?} pivot_error={pivot_error}"
+        ));
+    }
+    report.push_str(&fixture.animation_report());
+    for _ in 0..480 {
+        fixture.step_animated(&mut moving_rig, [0.0; 3])?;
+    }
+    if fixture.signal.speed != 0.0 {
+        return Err("walking animation did not become Standing on release".into());
+    }
+    report.push_str(&fixture.animation_report());
+    fixture.reset();
+    moving_rig = rig.clone();
+    for _ in 0..7680 {
+        fixture.step_animated(&mut moving_rig, [1.0, 0.0, 0.0])?;
+        animated_minimum_up = animated_minimum_up.min(fixture.body.frame.rotation[1][1]);
+        if animated_minimum_up < 0.99
+            || fixture.body.frame.position[0] > fixture.wall_x
+            || fixture.max_penetration > 0.5
+        {
+            return Err(format!(
+                "animated wall balance failed: {}",
+                fixture.report()
+            ));
+        }
+    }
+    report.push_str(&fixture.report());
+    report.push_str(&fixture.animation_report());
+    for direction in [
+        [-1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+        [-1.0, 0.0, -1.0],
+    ] {
+        for _ in 0..480 {
+            fixture.step_animated(&mut moving_rig, direction)?;
+            if fixture.body.frame.rotation[1][1] < 0.99 {
+                return Err("animated direction change tipped the torso".into());
+            }
+        }
+    }
+    for _ in 0..480 {
+        fixture.step_animated(&mut moving_rig, [0.0; 3])?;
+    }
+    if fixture.signal.speed != 0.0 || fixture.body.angular_velocity.iter().any(|v| v.abs() > 0.01) {
+        return Err("animated release failed".into());
+    }
+    fixture.reset();
+    if fixture.body.frame != fixture.original.frame
+        || fixture.inertia != fixture.original_inertia
+        || fixture.joint_callbacks != 0
+    {
+        return Err("walking reset failed".into());
+    }
+    writeln!(report,"walking_animation_pass limbs=4 swing_radians={swing:?} pivot_error={pivot_error} min_animated_upright_y={animated_minimum_up} wall_seconds=32 release_pose=Standing animated_cofm=true reset_identical=true default_keyframes=unavailable").unwrap();
+    writeln!(report,"walking_pass walk_speed={} distance_one_second={distance} input_release_stopped=true wall_impulses={} walking_animation=bundled_procedural default_keyframes=unavailable native_differential=not_tested",fixture.humanoid.walk_speed,wall_impulses).unwrap();
     Ok(report)
 }

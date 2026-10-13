@@ -1,6 +1,7 @@
 //! The bundled, no-tool procedural Lua branch, selected explicitly for research.
-//! The shipped keyframe scripts reference remote clips; this is not their substitute.
-use crate::{bundle::Bundle, rig::R6Rig};
+//! Walking explicitly selects this offline branch. It does not reproduce the
+//! default keyframe clips referenced remotely by the shipped keyframe scripts.
+use crate::{bundle::Bundle, native_data::NativeImage, rig::R6Rig};
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
@@ -27,6 +28,39 @@ pub struct ProceduralAnimation {
     active_frequency: f64,
     idle_amplitude: f64,
     idle_frequency: f64,
+}
+/// Native Running event deadband, 00c02f36. Walking supplies nonnegative speed,
+/// for which the signed/unsigned native branches produce the same result.
+pub(crate) struct RunningSignal {
+    pub(crate) speed: f32,
+    cutoff: f32,
+    low: f32,
+    high: f32,
+}
+impl RunningSignal {
+    pub(crate) fn load(bundle: &Bundle) -> Result<Self, String> {
+        let image = NativeImage::load(bundle)?;
+        let float = |at| -> Result<f32, String> {
+            Ok(f32::from_le_bytes(image.region(at, 4)?.try_into().unwrap()))
+        };
+        Ok(Self {
+            speed: 0.0,
+            cutoff: float(0x016eb8c4)?,
+            low: float(0x01768c6c)?,
+            high: float(0x017a5b8c)?,
+        })
+    }
+    pub(crate) fn observe(&mut self, speed: f32) -> Result<bool, String> {
+        if !speed.is_finite() || speed < 0.0 {
+            return Err("invalid Running signal speed".into());
+        }
+        let value = if speed < self.cutoff { 0.0 } else { speed };
+        if self.speed * self.low <= value && value <= self.speed * self.high {
+            return Ok(false);
+        }
+        self.speed = value;
+        Ok(true)
+    }
 }
 fn literal(source: &str, prefix: &str) -> Result<f64, String> {
     let tail = source
@@ -241,4 +275,28 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     }
     writeln!(report,"animation_pass poses=6 callbacks=360 max_pivot_error={max_residual} reset_identical=true tools=not_implemented keyframe_clips=not_loaded native_sine_parity=not_tested").unwrap();
     Ok(report)
+}
+
+#[cfg(test)]
+mod signal_tests {
+    use super::*;
+    #[test]
+    fn running_event_ignores_small_speed_noise_and_stops_below_cutoff() {
+        let mut signal = RunningSignal {
+            speed: 0.0,
+            cutoff: 0.5,
+            low: 0.95,
+            high: 1.05,
+        };
+        assert!(!signal.observe(0.499).unwrap());
+        assert!(signal.observe(16.0).unwrap());
+        assert!(!signal.observe(15.5).unwrap());
+        assert!(!signal.observe(16.5).unwrap());
+        assert_eq!(signal.speed, 16.0);
+        assert!(signal.observe(0.499).unwrap());
+        assert_eq!(signal.speed, 0.0);
+        assert!(!signal.observe(1e-20).unwrap());
+        assert!(signal.observe(0.5).unwrap());
+        assert!(signal.observe(f32::NAN).is_err());
+    }
 }

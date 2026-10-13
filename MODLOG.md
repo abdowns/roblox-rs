@@ -1,5 +1,36 @@
 # MODLOG
 
+## 2026-10-12 Animate walking limbs and refresh their assembly properties
+
+**Changed:** Walking now advances the bundled procedural script and original
+Motor6D angle branch. Recovered Running speed cutoff/deadband selects
+Running/Standing. Posed mass parts rebuild Cofm/inertia via native dirty SimBody
+semantics. Added walking animation logs, sustained animated diagnostics and
+`audit-walking-render`; public signatures remain stable.
+**Why:** Walking previously translated the rigid rest pose and never stepped
+limb motors. Using the rest tensor after articulation would also distort contact
+and balancing response.
+**Tested how:** Live Ghidra Running publisher, Motor6D, Cofm refresh and default
+loader; all 44 source tests, Clippy; 32-second animated wall hold, four direction
+changes, release, pivots/reset; three Metal poses compared to rest at identical
+root frames; 120-frame walking window and standalone animation regression.
+**Result:** Four limbs swing 1.78-1.96 rad; pivot error 0.00000191 studs.
+Minimum animated up Y 0.99958944; penetration 0.10572481 studs. Limb-only pixel
+changes 5871/3984/5614; fresh uploads/reset match exactly. Window 467 ticks/116
+motor callbacks; all 2,606 original Contents entries unchanged.
+Test: `sh tools/cargo.sh run --locked -- viewport-walking`; WASD should move and
+turn an upright character with swinging arms/legs; release changes to Standing;
+R resets. Automated: `sh tools/cargo.sh run --locked -- audit-walking` expects
+`walking_animation_pass limbs=4`; `sh tools/cargo.sh run --locked -- audit-walking-render`
+expects `walking_render_pass`.
+**Still broken / not tested:** Matching 2016 default remote keyframe payloads are
+unavailable; live Ghidra confirms their loader. The shipped procedural branch
+is selected explicitly; native callback cadence, full state/floor dispatch and
+default-keyframe parity are **not tested**. Manual keys/visual parity are
+**not tested**. First Clippy flagged test-module placement; moved it to the end
+and reran. Slight lateral sliding persists during sustained fixture wall contact.
+**Next:** Recover original keyframe payloads and native joint/state scheduling.
+
 ## 2026-10-12 Fix walking tipping and uncontrolled rotation
 
 **Changed:** Added the recovered legacy Balancing torque controller, native

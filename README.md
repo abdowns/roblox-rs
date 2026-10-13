@@ -18,24 +18,34 @@ Expected: the original character rendered on a gray floor beside a brown wall.
 follows translation. Movement uses native Humanoid command math, WalkSpeed=16,
 RunningBase forces, R6 assembly mass/inertia and constrained SimBody substeps.
 The two original collidable bodies (Head/Torso) generate vertex/plane wall
-connectors and receive native awake impulses/spring forces. Limbs retain their
-rest pose; default keyframe playback is not implemented.
+connectors and receive native awake impulses/spring forces. Arms and legs now
+play the bundled procedural animation while walking, then its Standing pose on
+release. Animated poses update the assembly center of mass and inertia.
 
 The floor support, wall, material coefficients, awake scheduling and camera are
 explicit research fixtures. Native legacy balancing and AutoRotate torque now
 keep the torso upright and turn it toward movement. Native floor/state queries
 and broadphase remain incomplete. Maximum wall penetration is 0.114 studs in
-the rest-pose regression; native parity remains unverified. Manual keys
+the rest-pose regression (0.106 with animation). The 32-second animated wall
+test remains upright. Native parity remains unverified. Manual keys
 are **not tested**; automated input and Metal presentation are tested.
+The original R6 default loader uses remote keyframe clips absent from this bundle.
+Walking explicitly uses the shipped procedural script instead; its 60 Hz joint
+callback cadence is a fixture choice, and default-keyframe equivalence is
+**not tested**.
 
 ```sh
 sh tools/cargo.sh run --locked -- audit-walking
+sh tools/cargo.sh run --locked -- audit-walking-render
 sh tools/cargo.sh run --locked -- viewport-walking-smoke
 ```
 
 Expect `walking_balance_pass sustained_wall_seconds=30` and
 `walking_pass walk_speed=16`, `input_release_stopped=true` and nonzero wall
-impulses. The automatic window test presses toward the wall, presents 120 frames,
+impulses, plus `walking_animation_pass limbs=4` and `release_pose=Standing`.
+The render audit prints `walking_limb_readback` for three poses at identical root
+frames and `walking_render_pass` with an exact reset comparison.
+The automatic window test presses toward the wall, presents 120 frames,
 prints `walking_character_readback_pass` and `viewport_final_readback_pass`, then
 exits. Logs stay under RobloxStudio/analysis. Original files remain unchanged.
 
@@ -80,7 +90,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **42 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **44 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.

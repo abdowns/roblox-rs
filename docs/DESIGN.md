@@ -497,3 +497,45 @@ damps angular velocity below 0.01 rad/s; an off-center impulse initially creates
 more than 1 rad/s and recovers upright. Existing freefall and animation probes
 retain their separate controllers. Native differential parity is not tested. Raw
 MCP decompilation and disassembly stay in RobloxStudio/analysis/*fix-20261012.json.
+
+
+## Walking limb playback and animated Cofm correction
+
+Walking no longer uses rest joint angles. A separate additive step_animated entry
+point drives the existing procedural Lua port and Motor6D step, then the same
+walking/contact/kernel path. Live Ghidra Running event publisher 00c02f36 clips
+nonnegative speed below 0.5 to zero and suppresses events within 95%-105% of the
+previous emitted speed. Both signed/unsigned branches agree for these inputs.
+The resulting event determines Running/Standing exactly as the bundled
+humanoidAnimateLocal script's speed>0 branch. This avoids tiny integrator nudges
+keeping the player in Running after release. Script targets update every 0.1s;
+motor angles advance once per four explicit 240 Hz ticks, retaining the existing
+60 Hz research cadence (native cadence not verified). Frame batching never
+changes callback counts. Root/Neck remain fixed by the original no-tool branch.
+
+When a motor changes angle, original MassPart properties are posed through the
+six native links and recursively recombined. KernelBody.refresh_assembly follows
+dirty SimBody 00ab16aa: preserve root origin position/velocity and angular
+velocity, recompute Cofm offset/center velocity, diagonal inverse tensor and
+angular momentum, retain force/torque/impulse accumulators. Balancing uses the
+updated full local tensor; RunningBase yaw and contact impulses use the updated
+diagonal inertia. Bodies and decals share the final rig pose and GPU updates.
+Reset restores the original rig through MotionControl and the rest assembly.
+
+Live original loader 00f6660c selects humanoidAnimateLocalKeyframe2.rbxm for R6,
+which references remote ID 180426354 for walk and remote idle IDs. Those matching
+2016 keyframe payloads are not present locally. Procedural playback is explicitly
+selected for the offline walking fixture, not claimed as the default keyframe
+behavior. The raw loader/Running/Motor/Cofm MCP evidence is kept under
+RobloxStudio/analysis.
+
+Audit-walking measures four limb swings (1.958 rad shoulders, 1.777 rad hips),
+all six joint pivot errors below 0.00000191 studs, Running-to-Standing release,
+32s animated wall stability and four subsequent direction changes. Minimum up Y
+0.99958944 (about 1.64 degrees); max penetration 0.10572481 studs. The separate
+audit-walking-render uses the actual Bevy driver, extraction and Metal upload.
+It compares animated and rest limbs at the identical translated/rotated root:
+5,871 / 3,984 / 5,614 changed pixels at ticks 48/120/240. Fresh upload, repeated
+readback, pose restoration and full reset match byte-for-byte. No visual
+inspection was performed. The 120-frame window smoke produces 467 ticks and
+116 joint callbacks; previous standalone animation render hash is unchanged.

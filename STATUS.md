@@ -324,3 +324,17 @@ now integrated. Sustained 30-second wall, four directions, release and angular
 impulse recovery pass; originals remain unchanged. Native floor/state dispatch
 and differential parity remain not tested. The next change addresses the
 motionless limbs; previous notes describing absent balancing are historical.
+
+
+2026-10-12 walking animation fix: four limbs now play the original bundled
+procedural Lua branch with Running/Standing events and animated Cofm refresh.
+44 source tests, 32-second animated wall hold, release, direction changes, pivot
+constraints, Metal limb-only comparisons, exact reset and 120-frame window smoke
+pass. Original files unchanged. Ghidra 00f6660c confirms the native default R6
+keyframe script, whose matching remote 2016 walk/idle clip data is unavailable
+locally. Therefore this fixes motionless limbs using an explicit bundled branch;
+it does not establish default-keyframe parity. Native motor callback cadence is
+not tested; explicit 60 Hz is retained. Clippy initially rejected test module
+placement; corrected and rerun. No visual inspection or manual key test.
+Source rollback before this task: 811a978; rotation fix: 9afa84b; animation step
+can be reverted separately from rotation.

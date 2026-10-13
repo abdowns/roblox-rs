@@ -6,6 +6,7 @@ use crate::{
     camera,
     geometry::{Draw, RenderScene, RenderVertex},
     motion::{self, MotionControl},
+    rig::R6Rig,
     runtime,
     scene::CoordinateFrame,
     surface::{self, SurfaceScene},
@@ -1146,6 +1147,115 @@ pub fn audit_animation(bundle: &Bundle) -> Result<String, String> {
     Ok(report)
 }
 
+/// Compare moving limbs with a rest rig at the identical root frame. Translation
+/// and yaw cannot make this check pass without actual animated geometry.
+pub fn audit_walking(bundle: &Bundle) -> Result<String, String> {
+    let scene = RenderScene::character(bundle)?;
+    let surfaces = surface::character(bundle, &scene)?;
+    let decals = texture::character_decals(bundle, &scene)?;
+    let mut app = scene_app(scene);
+    for decal in decals.draws {
+        app.world_mut().spawn(decal);
+    }
+    app.update();
+    install_motion(&mut app, bundle)?;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let inputs = RenderInputs::character_probe();
+    let (mut gpu, _) = Gpu::new(
+        &instance,
+        None,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &app.world().resource::<Extracted>().0,
+    )?;
+    gpu.add_studs(&app.world().resource::<Extracted>().0, &surfaces)?;
+    gpu.add_decals(&app.world().resource::<ExtractedDecals>().0)?;
+    let original = gpu.read_frame(640, 480, &inputs)?;
+    {
+        let mut c = app.world_mut().resource_mut::<MotionControl>();
+        c.walking_probe = true;
+        c.walking_input = [1.0, 0.0, 0.0];
+    }
+    let mut report = String::new();
+    for tick in 1..=240 {
+        app.world_mut()
+            .resource_mut::<MotionControl>()
+            .requested_steps = 1;
+        app.update();
+        if let Some(error) = &app.world().resource::<MotionControl>().error {
+            return Err(error.clone());
+        }
+        if ![48, 120, 240].contains(&tick) {
+            continue;
+        }
+        gpu.update_geometry(
+            &app.world().resource::<Extracted>().0,
+            &app.world().resource::<ExtractedDecals>().0,
+            &surfaces,
+        )?;
+        let animated = gpu.read_frame(640, 480, &inputs)?;
+        let (mut fresh, _) = Gpu::new(
+            &instance,
+            None,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &app.world().resource::<Extracted>().0,
+        )?;
+        fresh.add_studs(&app.world().resource::<Extracted>().0, &surfaces)?;
+        fresh.add_decals(&app.world().resource::<ExtractedDecals>().0)?;
+        if fresh.read_frame(640, 480, &inputs)? != animated
+            || gpu.read_frame(640, 480, &inputs)? != animated
+        {
+            return Err("walking upload/readback mismatch".into());
+        }
+        let saved = app.world().resource::<R6Rig>().clone();
+        for joint in &mut app.world_mut().resource_mut::<R6Rig>().joints {
+            joint.current_angle = 0.0;
+        }
+        app.update();
+        gpu.update_geometry(
+            &app.world().resource::<Extracted>().0,
+            &app.world().resource::<ExtractedDecals>().0,
+            &surfaces,
+        )?;
+        let rest = gpu.read_frame(640, 480, &inputs)?;
+        let changed = animated
+            .chunks_exact(4)
+            .zip(rest.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        if changed < 100 {
+            return Err(format!(
+                "walking limbs invisible at tick {tick}: changed={changed}"
+            ));
+        }
+        *app.world_mut().resource_mut::<R6Rig>() = saved;
+        app.update();
+        gpu.update_geometry(
+            &app.world().resource::<Extracted>().0,
+            &app.world().resource::<ExtractedDecals>().0,
+            &surfaces,
+        )?;
+        if gpu.read_frame(640, 480, &inputs)? != animated {
+            return Err("walking pose restore mismatch".into());
+        }
+        writeln!(report,"walking_limb_readback tick={tick} changed_pixels={changed} root_frame_identical=true fresh_upload_identical=true repeat_identical=true").unwrap();
+    }
+    report.push_str(&motion::walking_report(app.world()).ok_or("missing walking report")?);
+    motion::reset(app.world_mut());
+    app.update();
+    gpu.update_geometry(
+        &app.world().resource::<Extracted>().0,
+        &app.world().resource::<ExtractedDecals>().0,
+        &surfaces,
+    )?;
+    if gpu.read_frame(640, 480, &inputs)? != original {
+        return Err("walking reset pixels mismatch".into());
+    }
+    report.push_str(
+        "walking_render_pass limb_samples=3 reset_pixels_identical=true visual_inspection=false\n",
+    );
+    Ok(report)
+}
+
 pub fn audit_motion(bundle: &Bundle) -> Result<String, String> {
     let scene = RenderScene::character(bundle)?;
     let mut report = scene.report.clone();
@@ -1747,7 +1857,7 @@ fn run_viewport(
             app.world_mut().spawn(draw);
         }
         app.update();
-        report.push_str("walking_fixture support=explicit_anchored_plane target_height=original_torso wall=explicit_infinite_plane friction=explicit animation=rest_pose camera=fixture_translation_follow native_parity=not_tested\n");
+        report.push_str("walking_fixture support=explicit_anchored_plane target_height=original_torso wall=explicit_infinite_plane friction=explicit animation=bundled_procedural_no_tools balancing=native_legacy autorotate=non_camera camera=fixture_translation_follow native_parity=not_tested\n");
         motion::walking_frame(app.world()).map(|f| f.position)
     } else {
         None
