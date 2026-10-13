@@ -18,6 +18,7 @@ pub mod kernel;
 pub mod legacy_contact;
 pub mod lighting;
 pub mod locomotion;
+pub mod material;
 pub mod mesh;
 mod motion;
 pub mod native_data;

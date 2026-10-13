@@ -1,5 +1,35 @@
 # MODLOG
 
+## 2026-10-13 Material properties and contact parameters (material.rs)
+
+**Changed:**
+- New `material.rs` with these parts:
+  - `MaterialProfile::defaults(material)` is PhysicalProperties(material), 00a4331a. It reads the density, friction, elasticity and friction-weight switches from the binary by walking their compiled compare/branch trees.
+  - `stiffness(size, shape)` is the Primitive stiffness, 00a92640/00a92276. It uses the size-table constants.
+  - `contact_params` is Contact::computeContactParams, 00a43fb4. It combines weighted friction and elasticity, takes the smaller kSpring, and sets kNeg = kSpring * elasticity factor (00a91fda).
+- Added `audit-material`.
+
+**Why:** These are the inputs the multi-body World needs: per-Part density and per-pair contact settings. Until now the character used fixture values: 7500/3750 and friction 0.3 or 0.
+
+**Tested how:** `sh tools/cargo.sh run --locked -- audit-material`, 68 tests, Clippy.
+
+**Result:**
+- Plastic: density 0.7, elasticity 0.5, friction 0.3, both weights 1. These match the decompiled switches.
+- Stiffness values:
+  - Torso 3,360,000
+  - Head 1,545,600
+  - a 4x1.2x2 Part 4,598,400
+  - the Baseplate 1.258e12
+- Torso/Baseplate contact: kSpring 3,360,000, kNeg 1,915,200 (factor 0.57), friction 0.3.
+- 31 of 36 materials resolve.
+
+**Still broken / not tested:**
+- Limestone, Pavement, LeafyGrass, Asphalt and Salt hit the density switch's assert path. They are reported as unsupported rather than assumed 1.0.
+- Freefall's friction=0 write (Primitive +0xbc, 00bd3ab4) does not reach these parameters in this build. The character still uses the fixture values until the next step.
+- Native numeric parity is not tested.
+
+**Next:** Give the character the recovered contact parameters.
+
 ## 2026-10-12 Torso/Head collide with Workspace Parts (BlockBlockContact in World)
 
 **Changed:**
