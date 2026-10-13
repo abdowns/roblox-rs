@@ -22,9 +22,10 @@ connectors and receive native awake impulses/spring forces. Limbs retain their
 rest pose; default keyframe playback is not implemented.
 
 The floor support, wall, material coefficients, awake scheduling and camera are
-explicit research fixtures. Balancing, native floor/state queries and broadphase
-remain incomplete. Wall penetration reaches about 0.35 studs in the two-second
-test; this is experimental collision response, not native parity. Manual keys
+explicit research fixtures. Native legacy balancing and AutoRotate torque now
+keep the torso upright and turn it toward movement. Native floor/state queries
+and broadphase remain incomplete. Maximum wall penetration is 0.114 studs in
+the rest-pose regression; native parity remains unverified. Manual keys
 are **not tested**; automated input and Metal presentation are tested.
 
 ```sh
@@ -32,7 +33,8 @@ sh tools/cargo.sh run --locked -- audit-walking
 sh tools/cargo.sh run --locked -- viewport-walking-smoke
 ```
 
-Expect `walking_pass walk_speed=16`, `input_release_stopped=true` and nonzero wall
+Expect `walking_balance_pass sustained_wall_seconds=30` and
+`walking_pass walk_speed=16`, `input_release_stopped=true` and nonzero wall
 impulses. The automatic window test presses toward the wall, presents 120 frames,
 prints `walking_character_readback_pass` and `viewport_final_readback_pass`, then
 exits. Logs stay under RobloxStudio/analysis. Original files remain unchanged.

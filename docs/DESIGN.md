@@ -465,3 +465,35 @@ Motion regression preserves the previous 46,558-pixel frame/hash exactly. Manual
 keyboard interaction and native visual/behavior equivalence are not tested.
 The shipped keyframe scripts still contain remote asset IDs; no matching 2016
 KeyframeSequence data has been recovered from the local bundle.
+
+
+## Walking balance and AutoRotate correction
+
+The previous walking path omitted both native angular controllers. Wall impulses
+therefore accumulated tilt and yaw while translation continued. Walking now calls
+Balancing (00bd2008) before RunningBase forces on each kernel substep. Constructor
+00bd1f42 copies gain 2250 and damping 50 from 017ac940/44; RunningBase 00c09128
+inherits them. World up comes from 005e5110. The controller transforms world-up
+cross torso-up, torso angular velocity, and existing torque into root space,
+applies the full assembly tensor to the orientation error, then diagonal damping.
+X/Z threshold 4000, the unusual correction-minus-existing comparison, cached
+torque/countdown, negative interval divisor -12000 and offset 20 are preserved
+from assembly, rather than accepting the broken decompiler stack expressions.
+Torque is added to SimBody through the recovered 00a6c134 contract. No orientation
+clamp, frozen axis or artificially increased damping is used.
+
+Humanoid vtable slot +e0 points to 00bdc44c. Its non-camera AutoRotate branch uses
+atan2(-desiredX,-desiredZ), current torso column-2 yaw (00bdcc6c), wrapped
+float-angle difference and gain 8. Walking publishes that desired rate once per
+explicit 240 Hz callback. RunningBase 00c09632 applies world-Y torque with gain
+7500, root local Y inertia and +/-100000 limit on every substep; anchored-floor
+angular velocity is zero. This is the supplied character's default AutoRotate
+branch, not camera-relative, slope, swimming or state dispatch.
+
+Numeric regression holds against the wall another 30 seconds: minimum torso up Y
+0.9999184 (about 0.74 degrees tilt), maximum wall yaw speed 0.003509 rad/s, wall
+penetration 0.11379337 studs. Four directions settle facing movement; release
+damps angular velocity below 0.01 rad/s; an off-center impulse initially creates
+more than 1 rad/s and recovers upright. Existing freefall and animation probes
+retain their separate controllers. Native differential parity is not tested. Raw
+MCP decompilation and disassembly stay in RobloxStudio/analysis/*fix-20261012.json.

@@ -1,6 +1,7 @@
 //! Explicit flat-floor / infinite-wall walking fixture, not native world dispatch.
 use crate::{
     assembly::{AssemblyProperties, MassProfile},
+    balancing::Balancing,
     bundle::Bundle,
     collision::ContactBodyState,
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile},
@@ -38,6 +39,11 @@ pub struct WalkingFixture {
     spring_gain: f32,
     spring_damping: f32,
     spring_limit: f32,
+    balancing: Balancing,
+    inertia: crate::assembly::Tensor,
+    turn_gain: f32,
+    yaw_gain: f32,
+    yaw_limit: f32,
 }
 impl WalkingFixture {
     pub fn new(bundle: &Bundle, scene: &Scene, rig: &R6Rig) -> Result<Self, String> {
@@ -118,6 +124,11 @@ impl WalkingFixture {
             spring_gain: float(0x017b05a0)?,
             spring_damping: float(0x017b05a4)?,
             spring_limit: float(0x017b05bc)?,
+            balancing: Balancing::load(bundle)?,
+            inertia: assembly.inertia_in_body,
+            turn_gain: float(0x016f7530)?,
+            yaw_gain: float(0x0179fc24)?,
+            yaw_limit: float(0x0177ed40)?,
         })
     }
     pub fn reset(&mut self) {
@@ -128,6 +139,7 @@ impl WalkingFixture {
         self.max_penetration = 0.0;
         self.states.clear();
         self.motion = HumanoidMotion::default();
+        self.balancing.reset();
     }
     pub fn step(&mut self, rig: &R6Rig, input: [f32; 3]) -> Result<(), String> {
         self.motion.move_input(
@@ -143,6 +155,25 @@ impl WalkingFixture {
             .motion
             .move_direction
             .map(|v| v * self.humanoid.walk_speed);
+        // Humanoid::calcDesiredWalkVelocity 00bdc44c, non-camera AutoRotate
+        // branch; RunningBase 00c0a498 publishes this at the outer callback.
+        let torso = rig
+            .pose(&self.body.frame)?
+            .remove("Torso")
+            .ok_or("missing yaw torso")?;
+        let desired_yaw_rate = if desired[0] != 0.0 || desired[2] != 0.0 {
+            let target = f64::from(-desired[0]).atan2(f64::from(-desired[2])) as f32;
+            let current =
+                f64::from(torso.rotation[0][2]).atan2(f64::from(torso.rotation[2][2])) as f32;
+            let mut delta = f64::from(target - current);
+            if !(-std::f64::consts::PI..std::f64::consts::PI).contains(&delta) {
+                delta -= ((delta + std::f64::consts::PI) / std::f64::consts::TAU).floor()
+                    * std::f64::consts::TAU;
+            }
+            delta as f32 * self.turn_gain
+        } else {
+            0.0
+        };
         let wall = CoordinateFrame {
             position: [self.wall_x, self.floor_y, 0.0],
             rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -216,6 +247,18 @@ impl WalkingFixture {
             }
         }
         for _ in 0..self.kernel.physics.kernel_substeps {
+            let frames = rig.pose(&self.body.frame)?;
+            self.balancing.apply(
+                &mut self.body,
+                frames.get("Torso").ok_or("missing balancing torso")?,
+                self.inertia,
+            )?;
+            // 00c09632: anchored floor angular velocity is zero. Apply torque
+            // about world Y; keep the native inertia and force limit.
+            let yaw = ((self.yaw_gain * self.inertia[1][1])
+                * (desired_yaw_rate - self.body.angular_velocity[1]))
+                .clamp(-self.yaw_limit, self.yaw_limit);
+            self.body.apply_torque([0.0, yaw, 0.0])?;
             let published = self.body.body_state();
             let mass = 1.0 / self.body.inverse_mass();
             let horizontal = self.running.horizontal_force(&RunningInput {
@@ -272,7 +315,7 @@ impl WalkingFixture {
     }
     pub fn report(&self) -> String {
         format!(
-            "walking_state step={} root_position={:?} velocity={:?} contacts={} impulses={} max_wall_penetration={} floor_y={} wall_x={} fixture=flat_support_and_infinite_wall balancing=not_implemented mass_tensor=rest_pose keyframe_playback=not_implemented native_differential=not_tested\n",
+            "walking_state step={} root_position={:?} velocity={:?} contacts={} impulses={} max_wall_penetration={} floor_y={} wall_x={} upright_y={} angular_velocity={:?} fixture=flat_support_and_infinite_wall balancing=native_legacy mass_tensor=rest_pose keyframe_playback=not_implemented native_differential=not_tested\n",
             self.steps,
             self.body.frame.position,
             self.body.velocity,
@@ -280,7 +323,9 @@ impl WalkingFixture {
             self.impulse_applications,
             self.max_penetration,
             self.floor_y,
-            self.wall_x
+            self.wall_x,
+            self.body.frame.rotation[1][1],
+            self.body.angular_velocity
         )
     }
 }
@@ -326,6 +371,74 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     {
         return Err("walking wall response failed".into());
     }
-    writeln!(report,"walking_pass walk_speed={} distance_one_second={distance} input_release_stopped=true wall_impulses={} default_animation=not_implemented native_differential=not_tested",fixture.humanoid.walk_speed,fixture.impulse_applications).unwrap();
+    let mut minimum_up = 1.0f32;
+    let mut maximum_spin = 0.0f32;
+    // Long enough to catch the accumulated tipping reported during play.
+    for _ in 0..7200 {
+        fixture.step(&rig, [1.0, 0.0, 0.0])?;
+        minimum_up = minimum_up.min(fixture.body.frame.rotation[1][1]);
+        maximum_spin = maximum_spin.max(fixture.body.angular_velocity[1].abs());
+        if minimum_up < 0.99 || fixture.body.frame.position[0] > fixture.wall_x {
+            return Err(format!(
+                "sustained wall balance failed: {}",
+                fixture.report()
+            ));
+        }
+    }
+    report.push_str(&fixture.report());
+    let wall_impulses = fixture.impulse_applications;
+    // Release must damp angular motion as well as translation.
+    for _ in 0..480 {
+        fixture.step(&rig, [0.0; 3])?;
+    }
+    if fixture.body.angular_velocity.iter().any(|v| v.abs() > 0.01) {
+        return Err(format!("wall release still rotating: {}", fixture.report()));
+    }
+    for direction in [
+        [-1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+        [-1.0, 0.0, -1.0],
+    ] {
+        fixture.reset();
+        for _ in 0..1920 {
+            fixture.step(&rig, direction)?;
+            minimum_up = minimum_up.min(fixture.body.frame.rotation[1][1]);
+        }
+        let torso = rig
+            .pose(&fixture.body.frame)?
+            .remove("Torso")
+            .ok_or("missing audit torso")?;
+        let alignment = (-torso.rotation[0][2] * direction[0]
+            - torso.rotation[2][2] * direction[2])
+            / (direction[0] * direction[0] + direction[2] * direction[2]).sqrt();
+        if alignment < 0.999 || minimum_up < 0.99 || fixture.body.angular_velocity[1].abs() > 0.01 {
+            return Err(format!(
+                "directional balance/yaw failed alignment={alignment}: {}",
+                fixture.report()
+            ));
+        }
+    }
+    fixture.reset();
+    let point = [
+        fixture.body.center[0],
+        fixture.body.center[1] + 1.0,
+        fixture.body.center[2],
+    ];
+    fixture
+        .body
+        .contact_impulse([0.0, 0.0, 40.0], point, &fixture.kernel)?;
+    let disturbed_speed = fixture.body.angular_velocity[0].abs();
+    for _ in 0..480 {
+        fixture.step(&rig, [0.0; 3])?;
+    }
+    if disturbed_speed < 1.0
+        || fixture.body.frame.rotation[1][1] < 0.9999
+        || fixture.body.angular_velocity.iter().any(|v| v.abs() > 0.01)
+    {
+        return Err("balance failed to recover from angular impulse".into());
+    }
+    writeln!(report,"walking_balance_pass sustained_wall_seconds=30 directions=4 min_upright_y={minimum_up} max_wall_yaw_speed={maximum_spin} angular_impulse_recovered=true").unwrap();
+    writeln!(report,"walking_pass walk_speed={} distance_one_second={distance} input_release_stopped=true wall_impulses={} default_animation=not_implemented native_differential=not_tested",fixture.humanoid.walk_speed,wall_impulses).unwrap();
     Ok(report)
 }

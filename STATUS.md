@@ -317,3 +317,10 @@ No visual inspection. Manual key interaction and native equivalence are not test
 First Clippy needless return and face-selection tie order were corrected. All
 2,606 original Contents entries remain unchanged. Source changes are committed
 as separate reversible steps; no assets/evidence leave RobloxStudio.
+
+
+2026-10-12 walking rotation fix: live Ghidra Balancing/AutoRotate controllers are
+now integrated. Sustained 30-second wall, four directions, release and angular
+impulse recovery pass; originals remain unchanged. Native floor/state dispatch
+and differential parity remain not tested. The next change addresses the
+motionless limbs; previous notes describing absent balancing are historical.

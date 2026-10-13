@@ -1,5 +1,29 @@
 # MODLOG
 
+## 2026-10-12 Fix walking tipping and uncontrolled rotation
+
+**Changed:** Added the recovered legacy Balancing torque controller, native
+AutoRotate desired yaw and RunningBase yaw feedback. Walking reset clears cached
+balancing torque. Added sustained wall, directional, angular-release and impulse
+recovery diagnostics; public signatures remain stable.
+**Why:** Wall contacts spun and tipped the character because neither native
+angular controller was called by the walking fixture.
+**Tested how:** Live Ghidra constructors, vtable, decompilation and assembly;
+30-second wall hold, four eight-second directional runs, release and off-center
+impulse recovery; source tests, Clippy and original bundle fingerprint.
+**Result:** Minimum up Y 0.9999184, max wall yaw speed 0.003509 rad/s, max
+penetration 0.11379337 studs. Test:
+`sh tools/cargo.sh run --locked -- audit-walking`; expect
+`walking_balance_pass sustained_wall_seconds=30`. Interactive test:
+`sh tools/cargo.sh run --locked -- viewport-walking`; hold D into the wall, change
+directions, release; expect upright posture and turning toward movement.
+**Still broken / not tested:** Native differential parity and manual keys are
+**not tested**. Rest-pose wall still slides slightly laterally under sustained
+force. Walking limbs remain motionless until the next animation change. Initial
+audit final impulse count accidentally reflected a reset; corrected. A first
+template lookup used the project root instead of reference templates; corrected.
+**Next:** Advance original limb motors during walking and refresh animated Cofm.
+
 ## 2026-10-12 Wire native movement and wall response into a playable fixture
 
 **Changed:** walking.rs integrates Humanoid input, original WalkSpeed, RunningBase

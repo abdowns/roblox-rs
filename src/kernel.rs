@@ -169,6 +169,14 @@ impl KernelBody {
     pub fn inverse_inertia_world(&self) -> Tensor {
         rotate_tensor(diagonal(self.inverse_diagonal), self.frame.rotation)
     }
+    /// Body::accumulateTorque, 00a6c134; no artificial orientation constraint.
+    pub fn apply_torque(&mut self, torque: [f32; 3]) -> Result<(), String> {
+        if torque.iter().any(|v| !v.is_finite()) {
+            return Err("invalid applied torque".into());
+        }
+        self.torque = std::array::from_fn(|a| torque[a] + self.torque[a]);
+        self.validate()
+    }
     pub fn inverse_mass(&self) -> f32 {
         self.inverse_mass
     }
