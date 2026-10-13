@@ -108,6 +108,14 @@ are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
 
+- Studio default world data: Part defaults, the new-document Baseplate and the
+  Play Solo spawn point, recovered from the binary. Run
+  `sh tools/cargo.sh run --locked -- audit-workspace`; expect
+  `workspace_part name="Baseplate" ... size=[512.0, 20.0, 512.0]
+  brick_color=199 anchored=true locked=true surfaces=[0, 3, 0, 0, 4, 0]` and
+  `spawn_location position=[0.0, 100.0, 0.0]`. Data only so far: the
+  Baseplate is not yet rendered or simulated.
+
 - Native Lighting defaults and day cycle: Roblox's LightingParameters::setTime,
   presetLighting and setFog, recovered from the binary. Run
   `sh tools/cargo.sh run --locked -- audit-lighting`; expect

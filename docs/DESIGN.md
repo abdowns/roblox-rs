@@ -757,3 +757,27 @@ image crate's jpeg feature). Assumptions: the blend enum mapping (One=0, Zero=1,
 SrcAlpha=3, InvSrcAlpha=4) is inferred from use, not from a symbol; faces use
 mip 0 with a linear/clamp sampler; the star field (drawn when the moon is up)
 and custom Sky instances are not implemented.
+
+## Studio default world (Workspace, Baseplate, Play Solo spawn)
+
+workspace.rs holds the Workspace contents as plain `PartInstance` values with
+the properties the core client reads. `PartInstance::default()` is
+Instance.new("Part") from the PartInstance constructor (009828ce): size
+(4, 1.2, 2), BrickColor 194, Plastic, friction 0.3, elasticity 0.5,
+unanchored, Top Studs and Bottom Inlet (Primitive +0xd2+NormalId), other faces
+Smooth. The size setter only raises each axis to the 0.2 minimum.
+`Workspace::studio_new_document()` is RobloxIDEDoc's new place (001017a6): one
+Part "Baseplate", 512x20x512 at (0, -10, 0), Anchored, Locked, BrickColor 199,
+so its top face is y = 0.
+
+Play Solo without a SpawnLocation (calculateNextSpawnLocation 00f6bdf6) spawns
+at (0, 100, 0), moved over the extents only when the workspace extents miss the
+origin. The safe-spot search (00ae8e9a) returns at once when the extents' max y
+is below the candidate; its occupied-region search is not ported and returns an
+error. `character_placement` follows SpawnLocation.cpp (009f4706): the model is
+moved so its location (the PrimaryPart, which is the Head in character3) is at
+spawn + (0, 7, 0), then turned by lookAt along the spawn's horizontal look
+vector. In the default world the Head lands at (0, 107, 0) with identity
+rotation, so the character faces -Z. Evidence:
+RobloxStudio/analysis/workspace-native-20261012.md. `tools/macho_exports.py`
+lists the binary's 9,471 exported names (mostly RBX::Graphics and G3D).

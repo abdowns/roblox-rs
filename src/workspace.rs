@@ -1,0 +1,312 @@
+//! RBX::Workspace subset for the Studio new-document world: PartInstance
+//! construction defaults, the Baseplate RobloxIDEDoc adds to a new place, and
+//! the Play Solo character placement without a SpawnLocation.
+//!
+//! Recovered from:
+//! - PartInstance ctor 009828ce / Part ctor 00708a70 (defaults),
+//! - RobloxIDEDoc 001017a6 (Baseplate),
+//! - Player::calculateNextSpawnLocation 00f6bdf6 and the safe-spot search
+//!   00ae8e9a (spawn point),
+//! - SpawnLocation.cpp 009f4706 with Model moveTo 009c1bc6, getLocation
+//!   009703f0, GetPrimaryCFrame 0096e468 and SetPrimaryPartCFrame 0096e582
+//!   (character placement).
+use crate::{
+    rig::{compose, inverse},
+    scene::{CoordinateFrame, Part},
+};
+use std::fmt::Write;
+
+/// RBX::SurfaceType values stored at Primitive +0xd2+NormalId.
+pub const SURFACE_SMOOTH: u32 = 0;
+pub const SURFACE_STUDS: u32 = 3;
+pub const SURFACE_INLET: u32 = 4;
+/// NormalId order used by the surfaces array: Right, Top, Back, Left, Bottom, Front.
+pub const FACE_NAMES: [&str; 6] = [
+    "RightSurface",
+    "TopSurface",
+    "BackSurface",
+    "LeftSurface",
+    "BottomSurface",
+    "FrontSurface",
+];
+
+const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// A block Part with the properties the core client reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PartInstance {
+    pub name: String,
+    pub frame: CoordinateFrame,
+    pub size: [f32; 3],
+    pub brick_color: u32,
+    /// RBX::PartMaterial (0x100 Plastic).
+    pub material: u32,
+    pub transparency: f32,
+    pub reflectance: f32,
+    /// Primitive +0xcb (vtable +0x110 setter, property descriptor 01d719d8).
+    pub anchored: bool,
+    /// PartInstance +0xb5 (vtable +0x12c setter, property descriptor 01d719a4).
+    pub locked: bool,
+    pub can_collide: bool,
+    /// Primitive +0xbc.
+    pub friction: f32,
+    pub elasticity: f32,
+    pub surfaces: [u32; 6],
+}
+
+impl Default for PartInstance {
+    /// Instance.new("Part"): size (4, 1.2, 2), BrickColor 194 (Medium stone
+    /// grey), Plastic, friction 0.3, elasticity 0.5, unanchored, Top Studs
+    /// (face 1 = 3) and Bottom Inlet (face 4 = 4), all other faces Smooth.
+    fn default() -> Self {
+        let mut surfaces = [SURFACE_SMOOTH; 6];
+        surfaces[1] = SURFACE_STUDS;
+        surfaces[4] = SURFACE_INLET;
+        Self {
+            name: "Part".into(),
+            frame: CoordinateFrame {
+                position: [0.0; 3],
+                rotation: IDENTITY,
+            },
+            size: [4.0, 1.2, 2.0],
+            brick_color: 194,
+            material: 0x100,
+            transparency: 0.0,
+            reflectance: 0.0,
+            anchored: false,
+            locked: false,
+            can_collide: true,
+            friction: 0.3,
+            elasticity: 0.5,
+            surfaces,
+        }
+    }
+}
+
+impl PartInstance {
+    /// PartInstance size setter (vtable +0xbc -> +0xd0 00984658): each axis is
+    /// raised to the 0.2 minimum (0081b8c0); no FormFactor snapping here.
+    pub fn set_size(&mut self, size: [f32; 3]) {
+        self.size = std::array::from_fn(|a| if size[a] <= 0.2 { 0.2 } else { size[a] });
+    }
+    /// World-space axis-aligned extents of the block.
+    pub fn extents(&self) -> ([f32; 3], [f32; 3]) {
+        let half = self.size.map(|s| s * 0.5);
+        let r = &self.frame.rotation;
+        let reach: [f32; 3] = std::array::from_fn(|i| {
+            r[i][0].abs() * half[0] + r[i][1].abs() * half[1] + r[i][2].abs() * half[2]
+        });
+        (
+            std::array::from_fn(|i| self.frame.position[i] - reach[i]),
+            std::array::from_fn(|i| self.frame.position[i] + reach[i]),
+        )
+    }
+    /// The scene-level Part view used by the existing render/mass code.
+    pub fn as_part(&self) -> Part {
+        Part {
+            frame: self.frame.clone(),
+            size: self.size,
+            shape: 1,
+            brick_color: self.brick_color,
+            transparency: self.transparency,
+            anchored: self.anchored,
+            can_collide: self.can_collide,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Workspace {
+    pub parts: Vec<PartInstance>,
+}
+
+impl Workspace {
+    /// RobloxIDEDoc new document (001017a6): one Part named "Baseplate",
+    /// Size (512, 20, 512), Position (0, -10, 0), Anchored, Locked,
+    /// BrickColor 199 (Dark stone grey); every other property keeps the Part
+    /// defaults (Top Studs, Bottom Inlet).
+    pub fn studio_new_document() -> Self {
+        let mut baseplate = PartInstance {
+            name: "Baseplate".into(),
+            ..PartInstance::default()
+        };
+        baseplate.set_size([512.0, 20.0, 512.0]);
+        baseplate.frame.position = [0.0, -10.0, 0.0];
+        baseplate.anchored = true;
+        baseplate.locked = true;
+        baseplate.brick_color = 199;
+        Self {
+            parts: vec![baseplate],
+        }
+    }
+    /// Model extents (009708e0) over the workspace parts.
+    pub fn extents(&self) -> Option<([f32; 3], [f32; 3])> {
+        self.parts.iter().map(PartInstance::extents).reduce(|a, b| {
+            (
+                std::array::from_fn(|i| a.0[i].min(b.0[i])),
+                std::array::from_fn(|i| a.1[i].max(b.1[i])),
+            )
+        })
+    }
+    /// Player::calculateNextSpawnLocation (00f6bdf6) when no SpawnLocation is
+    /// enabled: (0, 100, 0), moved over the extents' x/z center at
+    /// min.y + 100 only when the extents do not contain the origin; then the
+    /// safe-spot search (00ae8e9a), which returns immediately when the
+    /// workspace extents' max y is below the candidate.
+    pub fn next_spawn_location(&self) -> Result<[f32; 3], String> {
+        let mut spawn = [0.0, 100.0, 0.0];
+        let (low, high) = self.extents().unwrap_or(([0.0; 3], [0.0; 3]));
+        if 0.0 < low[0]
+            || 0.0 < low[1]
+            || 0.0 < low[2]
+            || high[0] < 0.0
+            || high[1] < 0.0
+            || high[2] < 0.0
+        {
+            spawn = [
+                (low[0] + high[0]) * 0.5 + spawn[0],
+                low[1] + spawn[1],
+                (low[2] + high[2]) * 0.5 + spawn[2],
+            ];
+        }
+        if high[1] < spawn[1] {
+            return Ok(spawn);
+        }
+        Err("spawn safe-spot search over workspace geometry is not ported".into())
+    }
+}
+
+/// G3D::CoordinateFrame::lookAt rotation for a frame at the origin.
+fn look_at(target: [f32; 3], up: [f32; 3]) -> [[f32; 3]; 3] {
+    let unit = |v: [f32; 3]| {
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        v.map(|x| x / l)
+    };
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let mut up = unit(up);
+    let look = unit(target);
+    if dot(look, up).abs() > 0.99 {
+        up = [1.0, 0.0, 0.0];
+        if dot(look, up).abs() > 0.99 {
+            up = [0.0, 1.0, 0.0];
+        }
+    }
+    let along = dot(look, up);
+    up = unit(std::array::from_fn(|i| up[i] - look[i] * along));
+    let z = look.map(|v| -v);
+    let x = unit(cross(z, up).map(|v| -v));
+    let y = cross(z, x);
+    std::array::from_fn(|r| [x[r], y[r], z[r]])
+}
+
+/// SpawnLocation.cpp character placement (009f4706): move the model so its
+/// location (the PrimaryPart CFrame, 009703f0) is at spawn + (0, 7, 0), then
+/// SetPrimaryPartCFrame with a lookAt along the spawn's horizontal look
+/// vector. Returns the rigid transform applied to every part of the model.
+pub fn character_placement(spawn: &CoordinateFrame, primary: &CoordinateFrame) -> CoordinateFrame {
+    let target = [
+        spawn.position[0],
+        spawn.position[1] + 7.0,
+        spawn.position[2],
+    ];
+    // Model moveTo by the delta from the location (no obstruction search: the
+    // mover only shifts a model that overlaps geometry).
+    let delta: [f32; 3] = std::array::from_fn(|a| target[a] - primary.position[a]);
+    let moved = CoordinateFrame {
+        position: std::array::from_fn(|a| primary.position[a] + delta[a]),
+        rotation: primary.rotation,
+    };
+    // lookVector = -column 2; fall back to column 1 if it is fuzzy-equal to
+    // Vector3::unitY (005e5110); flatten to the horizontal plane and normalize.
+    let column = |c: usize| {
+        [
+            spawn.rotation[0][c],
+            spawn.rotation[1][c],
+            spawn.rotation[2][c],
+        ]
+    };
+    let mut look = column(2).map(|v| -v);
+    let difference = look[2] * look[2] + (look[1] - 1.0) * (look[1] - 1.0) + look[0] * look[0];
+    if crate::g3d::fuzzy_zero(difference) {
+        look = column(1);
+    }
+    let inverse_length = 1.0 / (look[2] * look[2] + look[0] * look[0] + 0.0).sqrt();
+    let look = [look[0] * inverse_length, 0.0, inverse_length * look[2]];
+    let placed = CoordinateFrame {
+        position: moved.position,
+        rotation: look_at(look, [0.0, 1.0, 0.0]),
+    };
+    let translation = CoordinateFrame {
+        position: delta,
+        rotation: IDENTITY,
+    };
+    compose(&compose(&placed, &inverse(&moved)), &translation)
+}
+
+/// Native-numbers report for the Studio default world.
+pub fn audit() -> Result<String, String> {
+    let mut report = String::new();
+    let part = PartInstance::default();
+    writeln!(report, "part_defaults name={:?} size={:?} brick_color={} material={:#x} friction={} elasticity={} anchored={} locked={} can_collide={} surfaces={:?} source=PartInstance_ctor_009828ce", part.name, part.size, part.brick_color, part.material, part.friction, part.elasticity, part.anchored, part.locked, part.can_collide, part.surfaces).unwrap();
+    let workspace = Workspace::studio_new_document();
+    for p in &workspace.parts {
+        let (low, high) = p.extents();
+        writeln!(report, "workspace_part name={:?} position={:?} size={:?} brick_color={} anchored={} locked={} surfaces={:?} extents_low={low:?} extents_high={high:?} source=RobloxIDEDoc_001017a6", p.name, p.frame.position, p.size, p.brick_color, p.anchored, p.locked, p.surfaces).unwrap();
+    }
+    let spawn = workspace.next_spawn_location()?;
+    writeln!(report, "spawn_location position={spawn:?} spawn_location_instances=0 safe_spot=extents_below_candidate").unwrap();
+    if spawn != [0.0, 100.0, 0.0] || workspace.parts[0].extents().1[1] != 0.0 {
+        return Err("unexpected Studio default world spawn".into());
+    }
+    Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn baseplate_matches_native_new_document() {
+        let w = Workspace::studio_new_document();
+        assert_eq!(w.parts.len(), 1);
+        let b = &w.parts[0];
+        assert_eq!(b.extents(), ([-256.0, -20.0, -256.0], [256.0, 0.0, 256.0]));
+        assert_eq!(b.surfaces, [0, 3, 0, 0, 4, 0]);
+        assert_eq!(w.next_spawn_location().unwrap(), [0.0, 100.0, 0.0]);
+    }
+    #[test]
+    fn spawn_moves_over_extents_that_miss_the_origin() {
+        let mut w = Workspace::studio_new_document();
+        w.parts[0].frame.position = [1000.0, -10.0, 0.0];
+        assert_eq!(w.next_spawn_location().unwrap(), [1000.0, 80.0, 0.0]);
+    }
+    #[test]
+    fn placement_turns_the_character_to_face_minus_z() {
+        let spawn = CoordinateFrame {
+            position: [0.0, 100.0, 0.0],
+            rotation: IDENTITY,
+        };
+        let head = CoordinateFrame {
+            position: [0.0, 19.5, 22.5],
+            rotation: [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]],
+        };
+        let t = character_placement(&spawn, &head);
+        let placed = compose(&t, &head);
+        assert_eq!(placed.position, [0.0, 107.0, 0.0]);
+        assert_eq!(placed.rotation, IDENTITY);
+        let arm = compose(
+            &t,
+            &CoordinateFrame {
+                position: [1.5, 18.0, 22.5],
+                rotation: head.rotation,
+            },
+        );
+        assert_eq!(arm.position, [-1.5, 105.5, 0.0]);
+    }
+}

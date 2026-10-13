@@ -1,5 +1,29 @@
 # MODLOG
 
+## 2026-10-12 Studio default world data (Part defaults, Baseplate, spawn)
+
+**Changed:** Added `workspace.rs` (PartInstance defaults, Workspace with the
+Studio new-document Baseplate, no-SpawnLocation spawn point and the
+SpawnLocation.cpp character placement transform), `audit-workspace`, and
+`tools/macho_exports.py` (lists the binary's exported C++ names).
+**Why:** First step of getting Parts working: the default place every new
+Studio document starts with.
+**Tested how:** Ghidra: Part/PartInstance constructors, Part vtable setters and
+property descriptors, RobloxIDEDoc 001017a6, 00f6bdf6, 00ae8e9a, 009f4706,
+009c1bc6, 009703f0, 0096e468, 005e5110 (notes in
+RobloxStudio/analysis/workspace-native-20261012.md). Three unit tests and
+`audit-workspace`.
+**Result:** Baseplate 512x20x512 at (0,-10,0), Anchored, Locked, BrickColor
+199, Top Studs/Bottom Inlet; spawn (0,100,0); the Head is placed at
+(0,107,0) facing -Z (Torso at (0,105.5,0)).
+Test: `sh tools/cargo.sh run --locked -- audit-workspace`.
+**Still broken / not tested:** Data only: nothing renders or simulates the
+Baseplate yet. The occupied-region safe-spot search is not ported (returns an
+error). The Model mover's obstruction search is not ported (never needed for
+an empty sky). Terrain/Camera handling in workspace extents is assumed empty.
+**Next:** World raycasts and kernel statics against anchored Parts, then drop
+the character onto the Baseplate.
+
 ## 2026-10-12 August 2016 keyframe animations (Animator + Animate script)
 
 **Changed:** Added `rbxm.rs` (binary/XML model reader), `g3d.rs` (exact

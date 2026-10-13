@@ -33,4 +33,5 @@ pub mod sky;
 pub mod surface;
 pub mod texture;
 pub mod walking;
+pub mod workspace;
 pub mod world;
