@@ -1,5 +1,39 @@
 # MODLOG
 
+## 2026-10-12 Recover native joint, Heartbeat and Lua wait scheduling
+
+**Changed:** Added `scheduler.rs` and `audit-scheduler`. Walking now steps
+Motor6D once per recovered 60 Hz PhysicsJob, before its four world steps, and
+resumes the procedural script's `wait(0.1)` on wall-clock time with 30 Hz
+Heartbeat time as `move(time)` input. Public signatures are unchanged.
+**Why:** The previous 60 Hz motor step and 0.1 s script grid were fixture
+choices; motors stepped before the fourth world step and the script used
+world-step time.
+**Tested how:** Live Ghidra: Motor6D vtable +0x44, MovingAssemblyStage,
+World::uiStep/step, world-step accumulator, DataModel/PhysicsJob, RunService
+gameStepped/heartbeat, HeartbeatTask, WaitingScriptsJob, Lua wait/resume and
+settings. 46 tests, fmt, Clippy; audit-scheduler, audit-walking,
+audit-walking-render, walking window smoke, animation regressions, bundle check.
+**Result:** Constants decoded at runtime: 60 Hz, dt 0.016666668, 240
+steps/s, cap 12, ceiling 1.99999, Heartbeat 30 Hz, minimum wait 0.03. Exactly 4
+world steps per job. Two seconds: 120 jobs, 480 world steps, 60 heartbeats, 18
+script resumes (gaps 6 or 7 frames). Rest-pose walking numbers identical to
+the previous log. Animated swing 1.994/1.962 rad, minimum up Y 0.9996104,
+penetration 0.1043663. Limb pixels 5618/3133/5805; exact fresh/repeat/reset.
+Window: 120 frames, 476 world steps, 119 joint steps. Standalone animation hash
+unchanged; 2,606 original entries unchanged.
+Test: `sh tools/cargo.sh run --locked -- audit-scheduler`; expect
+`scheduler_pass ... script_resumes=18`. `sh tools/cargo.sh run --locked -- viewport-walking`:
+WASD walking with swinging limbs, now updated every 6-7 frames.
+**Still broken / not tested:** Ideal jitter-free frame clock and the
+Heartbeat→WaitingScripts→Physics order inside a frame are explicit choices.
+Throttled/legacy step branches, sleeping-joint skip, long-step work and keyframe
+Animator stepping are recorded only. A first window-smoke attempt used `timeout`,
+which is absent on macOS, so it never ran; rerun directly and passed. Manual keys
+and native visual/behavior parity are **not tested**.
+**Next:** Recover the Humanoid state/floor dispatch that replaces the fixture
+support, or the original keyframe payloads if a verifiable source appears.
+
 ## 2026-10-12 Animate walking limbs and refresh their assembly properties
 
 **Changed:** Walking now advances the bundled procedural script and original

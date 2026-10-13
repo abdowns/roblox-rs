@@ -539,3 +539,38 @@ It compares animated and rest limbs at the identical translated/rotated root:
 readback, pose restoration and full reset match byte-for-byte. No visual
 inspection was performed. The 120-frame window smoke produces 467 ticks and
 116 joint callbacks; previous standalone animation render hash is unchanged.
+
+
+## Native job, joint and Lua wait scheduling
+
+scheduler.rs replaces walking's explicit 60 Hz / 0.1 s grid with the recovered
+default Studio chain. PhysicsJob 006bff80 runs at 60 Hz when the TaskScheduler
+cyclic executive is on (data default 1 at 01cd5500; rate table 01749cf0) and
+always passes the constant dt 0.016666668 (0179fbf8). DataModel 0079fb6e asks
+World for a step count (00ba9892): 240*dt plus a float remainder, floored,
+capped at MaxMissedWorldStepsRemembered=12, remainder ceiling 1.99999. In float
+arithmetic this is exactly 4 every job. If zero, the whole physics step is
+skipped. RunService gameStepped 006bc910 then advances game time by
+steps*(float)1/240 and fires Stepped, the keyframe "Animation" signal and the
+"Script" signal. World::step 00ba99d4 calls World::uiStep once and then the
+world steps. uiStep reaches MovingAssemblyStage 00b39200, which calls Motor6D
+vtable +0x44 (00b3717c) once per job, before the four world steps. Walking
+now steps motors there instead of before the fourth world step.
+
+Lua `wait` (005b0774) clamps to the Lua setting minimum 0.03 and enqueues
+wall-clock now and now+seconds. WaitingScriptsJob (60 Hz) resumes threads whose
+wake time has passed and pushes (now-enqueued, RunService+0x78). That second
+value is accumulated only by the 30 Hz HeartbeatTask (006c05ca/006c0ad8) using
+float-rounded wall dt. The bundled script uses `local _, time = wait(0.1)`, so
+its sine input is Heartbeat time, not world-step time. Wake times compare
+against wall-clock time; on the ideal 60 Hz model clock, double rounding makes
+resumes occur every 6 or 7 frames (native jitter would also vary this).
+
+Fixture assumptions that remain: ideal frame clock k/60 with no jitter; job
+order Heartbeat, WaitingScripts, PhysicsJob in each frame; script start
+(first wait) at clock zero; first Heartbeat dt zero. The throttled
+world-step branch, legacy non-cyclic 8-step branch, sleeping-assembly joint skip,
+long-step work and keyframe Animator stepping are recorded, not implemented.
+The rest-pose walking audit is numerically unchanged. The standalone A probe and
+audit-animation keep their explicit 60 Hz research cadence. Evidence summary:
+RobloxStudio/analysis/scheduler-native-20261012.md.

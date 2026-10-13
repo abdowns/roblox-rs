@@ -19,6 +19,7 @@ pub mod render;
 pub mod rig;
 pub mod runtime;
 pub mod scene;
+pub mod scheduler;
 pub mod shader_pack;
 pub mod surface;
 pub mod texture;

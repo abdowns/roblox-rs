@@ -26,13 +26,16 @@ The floor support, wall, material coefficients, awake scheduling and camera are
 explicit research fixtures. Native legacy balancing and AutoRotate torque now
 keep the torso upright and turn it toward movement. Native floor/state queries
 and broadphase remain incomplete. Maximum wall penetration is 0.114 studs in
-the rest-pose regression (0.106 with animation). The 32-second animated wall
+the rest-pose regression (0.104 with animation). The 32-second animated wall
 test remains upright. Native parity remains unverified. Manual keys
 are **not tested**; automated input and Metal presentation are tested.
 The original R6 default loader uses remote keyframe clips absent from this bundle.
-Walking explicitly uses the shipped procedural script instead; its 60 Hz joint
-callback cadence is a fixture choice, and default-keyframe equivalence is
-**not tested**.
+Walking explicitly uses the shipped procedural script instead; default-keyframe
+equivalence is **not tested**. Its timing now follows the recovered native jobs:
+Motor6D steps once per 60 Hz physics job before that job's four world steps, and
+the script's `wait(0.1)` resumes on wall-clock time with 30 Hz Heartbeat time as
+its animation input. The frame clock is ideal (no jitter) and the job order
+within a frame is an explicit choice.
 
 ```sh
 sh tools/cargo.sh run --locked -- audit-walking
@@ -90,7 +93,7 @@ sh tools/cargo.sh test --locked
 
 Expected: `mesh_totals meshes=37 vertices=10992 triangles=12896`,
 `scene_loaded instances=26 parts=7 visible_parts=6`, and
-`static_import_pass updates=120`. The tests report **44 passed**. No window opens.
+`static_import_pass updates=120`. The tests report **46 passed**. No window opens.
 The command prints the path of a new log under `RobloxStudio/analysis/` containing
 mesh bounds, class counts, Part positions/rotations and update observations.
 This imports data and checks retention; it is not game simulation.
@@ -101,6 +104,13 @@ Rust 1.97.1 toolchain; it does not install or upgrade system tools. Dependencies
 are downloaded on first build; runtime data loading uses no network requests.
 
 ## What works (tested)
+
+- Native job scheduling for joints and Lua waits. Run
+  `sh tools/cargo.sh run --locked -- audit-scheduler`; expect a
+  `scheduler_profile` with physics 60 Hz, dt 0.016666668, heartbeat 30 Hz,
+  minimum wait 0.03, then `scheduler_pass seconds=2 physics_jobs=120
+  world_steps=480 joint_step_ui=120 heartbeats=60 script_resumes=18`. Wall-clock
+  jitter, thread interleaving, throttling and sleeping-joint skips are not modeled.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,

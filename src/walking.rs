@@ -13,6 +13,7 @@ use crate::{
     player::{HumanoidMotion, HumanoidProperties, MoveContext},
     rig::R6Rig,
     scene::{CoordinateFrame, Scene},
+    scheduler::{FrameEvents, NativeSchedule, SchedulerProfile},
 };
 use std::{collections::BTreeMap, fmt::Write};
 struct ContactState {
@@ -52,6 +53,9 @@ pub struct WalkingFixture {
     animation_ticks: u32,
     joint_callbacks: u32,
     limb_angles: [f32; 4],
+    schedule: NativeSchedule,
+    original_schedule: NativeSchedule,
+    last_frame: Option<FrameEvents>,
 }
 impl WalkingFixture {
     pub fn new(bundle: &Bundle, scene: &Scene, rig: &R6Rig) -> Result<Self, String> {
@@ -103,6 +107,9 @@ impl WalkingFixture {
         let float = |at| -> Result<f32, String> {
             Ok(f32::from_le_bytes(image.region(at, 4)?.try_into().unwrap()))
         };
+        let animation = ProceduralAnimation::load(bundle)?;
+        let schedule =
+            NativeSchedule::new(&SchedulerProfile::load(bundle)?, animation.wait_seconds)?;
         let target_torso_y = parts
             .get("Torso")
             .ok_or("missing walking torso")?
@@ -139,11 +146,14 @@ impl WalkingFixture {
             yaw_limit: float(0x0177ed40)?,
             mass_parts: parts,
             original_inertia: assembly.inertia_in_body,
-            animation: ProceduralAnimation::load(bundle)?,
+            animation,
             signal: RunningSignal::load(bundle)?,
             animation_ticks: 0,
             joint_callbacks: 0,
             limb_angles: [0.0; 4],
+            original_schedule: schedule.clone(),
+            schedule,
+            last_frame: None,
         })
     }
     pub fn reset(&mut self) {
@@ -160,34 +170,35 @@ impl WalkingFixture {
         self.animation_ticks = 0;
         self.joint_callbacks = 0;
         self.limb_angles = [0.0; 4];
+        self.schedule = self.original_schedule.clone();
+        self.last_frame = None;
     }
     /// Play the bundled procedural branch while integrating walking. This is an
     /// explicit offline choice: native R6 default keyframe payloads are absent.
     pub fn step_animated(&mut self, rig: &mut R6Rig, input: [f32; 3]) -> Result<(), String> {
-        let velocity = self.body.body_state().velocity;
-        self.signal
-            .observe((velocity[2] * velocity[2] + velocity[0] * velocity[0]).sqrt())?;
-        let next = self
-            .steps
-            .checked_add(1)
-            .ok_or("walking animation tick overflow")?;
-        let time = f64::from(next) / 240.0;
-        let ticks = (time / self.animation.wait_seconds + 1e-9).floor() as u32;
-        if ticks > self.animation_ticks {
-            self.animation.apply(
-                rig,
-                if self.signal.speed > 0.0 {
-                    Pose::Running
-                } else {
-                    Pose::Standing
-                },
-                time,
-            )?;
-            self.animation_ticks = ticks;
-        }
-        // Existing procedural probe uses 60 Hz callbacks. Keep this research
-        // cadence explicit; never advance MaxVelocity 19 times per kernel tick.
-        if next.is_multiple_of(4) {
+        // Each call is one native world step. A new ideal 60 Hz frame runs the
+        // Heartbeat and WaitingScripts jobs, then PhysicsJob: gameStepped,
+        // World::uiStep (Motor6D stepUi once, 00ba8c68/00b39318) and its world
+        // steps (00ba9892). Job order within a frame is an explicit choice.
+        while self.schedule.world_steps_remaining == 0 {
+            let frame = self.schedule.begin_frame()?;
+            if let Some(time) = frame.resumed_time {
+                // humanoidAnimateLocal: `local _, time = wait(0.1); move(time)`.
+                self.animation.apply(
+                    rig,
+                    if self.signal.speed > 0.0 {
+                        Pose::Running
+                    } else {
+                        Pose::Standing
+                    },
+                    time,
+                )?;
+                self.animation_ticks += 1;
+            }
+            self.last_frame = Some(frame);
+            if frame.world_steps == 0 {
+                continue; // physicsStep returns before World::step.
+            }
             let before: Vec<_> = rig.joints.iter().map(|j| j.current_angle).collect();
             for joint in &mut rig.joints {
                 joint.step()?;
@@ -213,11 +224,15 @@ impl WalkingFixture {
                 self.inertia = assembly.inertia_in_body;
             }
         }
-        self.step(rig, input)
+        let velocity = self.body.body_state().velocity;
+        self.signal
+            .observe((velocity[2] * velocity[2] + velocity[0] * velocity[0]).sqrt())?;
+        self.step(rig, input)?;
+        self.schedule.finish_world_step()
     }
     pub fn animation_report(&self) -> String {
         format!(
-            "walking_animation profile=bundled_procedural_no_tools pose={} event_speed={} script_ticks={} joint_callbacks={} limb_angles={:?} local_inertia={:?} callback_hz=explicit_60 native_default_keyframes=unavailable\n",
+            "walking_animation profile=bundled_procedural_no_tools pose={} event_speed={} script_resumes={} joint_step_ui={} limb_angles={:?} local_inertia={:?} schedule={:?} heartbeat_time={} game_time={} schedule_source=native_jobs_ideal_clock native_default_keyframes=unavailable\n",
             if self.signal.speed > 0.0 {
                 "Running"
             } else {
@@ -227,7 +242,10 @@ impl WalkingFixture {
             self.animation_ticks,
             self.joint_callbacks,
             self.limb_angles,
-            [self.inertia[0][0], self.inertia[1][1], self.inertia[2][2]]
+            [self.inertia[0][0], self.inertia[1][1], self.inertia[2][2]],
+            self.last_frame,
+            self.schedule.heartbeat_elapsed,
+            self.schedule.game_time
         )
     }
     pub fn step(&mut self, rig: &R6Rig, input: [f32; 3]) -> Result<(), String> {

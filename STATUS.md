@@ -338,3 +338,15 @@ not tested; explicit 60 Hz is retained. Clippy initially rejected test module
 placement; corrected and rerun. No visual inspection or manual key test.
 Source rollback before this task: 811a978; rotation fix: 9afa84b; animation step
 can be reverted separately from rotation.
+
+
+2026-10-12 native scheduling: Motor6D now steps once per recovered 60 Hz
+PhysicsJob before its four world steps; the procedural script resumes from the
+recovered wall-clock wait queue and receives 30 Hz Heartbeat time. 46 tests,
+audit-scheduler, walking audits, render audit and window smoke pass; original
+files unchanged. Remaining scheduling assumptions: ideal jitter-free frame clock,
+explicit Heartbeat/WaitingScripts/Physics order within a frame, script start at
+clock zero. Throttling, legacy non-cyclic steps, sleeping-joint skip and keyframe
+Animator stepping are not implemented. Evidence summary:
+RobloxStudio/analysis/scheduler-native-20261012.md. Rollback: revert this
+commit; f7fd31e restores the explicit 60 Hz grid.
