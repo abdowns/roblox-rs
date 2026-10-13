@@ -1,5 +1,29 @@
 # MODLOG
 
+## 2026-10-12 Render the default sky: skybox, sun and moon
+
+**Changed:** Added `sky.rs` and `sky.wgsl`: port of Sky::update/Sky::render for
+the default (no Sky instance) path with the original sky512 DDS faces and
+sun/moon JPEGs, opaque and additive pipelines drawn after the scene. viewport-walking
+enables it; added `audit-sky`. Enabled the `image` crate's jpeg feature
+(adds zune-jpeg/zune-core to Cargo.lock).
+**Why:** The background was the clear color; the original client always draws
+a skybox.
+**Tested how:** Ghidra: Sky ctor (quad), Sky::update, Sky::render, loadSkyBox
+slot order, billboard basis FUN_006b3ea1; shipped sky.hlsl. 50 tests, Clippy,
+fmt; audit-sky, audit-lighting, audit-camera, audit-walking,
+audit-walking-render, audit-scheduler, walking window smoke, bundle check.
+**Result:** Spawn camera view: 297,312 clear pixels before, 0 after, repeat
+identical. Looking at the 14:00 sun: center (255,255,255) vs corner sky
+(97,147,198). All six axis views fully covered. Window smoke logs
+`sky_enabled` and final coverage rises 1,805,286 -> 2,764,482 pixels.
+Test: `sh tools/cargo.sh run --locked -- audit-sky`; expect `sky_pass`.
+**Still broken / not tested:** Star field, custom Sky instances (CelestialBodies,
+StarCount, SkyboxXx), mip selection; blend enum mapping inferred; native pixel
+parity **not tested**.
+**Next:** Light grid / OutdoorAmbient skylight, or remaining Humanoid states
+(Climbing, FallingDown).
+
 ## 2026-10-12 Recover native Lighting defaults, day-cycle colors and lamp math
 
 **Changed:** Added `lighting.rs`: store tracer for the Lighting and

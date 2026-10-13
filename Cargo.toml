@@ -14,7 +14,7 @@ iced-x86 = { version = "=1.21.0", default-features = false, features = ["std", "
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "metal", "wgsl"] }
 pollster = "=1.0.1"
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
-image = { version = "=0.25.10", default-features = false, features = ["png"] }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 
 [lints.rust]
 unsafe_code = "forbid"

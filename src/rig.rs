@@ -42,7 +42,7 @@ pub(crate) fn inverse(a: &CoordinateFrame) -> CoordinateFrame {
         rotation,
     }
 }
-fn normal_frame(id: u32) -> Result<CoordinateFrame, String> {
+pub(crate) fn normal_frame(id: u32) -> Result<CoordinateFrame, String> {
     // NormalId::uvwToObject 006b6c54, evaluated on the three unit axes.
     let column = |v: [f32; 3]| -> Result<[f32; 3], String> {
         Ok(match id {

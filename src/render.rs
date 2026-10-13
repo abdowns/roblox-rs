@@ -33,6 +33,7 @@ use winit::{
 };
 
 const SHADER: &str = include_str!("render.wgsl");
+const SKY_SHADER: &str = include_str!("sky.wgsl");
 const CLEAR: wgpu::Color = wgpu::Color {
     r: 0.125,
     g: 0.15625,
@@ -204,6 +205,17 @@ struct Gpu {
     info: String,
     decals: Option<DecalGpu>,
     studs: Option<StudGpu>,
+    sky: Option<SkyGpu>,
+}
+struct SkyGpu {
+    opaque: wgpu::RenderPipeline,
+    additive: wgpu::RenderPipeline,
+    globals: wgpu::BindGroup,
+    quad: wgpu::Buffer,
+    textures: Vec<wgpu::TextureView>,
+    sampler: wgpu::Sampler,
+    layout: wgpu::BindGroupLayout,
+    draws: Vec<(wgpu::Buffer, wgpu::BindGroup, crate::sky::Blend)>,
 }
 struct StudGpu {
     pipeline: wgpu::RenderPipeline,
@@ -377,6 +389,7 @@ impl Gpu {
                 info,
                 decals: None,
                 studs: None,
+                sky: None,
             },
             adapter,
         ))
@@ -603,6 +616,263 @@ impl Gpu {
         Ok(())
     }
 
+    /// Default Sky (sky.rs): six faces, sun and moon textures and pipelines.
+    fn add_sky(&mut self, textures: &crate::sky::SkyTextures) -> Result<(), String> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("sky.hlsl port"),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(SKY_SHADER)),
+            });
+        let uniform_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let globals_layout =
+            self.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: None,
+                    entries: &[uniform_entry(0)],
+                });
+        let layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    uniform_entry(0),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&globals_layout), Some(&layout)],
+                immediate_size: 0,
+            });
+        let make = |blend: wgpu::BlendState| {
+            self.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("recovered sky pass"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("sky_vertex"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: 36,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x4,2=>Float32x2],
+                        })],
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleStrip,
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(false),
+                        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("sky_fragment"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: self.format,
+                            blend: Some(blend),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+        };
+        let opaque = make(wgpu::BlendState::REPLACE);
+        let additive = make(wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        });
+        let globals = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &globals_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.uniform.as_entire_binding(),
+            }],
+        });
+        let mut quad = Vec::new();
+        for (position, uv) in crate::sky::QUAD {
+            for v in position.into_iter().chain([1.0; 4]).chain(uv) {
+                quad.extend(v.to_le_bytes());
+            }
+        }
+        let quad = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Sky quad"),
+                contents: &quad,
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        // SamplerState(filter 1 = linear, address 1 = clamp) from Sky::render.
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("sky linear clamp"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let mut views = Vec::new();
+        for data in textures.faces.iter().chain([&textures.sun, &textures.moon]) {
+            let first = data.mips.first().ok_or("empty sky texture")?;
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("original sky texture"),
+                size: wgpu::Extent3d {
+                    width: first.width,
+                    height: first.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: data.mips.len() as u32,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            for (level, mip) in data.mips.iter().enumerate() {
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: level as u32,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &mip.rgba,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(mip.width * 4),
+                        rows_per_image: Some(mip.height),
+                    },
+                    wgpu::Extent3d {
+                        width: mip.width,
+                        height: mip.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+            views.push(texture.create_view(&Default::default()));
+        }
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            return Err(format!("sky initialization: {e}"));
+        }
+        self.sky = Some(SkyGpu {
+            opaque,
+            additive,
+            globals,
+            quad,
+            textures: views,
+            sampler,
+            layout,
+            draws: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Per-frame Sky::render constants (camera-relative placement).
+    fn update_sky(&mut self, draws: &[crate::sky::SkyDraw]) -> Result<(), String> {
+        let sky = self.sky.as_mut().ok_or("sky not initialized")?;
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        if sky.draws.len() != draws.len() {
+            sky.draws.clear();
+            for draw in draws {
+                let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("sky draw constants"),
+                    size: 96,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let view = sky
+                    .textures
+                    .get(draw.texture)
+                    .ok_or("missing sky texture")?;
+                let bindings = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &sky.layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&sky.sampler),
+                        },
+                    ],
+                });
+                sky.draws.push((buffer, bindings, draw.blend));
+            }
+        }
+        for ((buffer, _, blend), draw) in sky.draws.iter_mut().zip(draws) {
+            *blend = draw.blend;
+            let bytes: Vec<u8> = draw
+                .world
+                .iter()
+                .chain(&draw.color)
+                .chain(&draw.color2)
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            if draw.world.iter().chain(&draw.color).any(|v| !v.is_finite()) {
+                return Err("non-finite sky constants".into());
+            }
+            self.queue.write_buffer(buffer, 0, &bytes);
+        }
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            return Err(format!("sky update: {e}"));
+        }
+        Ok(())
+    }
+
     fn texture(
         &self,
         width: u32,
@@ -671,6 +941,18 @@ impl Gpu {
                 pass.set_vertex_buffer(0, draw.vertices.slice(..));
                 pass.set_index_buffer(draw.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..draw.count, 0, 0..1);
+            }
+        }
+        if let Some(sky) = &self.sky {
+            pass.set_bind_group(0, &sky.globals, &[]);
+            pass.set_vertex_buffer(0, sky.quad.slice(..));
+            for (_, bindings, blend) in &sky.draws {
+                pass.set_pipeline(match blend {
+                    crate::sky::Blend::Opaque => &sky.opaque,
+                    crate::sky::Blend::Additive => &sky.additive,
+                });
+                pass.set_bind_group(1, bindings, &[]);
+                pass.draw(0..4, 0..1);
             }
         }
     }
@@ -1209,6 +1491,116 @@ pub fn audit_lighting(bundle: &Bundle) -> Result<String, String> {
     Ok(report)
 }
 
+/// Default Sky render: skybox, additive sun and moon, native lighting.
+pub fn audit_sky(bundle: &Bundle) -> Result<String, String> {
+    let profile = crate::lighting::LightingProfile::load(bundle)?;
+    let sky = profile.sky(profile.properties.time_of_day);
+    let lighting = profile.render_lighting(&sky);
+    let scene = RenderScene::character(bundle)?;
+    let surfaces = surface::character(bundle, &scene)?;
+    let decals = texture::character_decals(bundle, &scene)?;
+    let mut app = scene_app(scene);
+    for decal in decals.draws {
+        app.world_mut().spawn(decal);
+    }
+    app.update();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let (mut gpu, _) = Gpu::new(
+        &instance,
+        None,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &app.world().resource::<Extracted>().0,
+    )?;
+    gpu.add_studs(&app.world().resource::<Extracted>().0, &surfaces)?;
+    gpu.add_decals(&app.world().resource::<ExtractedDecals>().0)?;
+    // ClassicCamera spawn framing (audit-camera): eye 12.5 behind the head.
+    let mut inputs = RenderInputs::character_probe();
+    inputs.apply_lighting(&lighting);
+    inputs.frame = crate::camera_script::look_at([0.0, 22.301846, 10.31806], [0.0, 19.5, 22.5]);
+    let without = gpu.read_frame(640, 480, &inputs)?;
+    gpu.add_sky(&crate::sky::SkyTextures::load(bundle)?)?;
+    let (draws, stars) = crate::sky::draws(&sky, inputs.frame.position)?;
+    gpu.update_sky(&draws)?;
+    let with = gpu.read_frame(640, 480, &inputs)?;
+    let repeat = gpu.read_frame(640, 480, &inputs)?;
+    let clear = [
+        (CLEAR.r * 255.0).round() as u8,
+        (CLEAR.g * 255.0).round() as u8,
+        (CLEAR.b * 255.0).round() as u8,
+    ];
+    let background = |pixels: &[u8]| pixels.chunks_exact(4).filter(|p| p[..3] == clear).count();
+    let changed = without
+        .chunks_exact(4)
+        .zip(with.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    let mut report = format!(
+        "sky_spawn_view changed_pixels={changed} clear_before={} clear_after={} repeat_identical={} star_mode={stars} rgba_sha256={:x}\n",
+        background(&without),
+        background(&with),
+        with == repeat,
+        Sha256::digest(&with)
+    );
+    // Look straight at the sun and along each world axis from a high point.
+    let eye = [0.0, 200.0, 0.0];
+    let sun_view = {
+        let target = std::array::from_fn(|i| eye[i] + sky.true_sun[i]);
+        inputs.frame = crate::camera_script::look_at(eye, target);
+        let (d, _) = crate::sky::draws(&sky, eye)?;
+        gpu.update_sky(&d)?;
+        gpu.read_frame(640, 480, &inputs)?
+    };
+    let center = (240 * 640 + 320) * 4;
+    let corner = (20 * 640 + 20) * 4;
+    writeln!(
+        report,
+        "sky_sun_view center_rgba={:?} corner_rgba={:?}",
+        &sun_view[center..center + 4],
+        &sun_view[corner..corner + 4]
+    )
+    .unwrap();
+    let mut axis_clear = Vec::new();
+    for dir in [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 1.0, 0.001],
+        [0.0, -1.0, 0.001],
+    ] {
+        let target = std::array::from_fn(|i| eye[i] + dir[i]);
+        inputs.frame = crate::camera_script::look_at(eye, target);
+        let pixels = gpu.read_frame(320, 240, &inputs)?;
+        axis_clear.push(background(&pixels));
+        writeln!(
+            report,
+            "sky_axis dir={dir:?} center_rgba={:?}",
+            &pixels[(120 * 320 + 160) * 4..(120 * 320 + 160) * 4 + 4]
+        )
+        .unwrap();
+    }
+    let sun_bright = sun_view[center..center + 3]
+        .iter()
+        .map(|v| u32::from(*v))
+        .sum::<u32>()
+        > sun_view[corner..corner + 3]
+            .iter()
+            .map(|v| u32::from(*v))
+            .sum::<u32>();
+    if changed == 0
+        || background(&with) != 0
+        || with != repeat
+        || axis_clear.iter().any(|c| *c != 0)
+        || !sun_bright
+    {
+        return Err(format!(
+            "sky render failed axis_clear={axis_clear:?}: {report}"
+        ));
+    }
+    writeln!(report, "sky_pass faces=6 sun_draws=3 moon=1 skybox_full_coverage=true sun_brighter_than_sky=true stars=not_implemented native_pixels=not_tested").unwrap();
+    Ok(report)
+}
+
 pub fn audit_walking(bundle: &Bundle) -> Result<String, String> {
     let scene = RenderScene::character(bundle)?;
     let surfaces = surface::character(bundle, &scene)?;
@@ -1446,6 +1838,7 @@ struct Viewport {
     walking_keys: [bool; 4],
     walking_camera_root: Option<[f32; 3]>,
     walking_camera: Option<crate::camera_script::ClassicCamera>,
+    walking_sky: Option<crate::lighting::SkyParameters>,
     cursor: Option<[f64; 2]>,
 }
 impl Viewport {
@@ -1560,6 +1953,13 @@ impl ApplicationHandler for Viewport {
                 window.scale_factor(),
                 config.format
             ))?;
+            if self.walking_camera.is_some() {
+                // Default Sky (no Sky instance), added after the warm-up checks.
+                gpu.add_sky(&crate::sky::SkyTextures::load(&Bundle::open(
+                    &self.bundle_root,
+                )?)?)?;
+                self.log_event("sky_enabled default_skybox=sky512 sun=sun.jpg moon=moon.jpg stars=not_implemented".into())?;
+            }
             self.window = Some(window);
             self.surface = Some(surface);
             self.gpu = Some(gpu);
@@ -1823,6 +2223,12 @@ impl ApplicationHandler for Viewport {
                             self.app.world().resource::<MotionControl>().animation_probe;
                         self.log_event(format!("motion_probe_paused step={step} simulated_seconds={:.9} head_min_y={min_y:.9} animation={animation} reason=research_probe_limit", f64::from(step) * motion::timestep(self.app.world())))?;
                     }
+                    if let (Some(gpu), Some(sky)) = (self.gpu.as_mut(), &self.walking_sky)
+                        && gpu.sky.is_some()
+                    {
+                        let (draws, _) = crate::sky::draws(sky, self.inputs.frame.position)?;
+                        gpu.update_sky(&draws)?;
+                    }
                     let config = self.config.as_ref().unwrap();
                     let gpu = self.gpu.as_ref().unwrap();
                     if self.uploaded_step != step {
@@ -2028,12 +2434,15 @@ fn run_viewport(
             ],
         };
     }
-    if walking {
+    let walking_sky = if walking {
         // Lighting service defaults at TimeOfDay 14:00 (lighting.rs).
         let profile = crate::lighting::LightingProfile::load(bundle)?;
-        inputs
-            .apply_lighting(&profile.render_lighting(&profile.sky(profile.properties.time_of_day)));
-    }
+        let sky = profile.sky(profile.properties.time_of_day);
+        inputs.apply_lighting(&profile.render_lighting(&sky));
+        Some(sky)
+    } else {
+        None
+    };
     // CameraScript: ClassicCamera from the bundled PlayerScripts; the fixture
     // frame above is only workspace.CurrentCamera before the script runs.
     let walking_camera = if walking {
@@ -2068,6 +2477,7 @@ fn run_viewport(
         walking_keys: [false; 4],
         walking_camera_root,
         walking_camera,
+        walking_sky,
         cursor: None,
     };
     EventLoop::new()

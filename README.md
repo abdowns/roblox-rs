@@ -115,6 +115,12 @@ are downloaded on first build; runtime data loading uses no network requests.
   `lighting_render_pass changed_pixels=6613 repeat_identical=true`. The voxel
   light grid, shadows and fog quality culling are not implemented.
 
+- Default sky: the original 512px skybox faces, sun and moon billboards
+  (Roblox's Sky::render). Run `sh tools/cargo.sh run --locked -- audit-sky`;
+  expect `sky_spawn_view ... clear_after=0 repeat_identical=true` and
+  `sky_pass faces=6 sun_draws=3 moon=1 skybox_full_coverage=true`. Stars and
+  custom Sky instances are not implemented; native pixel parity is not tested.
+
 - Bundled PlayerScripts camera (ClassicCamera, PopperCam, TransparencyController).
   Run `sh tools/cargo.sh run --locked -- audit-camera`; expect `camera_spawn`
   distance 12.5, `camera_relative_walk`, a clamped pitch of -80, the RK4 wheel
@@ -271,7 +277,7 @@ No full graphical client, general native geometry dispatch, complete native came
 complete physics, keyframe animation, Lua runtime, Studio ribbon/docks/editing, place saving,
 or complete XML/binary-place loader exists yet. Mesh v1.00/v1.01 are not implemented.
 General surface subdivisions/UVs, decals/textures, high-quality materials, outlines,
-dynamic light grid, shadows, sky and postprocessing remain unimplemented. Imported Attachments and
+dynamic light grid, shadows, sky stars and postprocessing remain unimplemented. Imported Attachments and
 Humanoid do not execute their native behavior. Full native execution, behavioral equivalence and visual equivalence
 are **not tested**. Do not treat `static_import_pass` as evidence of those.
 

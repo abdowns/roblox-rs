@@ -106,7 +106,7 @@ Next core boundaries are assemblies/joints, collision and Humanoid locomotion/st
 forces; unconstrained free-fall and physics-to-render synchronization are implemented.
 Player commands do not yet drive body forces, and no playable character is claimed. Studio UI work is deferred.
 Remaining rendering boundaries include high-quality materials, general geometry,
-outlines, lighting/grid/shadows, sky and postprocessing. Native head
+outlines, light grid/shadows, sky stars/custom Sky and postprocessing. Native head
 sizing, normal transforms, explicit character block dispatch, head decals and
 Plastic stud surfaces are implemented. General clothing/mesh selection and
 Attachment transforms remain unimplemented. The user explicitly requested a visible next build, authorizing a new bounded test

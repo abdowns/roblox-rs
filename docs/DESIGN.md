@@ -677,3 +677,26 @@ viewport-walking now uses these values; other probes keep their explicit
 lighting so their regression hashes stay comparable. Not implemented: the voxel
 light grid (OutdoorAmbient skylight and local lights, LightBorder), shadows,
 FrameRateManager fog culling and the PGS/high-quality material paths.
+
+## Default sky (Sky::render)
+
+sky.rs ports RBX::Graphics::Sky for the case with no Sky instance in Lighting.
+Sky::update (010b5560) reads the LightingParameters from lighting.rs; Sky::render
+(010b6210) draws, in order: six skybox faces, the sun billboard three times, the
+moon once, all with the shipped sky.hlsl (ported to sky.wgsl). Faces are the
+default `PlatformContent/pc/textures/sky/sky512_{rt,up,bk,lf,dn,ft}.tex` (DXT1
+DDS) in loadSkyBox slot order, which equals NormalId 0..5. Each face's rotation is
+Ry(+90 deg for face 1, -90 deg for face 4) * diag(-1,1,1) * NormalId frame, scaled
+2700 and centered at camera + 2700 * (third column), so the box follows the
+camera. The unit quad is (+-1, +-1, 0) as a triangle strip. The vertex shader
+snaps z to w - 1/16 (behind all scene geometry, depth test on, no depth write)
+and tints by lerp(Color2 = sky horizon, Color = sky ambient, worldY/1700). The
+sun is a camera-facing billboard (FUN_006b3ea1 basis) at 2700 along the true sun
+direction, scale 500, additive, color = emissive * 0.8 * clamp((sunY+0.1)*10).
+The moon is scale 250 at the true moon direction, color min(1 - skyAmbient.g +
+0.1, 1); it only sets Color, so Color2 keeps the sun's value as in the native
+code. Sun/moon textures are content/sky/sun.jpg and moon.jpg (decoded with the
+image crate's jpeg feature). Assumptions: the blend enum mapping (One=0, Zero=1,
+SrcAlpha=3, InvSrcAlpha=4) is inferred from use, not from a symbol; faces use
+mip 0 with a linear/clamp sampler; the star field (drawn when the moon is up)
+and custom Sky instances are not implemented.
