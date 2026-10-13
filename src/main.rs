@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
+            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
         );
         return ExitCode::SUCCESS;
     }
@@ -30,10 +30,13 @@ fn main() -> ExitCode {
                     | "audit-animate"
                     | "audit-workspace"
                     | "audit-baseplate"
+                    | "audit-baseplate-render"
                     | "audit-walking"
                     | "audit-walking-render"
                     | "viewport-walking"
                     | "viewport-walking-smoke"
+                    | "viewport-baseplate"
+                    | "viewport-baseplate-smoke"
                     | "audit-assembly"
                     | "audit-geometry"
                     | "audit-render"
@@ -54,7 +57,7 @@ fn main() -> ExitCode {
         || args.len() > 2
     {
         eprintln!(
-            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
+            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
         );
         return ExitCode::from(2);
     }
@@ -85,10 +88,13 @@ fn main() -> ExitCode {
             "audit-animate" => studio_2016::animate_script::audit(&bundle),
             "audit-workspace" => studio_2016::workspace::audit(),
             "audit-baseplate" => walking::audit_baseplate(&bundle),
+            "audit-baseplate-render" => render::audit_baseplate(&bundle),
             "audit-walking" => walking::audit(&bundle),
             "audit-walking-render" => render::audit_walking(&bundle),
             "viewport-walking" => render::viewport_walking(&bundle, None),
             "viewport-walking-smoke" => render::viewport_walking(&bundle, Some(120)),
+            "viewport-baseplate" => render::viewport_baseplate(&bundle, None),
+            "viewport-baseplate-smoke" => render::viewport_baseplate(&bundle, Some(120)),
             "viewport-animation-smoke" => render::viewport_animation_smoke(&bundle),
             "viewport" => render::viewport(&bundle, None),
             "viewport-smoke" => render::viewport(&bundle, Some(120)),

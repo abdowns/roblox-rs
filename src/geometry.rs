@@ -4,6 +4,7 @@ use crate::{
     mesh::MeshData,
     native_data::NativeImage,
     scene::{Part, Scene},
+    workspace::{PartInstance, Workspace},
 };
 use bevy::prelude::{Component, Resource};
 use roxmltree::Node;
@@ -133,6 +134,234 @@ fn vertex(
         color,
         specular: specular(material)?,
     })
+}
+
+/// GeometryGenerator::addBlock (010cca80) for a Workspace block Part without
+/// a decal: world-space corners from the part CFrame, one quad per Smooth
+/// face, and faces with any other surface cut into 8-stud strips along Y
+/// (side faces) or Z (Top/Bottom), stepping from the face's first edge. Stud
+/// coordinates (types 1-5) run u = width/2 -> 0 and v = row -> row + 0.25 per
+/// full strip; the last strip ends at row + clamp(rest/8, 0, 1) * 0.25.
+/// Material UVs, tangents and outline edge distances are not produced (the
+/// low-quality Plastic shader reads only the stud coordinates; outlines are
+/// disabled). Returns the draw and its stud coordinates.
+pub fn workspace_block(
+    faces: &[[usize; 4]; 6],
+    rows: &[f32; 6],
+    colors: &BTreeMap<u32, [u8; 3]>,
+    part: &PartInstance,
+) -> Result<(Draw, Vec<[f32; 2]>), String> {
+    let size = part.size;
+    let r = &part.frame.rotation;
+    let t = part.frame.position;
+    let strips_y = (size[1] * 0.125 + 0.999) as i32 as i16;
+    let strips_z = (size[2] * 0.125 + 0.999) as i32 as i16;
+    let smooth = |face: usize| matches!(part.surfaces[face], 0 | 10);
+    let mut quads = 0u32;
+    for face in 0..6 {
+        let strips = if face == 1 || face == 4 {
+            strips_z
+        } else {
+            strips_y
+        };
+        quads += if smooth(face) {
+            1
+        } else {
+            strips.max(0) as u32
+        };
+    }
+    if quads > 0x2000 {
+        return Err("block exceeds the native 0x2000 quad limit".into());
+    }
+    let half = size.map(|v| v * 0.5);
+    let base: [f32; 3] = std::array::from_fn(|i| {
+        -half[2] * r[i][2] + -half[1] * r[i][1] + -half[0] * r[i][0] + t[i]
+    });
+    let column = |c: usize| [r[0][c], r[1][c], r[2][c]];
+    let corners: [[f32; 3]; 8] = std::array::from_fn(|k| {
+        let mut p = base;
+        for (bit, axis) in [(4, 0), (2, 1), (1, 2)] {
+            if k & bit != 0 {
+                let c = column(axis);
+                p = std::array::from_fn(|i| p[i] + c[i] * size[axis]);
+            }
+        }
+        p
+    });
+    let unit = |v: [f32; 3]| {
+        let inverse = 1.0 / (v[2] * v[2] + v[1] * v[1] + v[0] * v[0]).sqrt();
+        v.map(|x| inverse * x)
+    };
+    // Normals add the (disabled) per-face jitter: R + 0 and 0 - R.
+    let negate = |v: [f32; 3]| v.map(|x| 0.0 - x);
+    let positive = |v: [f32; 3]| v.map(|x| x + 0.0);
+    let normals = [
+        unit(positive(column(0))),
+        unit(positive(column(1))),
+        unit(positive(column(2))),
+        unit(negate(column(0))),
+        unit(negate(column(1))),
+        unit(negate(column(2))),
+    ];
+    let down = column(1).map(|x| -x);
+    let back = column(2).map(|x| -x);
+    let steps = [down, back, down, down, column(2), down];
+    let rgb = colors.get(&part.brick_color).ok_or("invalid BrickColor")?;
+    let color = [
+        rgb[0] as f32 / 255.0,
+        rgb[1] as f32 / 255.0,
+        rgb[2] as f32 / 255.0,
+        (255 - (part.transparency * 255.0) as u32) as f32 / 255.0,
+    ];
+    let specular = specular(part.material)?;
+    let mut draw = Draw {
+        name: part.name.clone(),
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        material: part.material,
+        geometry: "block".into(),
+    };
+    let mut studs = Vec::new();
+    for face in 0..6 {
+        let table = faces[face];
+        let (a, b) = (corners[table[0]], corners[table[1]]);
+        let length = if face == 1 || face == 4 {
+            size[2]
+        } else {
+            size[1]
+        };
+        let width = if face == 0 || face == 3 {
+            size[2]
+        } else {
+            size[0]
+        };
+        let count = if smooth(face) {
+            1
+        } else {
+            i32::from(if face == 1 || face == 4 {
+                strips_z
+            } else {
+                strips_y
+            })
+        };
+        let surface = part.surfaces[face] as usize;
+        let (u, row, extent) = if (1..=5).contains(&surface) {
+            (width * 0.5, rows[surface], 0.25f32)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        let step = steps[face];
+        let mut offset = [0.0f32; 3];
+        let mut quad = |positions: [[f32; 3]; 4], v_end: f32| {
+            let first = draw.vertices.len() as u32;
+            for (position, stud) in
+                positions
+                    .into_iter()
+                    .zip([[u, row], [0.0, row], [u, v_end], [0.0, v_end]])
+            {
+                draw.vertices.push(RenderVertex {
+                    position,
+                    normal: normals[face],
+                    uv: [0.0; 2],
+                    color,
+                    specular,
+                });
+                studs.push(stud);
+            }
+            draw.indices
+                .extend([first, first + 1, first + 2, first + 2, first + 1, first + 3]);
+        };
+        for _ in 1..count {
+            let next: [f32; 3] = std::array::from_fn(|i| step[i] * 8.0 + offset[i]);
+            quad(
+                [
+                    std::array::from_fn(|i| a[i] + offset[i]),
+                    std::array::from_fn(|i| offset[i] + b[i]),
+                    std::array::from_fn(|i| a[i] + next[i]),
+                    std::array::from_fn(|i| next[i] + b[i]),
+                ],
+                extent + row,
+            );
+            offset = next;
+        }
+        if count > 0 {
+            let rest = (count - 1) as f32 * -8.0 + length;
+            let scaled = if 0.0 <= rest * 0.125 {
+                rest * 0.125
+            } else {
+                0.0
+            };
+            let fraction = if scaled <= 1.0 { scaled } else { 1.0 };
+            quad(
+                [
+                    std::array::from_fn(|i| a[i] + offset[i]),
+                    std::array::from_fn(|i| b[i] + offset[i]),
+                    corners[table[2]],
+                    corners[table[3]],
+                ],
+                fraction * extent + row,
+            );
+        }
+    }
+    Ok((draw, studs))
+}
+
+/// Draws and stud coordinates for every Workspace Part (blocks only).
+#[allow(clippy::type_complexity)] // Draws plus their per-vertex stud coordinates.
+pub fn workspace_draws(
+    bundle: &Bundle,
+    workspace: &Workspace,
+) -> Result<(Vec<Draw>, BTreeMap<String, Vec<[f32; 2]>>, String), String> {
+    let image = NativeImage::load(bundle)?;
+    let (faces, rows, colors) = (
+        image.block_faces()?,
+        image.surface_rows()?,
+        image.brick_colors()?,
+    );
+    let mut draws = Vec::new();
+    let mut coordinates = BTreeMap::new();
+    let mut report = String::new();
+    for part in &workspace.parts {
+        let (draw, studs) = workspace_block(&faces, &rows, &colors, part)?;
+        writeln!(
+            report,
+            "workspace_draw name={:?} quads={} vertices={} triangles={} color={:?} top_stud_extent={:?}",
+            draw.name,
+            draw.vertices.len() / 4,
+            draw.vertices.len(),
+            draw.indices.len() / 3,
+            draw.vertices[0].color,
+            studs.iter().fold([0.0f32; 2], |m, s| [m[0].max(s[0]), m[1].max(s[1])])
+        )
+        .unwrap();
+        let mut start = 0;
+        for face in 0..6 {
+            // Quads of this face: consecutive vertices with the same normal.
+            let normal = draw.vertices[start].normal;
+            let mut end = start;
+            while end < draw.vertices.len() && draw.vertices[end].normal == normal {
+                end += 4;
+            }
+            let quad: Vec<_> = (start..start + 4)
+                .map(|i| (draw.vertices[i].position, studs[i]))
+                .collect();
+            writeln!(
+                report,
+                "workspace_face name={:?} face={face} surface={} quads={} normal={normal:?} first_quad={quad:?} last_v_end={}",
+                draw.name,
+                part.surfaces[face],
+                (end - start) / 4,
+                studs[end - 1][1]
+            )
+            .unwrap();
+            start = end;
+        }
+        if coordinates.insert(draw.name.clone(), studs).is_some() {
+            return Err(format!("duplicate Workspace Part name {:?}", draw.name));
+        }
+        draws.push(draw);
+    }
+    Ok((draws, coordinates, report))
 }
 
 impl RenderScene {

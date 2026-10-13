@@ -797,3 +797,20 @@ between equally distant hits on different Parts could resolve differently.
 Unanchored Parts are rejected for now. Torso/Head contacts with Parts are not
 generated (BlockBlockContact is not ported); `touching` uses a box-overlap test
 as a stand-in. `WalkingFixture::baseplate` runs Play Solo in that world.
+
+Workspace Parts are drawn by `geometry::workspace_block`, a port of
+GeometryGenerator::addBlock (010cca80) for blocks without a decal. Corners are
+world-space from the Part CFrame in the native add order; normals are the
+normalized CFrame columns. Each face uses the executable's corner table
+(017f0140). Smooth faces (types 0 and 10) are one quad; other faces are cut into
+n = (int)(length/8 + 0.999) strips along Y (side faces) or Z (Top/Bottom),
+stepping -Y on side faces, -Z on Top and +Z on Bottom. Stud coordinates for
+types 1-5 run u = width/2 -> 0 and v = row -> row + 0.25 per full strip (row from
+017f045c), and the last strip ends at row + clamp(rest/8, 0, 1) * 0.25, so a
+single-strip face matches the character `face_uv`. The Baseplate is 132 quads:
+64 Studs strips on top, 64 Inlet strips underneath, four Smooth sides. Material
+UVs, tangents and outline edge distances are not produced (the low-quality
+Plastic shader reads only stud coordinates; outlines are disabled). More than
+0x2000 quads is an error, as the native assert. `viewport-baseplate` and
+`audit-baseplate-render` add these draws to the walking viewport path with
+`motion::install_world(.., baseplate=true)`.

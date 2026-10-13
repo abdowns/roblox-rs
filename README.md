@@ -7,6 +7,31 @@ beginning of the project and no equivalence is claimed. Unaffiliated with Roblox
 Current priority is the offline core Roblox client: rendering, player/Humanoid,
 physics, camera and appearance. Studio editor and editor GUI work is deferred.
 
+## Play Solo on the Studio Baseplate
+
+```sh
+sh tools/cargo.sh run --locked -- viewport-baseplate
+```
+
+Expected: the Studio new-document place, a 512x512 dark stone grey Baseplate
+with studs on top, under the default sky. The character spawns with its Head at
+(0, 107, 0), falls about one second with the fall animation, lands and idles.
+Same controls as the walking fixture below (WASD, Space, camera keys, R
+respawns, Escape closes). The first camera frame is a fixture offset behind the
+character until the Studio edit camera is ported; ClassicCamera takes over
+immediately. Not ported yet: Torso/Head contacts with Parts, unanchored Parts,
+outlines and the Studio camera. Manual keys are **not tested**.
+
+```sh
+sh tools/cargo.sh run --locked -- audit-baseplate-render
+sh tools/cargo.sh run --locked -- viewport-baseplate-smoke
+```
+
+Expect `workspace_draw name="Baseplate" quads=132 ... color=[0.3882353,
+0.37254903, 0.38431373, 1.0]`, `baseplate_render ... landed_torso=[..., 3.0,
+...]` and `baseplate_render_pass`. The smoke test opens the window, presses W
+for 120 frames and exits after `viewport_final_readback_pass`.
+
 ## Play the experimental walking fixture
 
 ```sh
@@ -21,9 +46,9 @@ PopperCam occlusion. The fixture camera
 follows translation. Movement uses native Humanoid command math, WalkSpeed=16,
 RunningBase forces, R6 assembly mass/inertia and constrained SimBody substeps.
 The two original collidable bodies (Head/Torso) generate vertex/plane wall
-connectors and receive native awake impulses/spring forces. Arms and legs now
-play the bundled procedural animation while walking, then its Standing pose on
-release. Animated poses update the assembly center of mass and inertia.
+connectors and receive native awake impulses/spring forces. Arms and legs play
+the August 2016 keyframe clips through the shipped Animate script (see below).
+Animated poses update the assembly center of mass and inertia.
 
 The floor support, wall, material coefficients, awake scheduling and camera are
 explicit research fixtures. Native legacy balancing and AutoRotate torque now
@@ -32,9 +57,7 @@ and broadphase remain incomplete. Maximum wall penetration is 0.114 studs in
 the rest-pose regression (0.104 with animation). The 32-second animated wall
 test remains upright. Native parity remains unverified. Manual keys
 are **not tested**; automated input and Metal presentation are tested.
-The original R6 default loader uses remote keyframe clips absent from this bundle.
-Walking explicitly uses the shipped procedural script instead; default-keyframe
-equivalence is **not tested**. Its timing now follows the recovered native jobs:
+Animation timing follows the recovered native jobs:
 Motor6D steps once per 60 Hz physics job before that job's four world steps, and
 the script's `wait(0.1)` resumes on wall-clock time with 30 Hz Heartbeat time as
 its animation input. The frame clock is ideal (no jitter) and the job order

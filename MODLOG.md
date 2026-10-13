@@ -1,5 +1,28 @@
 # MODLOG
 
+## 2026-10-12 Render the Baseplate (native addBlock studs/inlet strips)
+
+**Changed:** `geometry::workspace_block`/`workspace_draws` (addBlock port for
+Workspace blocks), `motion::install_world` with a Baseplate option and
+`pose_walking`, `viewport-baseplate`, `viewport-baseplate-smoke` and
+`audit-baseplate-render`.
+**Why:** Parts step 3: the Baseplate must be drawn with its native geometry.
+**Tested how:** Ghidra: addBlock 010cca80 (exported symbol), corner/row tables
+017f0140/017f045c. audit-baseplate-render (GPU readback), viewport-baseplate-smoke
+and viewport-walking-smoke in a real window, Clippy, tests; audit-render,
+audit-walking-render, audit-motion, audit-animation-render and audit-geometry
+byte-identical to before.
+**Result:** Baseplate 132 quads / 528 vertices, color (99,95,98); top strips
+start at z=+256 stepping -Z on the Studs row, bottom strips step +Z on the
+Inlet row. Landed frame: Baseplate covers 207,145 pixels, studs change
+192,135. Window smoke: falls, lands at root y 3.0 and walks (120 frames).
+The fixture walking smoke, previously not tested (display asleep), now passes.
+Test: `sh tools/cargo.sh run --locked -- viewport-baseplate`.
+**Still broken / not tested:** Native pixel parity; outlines, material UVs and
+tangents; the first camera frame is a fixture offset (Studio edit camera not
+ported); manual keys not tested.
+**Next:** Studio camera, then BlockBlockContact for Torso/Head and unanchored Parts.
+
 ## 2026-10-12 Play Solo on the Baseplate (Part statics and native ray test)
 
 **Changed:** World statics can hold anchored Parts (`StaticBlock`);

@@ -166,8 +166,11 @@ fn scene_app(scene: RenderScene) -> App {
 }
 
 fn install_motion(app: &mut App, bundle: &Bundle) -> Result<(), String> {
+    install_motion_world(app, bundle, false)
+}
+fn install_motion_world(app: &mut App, bundle: &Bundle, baseplate: bool) -> Result<(), String> {
     let before = app.world().resource::<Extracted>().0.clone();
-    motion::install(app, bundle)?;
+    motion::install_world(app, bundle, baseplate)?;
     app.add_systems(
         Update,
         (motion::advance, motion::sync_bodies, motion::sync_decals)
@@ -1706,6 +1709,122 @@ pub fn audit_walking(bundle: &Bundle) -> Result<String, String> {
     Ok(report)
 }
 
+/// Headless Play Solo on the Baseplate: native block geometry with studs,
+/// the spawned character falling onto it, GPU readback only.
+pub fn audit_baseplate(bundle: &Bundle) -> Result<String, String> {
+    let scene = RenderScene::character(bundle)?;
+    let mut surfaces = surface::character(bundle, &scene)?;
+    let decals = texture::character_decals(bundle, &scene)?;
+    let mut app = scene_app(scene);
+    for decal in decals.draws {
+        app.world_mut().spawn(decal);
+    }
+    app.update();
+    install_motion_world(&mut app, bundle, true)?;
+    app.world_mut()
+        .resource_mut::<MotionControl>()
+        .walking_probe = true;
+    motion::pose_walking(app.world_mut())?;
+    let (draws, coordinates, mut report) = crate::geometry::workspace_draws(
+        bundle,
+        &crate::workspace::Workspace::studio_new_document(),
+    )?;
+    let flat: std::collections::BTreeMap<String, Vec<[f32; 2]>> = coordinates
+        .iter()
+        .map(|(name, uv)| (name.clone(), vec![[0.0; 2]; uv.len()]))
+        .collect();
+    surfaces.coordinates.extend(coordinates);
+    for draw in draws {
+        app.world_mut().spawn(draw);
+    }
+    app.update();
+    let mut inputs = RenderInputs::character_probe();
+    let profile = crate::lighting::LightingProfile::load(bundle)?;
+    let sky = profile.sky(profile.properties.time_of_day);
+    inputs.apply_lighting(&profile.render_lighting(&sky));
+    let look = |inputs: &mut RenderInputs, torso: Vec3| {
+        let position = torso + Vec3::new(-8.0, 4.0, 12.5);
+        let back = (position - (torso - Vec3::new(0.0, 0.5, 0.0))).normalize();
+        let right = Vec3::Y.cross(back).normalize();
+        let up = back.cross(right);
+        inputs.frame = CoordinateFrame {
+            position: position.to_array(),
+            rotation: [
+                [right.x, up.x, back.x],
+                [right.y, up.y, back.y],
+                [right.z, up.z, back.z],
+            ],
+        };
+    };
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let extracted = app.world().resource::<Extracted>().0.clone();
+    let (mut gpu, _) = Gpu::new(&instance, None, wgpu::TextureFormat::Rgba8Unorm, &extracted)?;
+    gpu.add_studs(&extracted, &surfaces)?;
+    gpu.add_decals(&app.world().resource::<ExtractedDecals>().0)?;
+    let count = |pixels: &[u8], other: &[u8]| {
+        pixels
+            .chunks_exact(4)
+            .zip(other.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count()
+    };
+    look(&mut inputs, Vec3::new(0.0, 105.5, 0.0));
+    let spawn = gpu.read_frame(640, 480, &inputs)?;
+    // 720 world steps (3 s): fall, land and settle.
+    for _ in 0..720 {
+        app.world_mut()
+            .resource_mut::<MotionControl>()
+            .requested_steps = 1;
+        app.update();
+        if let Some(error) = &app.world().resource::<MotionControl>().error {
+            return Err(error.clone());
+        }
+    }
+    let torso = motion::walking_torso(app.world()).ok_or("missing torso")?;
+    let draws = app.world().resource::<Extracted>().0.clone();
+    let decals = app.world().resource::<ExtractedDecals>().0.clone();
+    gpu.update_geometry(&draws, &decals, &surfaces)?;
+    look(&mut inputs, Vec3::from_array(torso.position));
+    let landed = gpu.read_frame(640, 480, &inputs)?;
+    if gpu.read_frame(640, 480, &inputs)? != landed {
+        return Err("baseplate repeat readback mismatch".into());
+    }
+    // Baseplate contribution: the same frame with the Baseplate moved away.
+    let mut hidden = draws.clone();
+    for draw in hidden.iter_mut().filter(|d| d.geometry == "block") {
+        for v in &mut draw.vertices {
+            v.position = [1e6; 3];
+        }
+    }
+    gpu.update_geometry(&hidden, &decals, &surfaces)?;
+    let without_baseplate = gpu.read_frame(640, 480, &inputs)?;
+    // Stud contribution: the same frame with zeroed stud coordinates.
+    let mut flat_surfaces = surface::character(bundle, &RenderScene::character(bundle)?)?;
+    flat_surfaces.coordinates.extend(flat);
+    gpu.update_geometry(&draws, &decals, &flat_surfaces)?;
+    let without_studs = gpu.read_frame(640, 480, &inputs)?;
+    gpu.update_geometry(&draws, &decals, &surfaces)?;
+    if gpu.read_frame(640, 480, &inputs)? != landed {
+        return Err("baseplate restore readback mismatch".into());
+    }
+    let baseplate_pixels = count(&landed, &without_baseplate);
+    let stud_pixels = count(&landed, &without_studs);
+    let spawn_change = count(&spawn, &landed);
+    writeln!(
+        report,
+        "baseplate_render landed_torso={:?} baseplate_pixels={baseplate_pixels} stud_pixels={stud_pixels} spawn_vs_landed_pixels={spawn_change} repeat_identical=true",
+        torso.position
+    )
+    .unwrap();
+    if baseplate_pixels < 10000 || stud_pixels < 1000 || !(2.9..3.1).contains(&torso.position[1]) {
+        return Err(format!("baseplate render check failed\n{report}"));
+    }
+    report.push_str(
+        "baseplate_render_pass studs=native_addBlock_strips outlines=disabled visual_inspection=false native_pixel_parity=not_tested\n",
+    );
+    Ok(report)
+}
+
 pub fn audit_motion(bundle: &Bundle) -> Result<String, String> {
     let scene = RenderScene::character(bundle)?;
     let mut report = scene.report.clone();
@@ -1910,7 +2029,7 @@ impl ApplicationHandler for Viewport {
                 let mut hidden = original.clone();
                 let mut hidden_decals = decals.clone();
                 for draw in &mut hidden {
-                    if draw.geometry != "walking_fixture" {
+                    if !matches!(draw.geometry.as_str(), "walking_fixture" | "block") {
                         for vertex in &mut draw.vertices {
                             vertex.position = [1e6; 3];
                         }
@@ -2338,21 +2457,27 @@ impl ApplicationHandler for Viewport {
 
 /// Open a diagnostic viewport. Optional frame limit supports numeric smoke tests.
 pub fn viewport(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, String> {
-    run_viewport(bundle, frame_limit, false, false, false)
+    run_viewport(bundle, frame_limit, false, false, false, false)
+}
+
+/// Play Solo in the Studio default place: the character spawns over the
+/// Baseplate and is driven like the walking fixture.
+pub fn viewport_baseplate(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, String> {
+    run_viewport(bundle, frame_limit, true, false, true, true)
 }
 
 /// Automatic surface smoke with the same bounded free-fall trigger as Space.
 pub fn viewport_motion_smoke(bundle: &Bundle) -> Result<String, String> {
-    run_viewport(bundle, Some(120), true, false, false)
+    run_viewport(bundle, Some(120), true, false, false, false)
 }
 
 /// Explicit bundled procedural Running profile, with diagnostic 60 Hz callbacks.
 pub fn viewport_animation_smoke(bundle: &Bundle) -> Result<String, String> {
-    run_viewport(bundle, Some(120), true, true, false)
+    run_viewport(bundle, Some(120), true, true, false, false)
 }
 
 pub fn viewport_walking(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, String> {
-    run_viewport(bundle, frame_limit, true, false, true)
+    run_viewport(bundle, frame_limit, true, false, true, false)
 }
 
 fn run_viewport(
@@ -2361,6 +2486,7 @@ fn run_viewport(
     auto_motion: bool,
     animation: bool,
     walking: bool,
+    baseplate: bool,
 ) -> Result<String, String> {
     if frame_limit.is_some_and(|n| n == 0 || n > 10000) {
         return Err("viewport frame limit must be 1..=10000".into());
@@ -2376,8 +2502,30 @@ fn run_viewport(
         app.world_mut().spawn(draw);
     }
     app.update();
-    install_motion(&mut app, bundle)?;
-    let walking_camera_root = if walking {
+    install_motion_world(&mut app, bundle, baseplate)?;
+    let walking_camera_root = if walking && baseplate {
+        app.world_mut()
+            .resource_mut::<MotionControl>()
+            .walking_probe = true;
+        if frame_limit.is_some() {
+            app.world_mut()
+                .resource_mut::<MotionControl>()
+                .walking_input = [0.0, 0.0, -1.0];
+        }
+        motion::pose_walking(app.world_mut())?;
+        let (draws, coordinates, workspace_report) = crate::geometry::workspace_draws(
+            bundle,
+            &crate::workspace::Workspace::studio_new_document(),
+        )?;
+        report.push_str(&workspace_report);
+        surfaces.coordinates.extend(coordinates);
+        for draw in draws {
+            app.world_mut().spawn(draw);
+        }
+        app.update();
+        report.push_str("baseplate_world spawn=native_no_spawnlocation floor=baseplate_block_raycast block_contacts=not_ported camera_start=fixture_offset_until_studio_camera_port native_parity=not_tested\n");
+        motion::walking_frame(app.world()).map(|f| f.position)
+    } else if walking {
         app.world_mut()
             .resource_mut::<MotionControl>()
             .walking_probe = true;
@@ -2418,9 +2566,15 @@ fn run_viewport(
     println!("viewport_live_log={}", live_path.display());
     let mut inputs = RenderInputs::character_probe();
     if walking {
-        // Explicit follow-camera fixture on the character's side of the wall.
-        let position = Vec3::new(-8.0, 22.0, 35.0);
-        let back = (position - Vec3::new(0.0, 17.5, 22.5)).normalize();
+        // Explicit follow-camera fixture on the character's side of the wall
+        // (the same offset from the spawned torso on the Baseplate).
+        let torso = if baseplate {
+            Vec3::new(0.0, 105.5, 0.0)
+        } else {
+            Vec3::new(0.0, 18.0, 22.5)
+        };
+        let position = torso + Vec3::new(-8.0, 4.0, 12.5);
+        let back = (position - (torso - Vec3::new(0.0, 0.5, 0.0))).normalize();
         let right = Vec3::Y.cross(back).normalize();
         let up = back.cross(right);
         inputs.frame = CoordinateFrame {

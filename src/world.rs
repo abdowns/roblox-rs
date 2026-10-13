@@ -62,11 +62,7 @@ fn moving_point_fixed_aabox(
         return None;
     }
     let first = usize::from(max_t[0] < max_t[1]);
-    let which = if max_t[2] <= max_t[first] {
-        first
-    } else {
-        2
-    };
+    let which = if max_t[2] <= max_t[first] { first } else { 2 };
     let t = max_t[which];
     // Sign-bit test on the float bits, as G3D's IR(MaxT) & 0x80000000.
     if t.to_bits() & 0x8000_0000 != 0 {

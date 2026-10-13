@@ -64,10 +64,16 @@ pub(crate) fn pose_draw(local: &Draw, frame: &CoordinateFrame) -> Draw {
     draw
 }
 
-pub(crate) fn install(app: &mut App, bundle: &Bundle) -> Result<(), String> {
+/// `baseplate` puts the walking character in the Studio default place
+/// (`WalkingFixture::baseplate`) instead of the floor/wall fixture.
+pub(crate) fn install_world(app: &mut App, bundle: &Bundle, baseplate: bool) -> Result<(), String> {
     let local = RenderScene::character_local(bundle)?;
     let rig = R6Rig::character(bundle, &local.scene)?;
-    let walking = WalkingFixture::new(bundle, &local.scene, &rig)?;
+    let walking = if baseplate {
+        WalkingFixture::baseplate(bundle, &local.scene, &rig)?
+    } else {
+        WalkingFixture::new(bundle, &local.scene, &rig)?
+    };
     let decals = texture::character_decals(bundle, &local)?;
     let mut draws: BTreeMap<_, _> = local
         .draws
@@ -226,6 +232,30 @@ pub(crate) fn advance(
     }
 }
 
+/// Publish the walking assembly and pose every body from the rig, without a
+/// world step (the spawned character before its first physics step).
+pub(crate) fn pose_walking(world: &mut World) -> Result<(), String> {
+    let published = world
+        .resource::<MotionControl>()
+        .walking
+        .world
+        .body
+        .body_state();
+    let frames = world.resource::<R6Rig>().pose(&published.frame)?;
+    for (name, mut body) in world
+        .query::<(&BodyName, &mut FreeFallBody)>()
+        .iter_mut(world)
+    {
+        if name.0 == "HumanoidRootPart" {
+            *body = published.clone();
+        }
+        if let Some(frame) = frames.get(&name.0) {
+            body.frame = frame.clone();
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn sync_bodies(mut draws: Query<(&LocalGeometry, &FreeFallBody, &mut Draw)>) {
     for (local, body, mut draw) in &mut draws {
         *draw = pose_draw(&local.0, &body.frame);
@@ -265,6 +295,11 @@ pub(crate) fn reset(world: &mut World) {
     control.walking_camera = None;
     control.walking.reset();
     control.animation_ticks = 0;
+    if !control.walking.world.statics.blocks.is_empty()
+        && let Err(error) = pose_walking(world)
+    {
+        world.resource_mut::<MotionControl>().error = Some(error);
+    }
 }
 
 pub(crate) fn timestep(world: &World) -> f64 {
