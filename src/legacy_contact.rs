@@ -280,7 +280,7 @@ fn dot_zyx(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[2] * b[2] + (a[1] * b[1] + a[0] * b[0])
 }
 /// ContactConnector impulse state (connector +0x1c, +0x20..+0x74).
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct AwakeContact {
     /// +0x1c: impulse computations since the contact last separated.
     pub iterations: u32,

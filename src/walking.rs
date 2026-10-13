@@ -818,3 +818,101 @@ pub fn audit_part_wall(bundle: &Bundle) -> Result<String, String> {
     writeln!(report, "part_wall_pass blocked=true narrowphase=block_block_contact broadphase_order=assumed native_differential=not_tested").unwrap();
     Ok(report)
 }
+
+/// Unanchored Parts on the new-document Baseplate. "Rest" starts 0.05 above
+/// the Baseplate and "Stack" 0.05 above "Rest" (soft landings, asserted to
+/// rest flat and stacked). "Drop" falls flat from y = 8 and "Tumble" falls
+/// tilted from y = 10; their bounces are only logged, and they must end at
+/// rest on some face. The character idles at the spawn, away from them.
+pub fn audit_part_drop(bundle: &Bundle) -> Result<String, String> {
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    let part = |name: &str, position: [f32; 3]| {
+        let mut p = crate::workspace::PartInstance {
+            name: name.into(),
+            ..Default::default()
+        };
+        p.frame.position = position;
+        p
+    };
+    let rest = part("Rest", [-20.0, 0.65, -20.0]);
+    let stack = part("Stack", [-19.5, 1.9, -19.8]);
+    let drop = part("Drop", [20.0, 8.0, 0.0]);
+    let mut tumble = part("Tumble", [-12.0, 10.0, 12.0]);
+    // 30 degrees about Z, then 20 degrees about X.
+    let (sz, cz) = 30f32.to_radians().sin_cos();
+    let (sx, cx) = 20f32.to_radians().sin_cos();
+    let rz = [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]];
+    let rx = [[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]];
+    tumble.frame.rotation =
+        std::array::from_fn(|r| std::array::from_fn(|c| (0..3).map(|k| rz[r][k] * rx[k][c]).sum()));
+    workspace.parts.extend([rest, stack, drop, tumble]);
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let mut report = String::new();
+    let count = fixture.world.loose.parts.len();
+    let mut first_contact: Vec<Option<u32>> = vec![None; count];
+    let mut max_iterations = 0;
+    for step in 0..1440u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        let loose = &fixture.world.loose;
+        max_iterations = max_iterations.max(loose.stats.iterations);
+        for (i, p) in loose.parts.iter().enumerate() {
+            if first_contact[i].is_none() && p.list != crate::loose::BodyList::FreeFall {
+                first_contact[i] = Some(step + 1);
+                writeln!(
+                    report,
+                    "part_drop_first_contact part={} step={} {}",
+                    p.name,
+                    step + 1,
+                    loose.report()
+                )
+                .unwrap();
+            }
+        }
+        if (step + 1) % 120 == 0 {
+            writeln!(
+                report,
+                "part_drop_state step={} iterations={} average_error={} contact_connectors={} {}",
+                step + 1,
+                loose.stats.iterations,
+                loose.stats.average_error,
+                loose.stats.contact_connectors,
+                loose.report()
+            )
+            .unwrap();
+        }
+    }
+    let parts = &fixture.world.loose.parts;
+    let speed = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let y = |i: usize| parts[i].body.frame.position[1];
+    writeln!(
+        report,
+        "part_drop_result first_contact={first_contact:?} heights={:?} up_y={:?} speeds={:?} spins={:?} max_iterations={max_iterations}",
+        (0..count).map(y).collect::<Vec<_>>(),
+        parts.iter().map(|p| p.body.frame.rotation[1][1]).collect::<Vec<_>>(),
+        parts.iter().map(|p| speed(p.body.velocity)).collect::<Vec<_>>(),
+        parts.iter().map(|p| speed(p.body.angular_velocity)).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    // Flat half height 0.6 on the Baseplate top (y = 0); 1.2 + 0.6 on Rest.
+    // Any face of a 4 x 1.2 x 2 block: half heights 0.6, 1.0 or 2.0.
+    let on_face = |h: f32| [0.6f32, 1.0, 2.0].iter().any(|f| (h - f).abs() < 0.05);
+    if first_contact.iter().any(Option::is_none)
+        || (y(0) - 0.6).abs() > 0.05
+        || (y(1) - 1.8).abs() > 0.08
+        || parts[0].body.frame.rotation[1][1] < 0.999
+        || parts[1].body.frame.rotation[1][1] < 0.999
+        || !on_face(y(2))
+        || !on_face(y(3))
+        || parts.iter().any(|p| speed(p.body.velocity) > 0.05)
+    {
+        return Err(format!("part drop failed\n{report}"));
+    }
+    writeln!(report, "part_drop_pass rested=4 stacked=true sleep=not_implemented broadphase_order=assumed native_differential=not_tested").unwrap();
+    Ok(report)
+}

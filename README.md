@@ -20,7 +20,10 @@ Same controls as the walking fixture below (WASD, Space, camera keys, R
 respawns, Escape closes). The first camera frame is a fixture offset behind the
 character until the Studio edit camera is ported; ClassicCamera takes over
 immediately. Torso and Head collide with anchored Parts (`audit-part-wall`).
-Not ported yet: unanchored Parts, outlines and the Studio camera. Manual keys are **not tested**.
+Unanchored Parts fall, land, stack and come to rest in the simulation
+(`audit-part-drop`) but are not drawn moving, and the character does not touch
+them yet. Not ported yet: the sleep stage, outlines and the Studio camera.
+Manual keys are **not tested**.
 
 ```sh
 sh tools/cargo.sh run --locked -- audit-baseplate-render
@@ -202,9 +205,19 @@ are downloaded on first build; runtime data loading uses no network requests.
   `block_contact_audit resting_ok=true separated_ok=true tilted_ok=true`.
   Torso and Head use it against anchored Parts: run
   `sh tools/cargo.sh run --locked -- audit-part-wall`; expect
-  `part_wall_first_contact step=145`, six `VertexPlane` connectors and
-  `part_wall_result ... stop=[..., -9.540545] ... max_penetration=0.06402397`
+  `part_wall_first_contact step=145`, `VertexPlane` connectors and
+  `part_wall_result ... stop=[..., -9.510549] ... max_penetration=0.067427635 impulses=0`
   then `part_wall_pass blocked=true`. Native parity is **not tested**.
+- Unanchored Parts as their own kernel bodies: free fall, contact bodies with
+  native awake impulses, resting flags and contact displacement, Part/Part and
+  Part/Baseplate contacts. Run
+  `sh tools/cargo.sh run --locked -- audit-part-drop`; expect
+  `part_drop_first_contact` lines for Rest (step 7), Stack (10), Drop (67) and
+  Tumble (71), `part_drop_result ... heights=[0.5822041, 1.7608731, 0.98807293, 0.58391684]`
+  and `part_drop_pass rested=4 stacked=true`. Resting Parts that touch another
+  loose Part creep slowly (about 0.03 studs/s) because the sleep stage is not
+  ported. High drops bounce and spin. Whether native does the same is **not
+  tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,

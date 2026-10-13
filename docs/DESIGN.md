@@ -909,7 +909,6 @@ Connector reuse follows ae30a8/ae6024:
 
 Not ported:
 
-- the kernel point bookkeeping that runs after each recompute (a9457c);
 - how the broadphase orders the two primitives. ContactManager::createContact
   (00ae714a) keeps the order the broadphase gives it for two blocks.
 
@@ -923,11 +922,9 @@ block as body 1. Each world step does the following:
 
 1. It runs `update` with the step-start pose, so connectors are created, reused
    or deleted.
-2. It invalidates their awake impulse caches.
-3. It solves those connectors after the fixture-wall connectors in the bounded
-   awake impulse loop.
-4. In every kernel substep, it refreshes each connector's geometry for the
-   current pose and applies its contact spring.
+2. In every kernel substep, it refreshes each connector's geometry for the
+   current pose and applies its contact spring. These are realTimeConnectors
+   (the character cannot throttle), so the awake impulse pass skips them.
 
 The kernel code takes the character as contact body A. When the static block
 is the pair's A (a block corner on a character face), the normal is therefore
@@ -940,3 +937,74 @@ drops the contacts, as it does the wall states.
 Two things are not native: the connector order across pairs, and the
 pair-per-block lifetime (the broadphase is not ported). `audit-part-wall`
 walks into an anchored 20x10x2 Part whose face is at z = -10.
+
+## Unanchored Parts (loose.rs)
+
+Each unanchored Workspace Part is its own single-Part assembly and SimBody, a
+`KernelBody` with mass = (x*y)*z*density (material defaults) and the native
+block inertia. `LooseWorld` keeps the KernelData lists for these throttling
+bodies, all as IndexArrays (append; removal moves the last entry into the
+hole):
+
+- body lists freeFallBodies, realTimeBodies, jointBodies and contactBodies;
+- connector lists contactConnectors and jointConnectors, holding connector ids.
+
+**Classification (00a9be30).** A body with no joint connectors goes to
+contactBodies if it has contact connectors, to freeFallBodies if it has no
+connectors at all, and otherwise to jointBodies. Leaving free fall rebuilds the
+angular momentum from the angular velocity (ab1c28). Entering free fall sets
+both resting flags and clears the displacements. A new body has no connectors,
+so it starts in free fall.
+
+**Contacts.** Every world step, before the kernel, each (loose, static) and
+(loose, loose) pair runs `BlockBlockContact::update` (Contact::step, from
+SleepStage::stepContacts b715ac). Its events are applied in native order:
+
+- A new connector is inserted (00a99514): jointConnectors if either body is in
+  jointBodies, otherwise contactConnectors. Both bodies are then reclassified.
+- A reused connector whose geometry changed updates the displacements (a9457c):
+  the old geometry is applied with -1 and the new with +1, for contactConnectors
+  only.
+- A deleted connector is removed (00a99ff2). Its current geometry is applied
+  with -1 if it was a contact connector, and both bodies are reclassified.
+
+A connector's bodies follow a92c26: A is the first primitive whose body is in
+the kernel; the normal is negated when only the second one is.
+
+**Displacement (a942ee).** d = n·len·invMass_A/(invMass_A + invMass_B) is added
+to A's linear displacement and r × d to its angular displacement; B gets the
+opposite with its own share.
+
+**Kernel::step (00a96588).**
+
+1. Pre-step (00a96eb0) over contactBodies:
+   - a body with any force beyond gravity, torque or impulse moves to
+     realTimeBodies;
+   - otherwise the resting flags are set from the displacements (|angular|² <
+     0x01700a30; |linear x| and |linear z| < 0x017a5b84) and `contact_prestep`
+     (ab230a) turns the accumulated force into velocity and the reference
+     impulse.
+   - Every contact connector's impulse cache is then cleared.
+2. stepWorld (00a9768c):
+   - free-fall bodies take `free_fall_step` (ab2d9a), or move to realTimeBodies
+     if something pushed them;
+   - the awake impulses (a936d0) loop over contactConnectors, at most 60 times,
+     while the average error term is at least 0.1 × (contactBodies/400 + 1);
+   - contact bodies take `contact_integrate` (ab290c);
+   - in each of the 19 substeps, the character's springs and Humanoid force run,
+     then realTimeBodies and jointBodies integrate (ab1d44).
+
+The kinematic Humanoid path still steps the loose Parts.
+
+**Not ported:**
+
+- the sleep stage (resting stacks creep slowly instead of sleeping);
+- springs for loose jointConnectors (an error if reached);
+- the character touching loose Parts, and raycasts against them;
+- drawing their motion;
+- the broadphase pair order (pairs are visited in a fixed order).
+
+`audit-part-drop` drops four Parts onto the Baseplate and logs every Part every
+120 steps. Evidence:
+RobloxStudio/analysis/kernel-lists-native-20261013.md.
+

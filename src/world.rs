@@ -10,7 +10,8 @@ use crate::{
     collision::ContactBodyState,
     humanoid_state::Hit,
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
-    legacy_contact::{BlockContactProfile, ContactGeometry},
+    legacy_contact::{BlockContactProfile, ContactGeometry, ImpulseProfile},
+    loose::LooseWorld,
     material::{MaterialProfile, Shape},
     physics,
     rig::{R6Rig, compose},
@@ -301,6 +302,9 @@ pub struct World {
     pub max_penetration: f32,
     /// Current assembly inertia in body space (animated Cofm refresh).
     pub inertia: Tensor,
+    /// Unanchored Workspace Parts (their own SimBodies in the kernel).
+    pub loose: LooseWorld,
+    impulses: ImpulseProfile,
     original: KernelBody,
     original_inertia: Tensor,
     colliders: Vec<(String, [f32; 3])>,
@@ -411,6 +415,8 @@ impl World {
             max_penetration: 0.0,
             inertia: assembly.inertia_in_body,
             original_inertia: assembly.inertia_in_body,
+            loose: LooseWorld::new(bundle)?,
+            impulses: ImpulseProfile::load(bundle)?,
             colliders,
             materials,
             collider_materials,
@@ -436,14 +442,15 @@ impl World {
         world.statics.wall_x = f32::INFINITY;
         for part in &workspace.parts {
             if !part.anchored {
-                return Err(format!(
-                    "unanchored Part {:?} is not simulated yet",
-                    part.name
-                ));
+                world
+                    .loose
+                    .add_part(part, &world.materials, &world.kernel)?;
+                continue;
             }
             if part.can_collide {
                 let properties = world.materials.defaults(part.material)?;
                 let stiffness = world.materials.stiffness(part.size, Shape::Block)?;
+                world.loose.add_static(properties, stiffness);
                 let index = world.statics.blocks.len();
                 for (collider, (own, own_stiffness)) in world.collider_materials.iter().enumerate()
                 {
@@ -490,6 +497,7 @@ impl World {
         self.states.clear();
         self.block_contacts.clear();
         self.inertia = self.original_inertia;
+        self.loose.reset();
     }
     pub fn is_original(&self) -> bool {
         self.body.frame == self.original.frame && self.inertia == self.original_inertia
@@ -633,8 +641,22 @@ impl World {
         // generated (ae32f4 checks stage 0xf).
         self.update_block_contacts(&frames, false)?;
         self.contacts = 0;
+        // The character is outside the kernel; the loose Parts still step.
+        self.step_loose()?;
+        for _ in 0..self.kernel.physics.kernel_substeps {
+            self.loose.substep(&self.kernel)?;
+        }
         self.steps = self.steps.checked_add(1).ok_or("walking tick overflow")?;
         Ok(())
+    }
+    /// The loose Parts' contacts (Contact::step), Kernel::step pre-step and
+    /// stepWorld up to the substeps.
+    fn step_loose(&mut self) -> Result<(), String> {
+        self.loose
+            .update_contacts(&self.statics.blocks, &self.statics.tables, &self.materials)?;
+        self.loose.prestep(&self.kernel)?;
+        self.loose
+            .step_world(&self.kernel, &self.impulses, &self.statics.blocks)
     }
     /// doWorldStep. The character's connectors are realTimeConnectors, so the
     /// awake impulse pass never touches them; each kernel substep runs the
@@ -678,6 +700,7 @@ impl World {
         }
         self.states.retain(|key, _| active.contains(key));
         self.update_block_contacts(&frames, true)?;
+        self.step_loose()?;
         self.contacts = active.len()
             + self
                 .block_contacts
@@ -740,6 +763,7 @@ impl World {
             let torso = frames.get("Torso").ok_or("missing state torso")?.clone();
             force(&mut self.body, &self.statics, &torso, self.inertia)?;
             self.body.step(&self.kernel)?;
+            self.loose.substep(&self.kernel)?;
         }
         self.steps = self.steps.checked_add(1).ok_or("walking tick overflow")?;
         Ok(())

@@ -1,5 +1,56 @@
 # MODLOG
 
+## 2026-10-13 Unanchored Parts as kernel bodies (loose.rs)
+
+**Changed:**
+- New `loose.rs` holds `LooseWorld`, the KernelData subset for unanchored Parts:
+  - body lists and classification (00a9be30, 00a9c142);
+  - connector insert and remove (00a99514, 00a99ff2) and contact displacement (a9457c, a942ee);
+  - the pre-step (00a96eb0);
+  - stepWorld's free-fall, impulse-iteration and contact-body phases (00a9768c): at most 60 iterations, error goal 0.1 × (n/400 + 1);
+  - the realTimeBodies and jointBodies integration in each substep.
+- `World::in_workspace` now adds unanchored Parts instead of rejecting them, and records each static block's material for contact parameters.
+- `World::step` and the kinematic step both run the loose Parts.
+- `World` gained a public `loose` field; `AwakeContact` now derives Clone and Debug.
+- New audit `audit-part-drop` puts four Parts on the Baseplate:
+  - Rest: 0.05 above the Baseplate;
+  - Stack: 0.05 above Rest;
+  - Drop: flat from y = 8;
+  - Tumble: tilted from y = 10.
+
+**Why:** Unanchored Parts step 3 (falling and stacking).
+
+**Tested how:**
+- Ran audit-part-drop.
+- Re-ran audit-walking, audit-part-wall and audit-baseplate: byte-identical, since they have no loose Parts.
+- audit-legacy-contact, audit-block-contact and audit-kernel pass.
+- A new displacement unit test; 74 tests pass, plus Clippy and fmt.
+- A temporary per-step probe of Drop's landing (not committed).
+
+**Result:**
+- First contacts: Rest step 7, Stack 10, Drop 67, Tumble 71.
+- After 6 s:
+  - Rest y = 0.5822 and Stack y = 1.7609, both flat (up_y 0.999995);
+  - Drop is on its side at y = 0.988;
+  - Tumble is flat at y = 0.584 and nearly still (0.0002 studs/s).
+- Impulse iterations peak at 9; resting steps take 2-4.
+- Drop lands at -54 studs/s: four corner connectors, 2 iterations, then it leaves at v.y = +22 with spin.
+  - The resting flags hold for the first corner.
+  - Later corners clear them through fast tangential velocity and get elastic rebound.
+  - So it bounces and tumbles.
+- Rest and Stack creep about 0.03 studs/s toward -x/-z (0.15 studs over 5 s); average error stays around 0.08 with 4 iterations per step.
+
+**Still broken / not tested:**
+- The sleep stage is not ported; native sleep would stop the creep.
+- Whether native bounces and creeps the same way is not tested.
+- The resting-flag |angular|² float order is assumed to be z + (y + x).
+- Loose jointConnectors springs return an error if reached.
+- The character does not touch loose Parts.
+- Loose Parts are not drawn moving.
+- The broadphase pair order is assumed.
+
+**Next:** Character ↔ loose Part contacts (realtime springs, jointBodies) and raycasts against loose Parts, then rendering.
+
 ## 2026-10-13 BlockBlockContact reports connector events in native order
 
 **Changed:**

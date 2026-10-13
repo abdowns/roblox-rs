@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-part-wall|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
+            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-part-wall|audit-part-drop|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
         );
         return ExitCode::SUCCESS;
     }
@@ -26,6 +26,7 @@ fn main() -> ExitCode {
                     | "audit-block-contact"
                     | "audit-material"
                     | "audit-part-wall"
+                    | "audit-part-drop"
                     | "audit-scheduler"
                     | "audit-camera"
                     | "audit-lighting"
@@ -60,7 +61,7 @@ fn main() -> ExitCode {
         || args.len() > 2
     {
         eprintln!(
-            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-part-wall|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
+            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-part-wall|audit-part-drop|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
         );
         return ExitCode::from(2);
     }
@@ -94,6 +95,7 @@ fn main() -> ExitCode {
             "audit-workspace" => studio_2016::workspace::audit(),
             "audit-baseplate" => walking::audit_baseplate(&bundle),
             "audit-part-wall" => walking::audit_part_wall(&bundle),
+            "audit-part-drop" => walking::audit_part_drop(&bundle),
             "audit-baseplate-render" => render::audit_baseplate(&bundle),
             "audit-walking" => walking::audit(&bundle),
             "audit-walking-render" => render::audit_walking(&bundle),
