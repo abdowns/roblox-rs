@@ -1,5 +1,27 @@
 # MODLOG
 
+## 2026-10-12 Split walking.rs into World and Humanoid (refactor only)
+
+**Changed:** Moved RBX::World behavior (contacts, kernel substeps, fixture
+statics and raycasts) to `world.rs` and RBX::Humanoid with its state objects
+(dispatch, per-state update, force callbacks) to `humanoid.rs`. The Humanoid
+now fires its Lua signals as `HumanoidEvent`s (mapping from 00bfda98:
+Freefall/Flying/Landed -> FreeFalling, Running/RunningNoPhysics ->
+Running(speed), etc.); the legacy procedural script consumes them.
+`walking.rs` keeps `WalkingFixture` with the same public methods as the
+fixture/game loop. Callers use `fixture.world.body` / `world.statics.*`
+instead of `fixture.body` / `floor_y` / `wall_x`.
+**Why:** walking.rs mixed three native classes; Parts and keyframe animation
+need World and Humanoid as separate pieces.
+**Tested how:** Captured audit-walking, audit-walking-render, audit-camera,
+audit-lighting and audit-sky before the change and diffed after: all
+identical. 50 tests, Clippy, fmt, walking window smoke, bundle check.
+**Result:** No behavior change.
+Test: `sh tools/cargo.sh run --locked -- audit-walking`; expect the same
+`walking_pass ... distance_one_second=15.746414` as before.
+**Still broken / not tested:** Nothing new.
+**Next:** August 2016 keyframe animations (Animate script + Animator).
+
 ## 2026-10-12 Render the default sky: skybox, sun and moon
 
 **Changed:** Added `sky.rs` and `sky.wgsl`: port of Sky::update/Sky::render for

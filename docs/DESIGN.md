@@ -46,6 +46,19 @@ outputs and numeric evidence stay ignored inside RobloxStudio. Human-written
 functional findings go in tracked docs. Public function signatures are contracts
 to preserve as implementation grows.
 
+## Module layout follows the native classes
+
+The character runtime is split the way the original client splits it:
+`world.rs` is RBX::World (the assembly, contact impulses, kernel substeps and
+collision queries against the static contents), `humanoid.rs` is RBX::Humanoid
+with its HumanoidState objects (onStepped dispatch, per-state update, the
+per-substep kernel force callback, and the Lua signals fired on state edges by
+00bfda98), and the animation script only sees those signals. `walking.rs` is
+not a native class: it is the explicit test fixture (floor plane, wall
+half-space, one character) and the game loop that runs the native jobs over
+World and Humanoid. Before 2026-10-12 all of this lived in walking.rs; the
+split changed no numbers (every audit output was identical before and after).
+
 ## Tooling and verification
 
 Rust 1.97.1 and Bevy 0.20.0 are pinned with a lockfile. Only Bevy's `std` feature

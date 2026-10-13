@@ -1,7 +1,7 @@
 //! The bundled, no-tool procedural Lua branch, selected explicitly for research.
 //! Walking explicitly selects this offline branch. It does not reproduce the
 //! default keyframe clips referenced remotely by the shipped keyframe scripts.
-use crate::{bundle::Bundle, native_data::NativeImage, rig::R6Rig};
+use crate::{bundle::Bundle, humanoid::HumanoidEvent, native_data::NativeImage, rig::R6Rig};
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
@@ -28,6 +28,38 @@ pub struct ProceduralAnimation {
     active_frequency: f64,
     idle_amplitude: f64,
     idle_frequency: f64,
+}
+/// humanoidAnimateLocal's `pose` variable, set by its Humanoid signal handlers.
+#[derive(Clone, Debug)]
+pub struct ProceduralScript {
+    pub pose: Pose,
+}
+impl Default for ProceduralScript {
+    fn default() -> Self {
+        Self {
+            pose: Pose::Standing,
+        }
+    }
+}
+impl ProceduralScript {
+    /// onRunning, onJumping, onFreeFall, onClimbing, onSeated. Signals for
+    /// states that are not implemented yet are ignored.
+    pub fn on_event(&mut self, event: HumanoidEvent) {
+        match event {
+            HumanoidEvent::Running(speed) => {
+                self.pose = if speed > 0.0 {
+                    Pose::Running
+                } else {
+                    Pose::Standing
+                }
+            }
+            HumanoidEvent::Jumping(_) => self.pose = Pose::Jumping,
+            HumanoidEvent::FreeFalling(_) => self.pose = Pose::FreeFall,
+            HumanoidEvent::Climbing(_) => self.pose = Pose::Climbing,
+            HumanoidEvent::Seated(_) => self.pose = Pose::Seated,
+            _ => {}
+        }
+    }
 }
 /// Native Running event deadband, 00c02f36. Walking supplies nonnegative speed,
 /// for which the signed/unsigned native branches produce the same result.

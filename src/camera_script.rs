@@ -502,9 +502,9 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
         ));
     }
     // W is camera-forward: the character walks along the camera's ground look.
-    let start = fixture.body.frame.position;
+    let start = fixture.world.body.frame.position;
     run(&mut camera, &mut fixture, [0.0, 0.0, -1.0], 60)?;
-    let moved = sub(fixture.body.frame.position, start);
+    let moved = sub(fixture.world.body.frame.position, start);
     let distance = length(sub(camera.frame.position, camera.focus));
     writeln!(
         report,
@@ -580,7 +580,7 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     run(&mut camera, &mut fixture, [0.0; 3], 1)?;
     let left_of_view = [-1.0, 0.0, 0.0];
     run(&mut camera, &mut fixture, left_of_view, 120)?;
-    let wall = fixture.wall_x;
+    let wall = fixture.world.statics.wall_x;
     camera.mouse_pan([480.0 * 0.5, 0.0]);
     run(&mut camera, &mut fixture, [0.0; 3], 2)?;
     let eye = camera.frame.position;
@@ -589,8 +589,10 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     let near: [f32; 3] =
         std::array::from_fn(|i| eye[i] + look[i] * profile.near_clip_offset as f32);
     let unpopped = camera.focus[0] - camera.zoom() as f32 * look[0];
-    writeln!(report, "camera_popper eye={eye:?} near_plane={near:?} unpopped_eye_x={unpopped} wall_x={wall} character_x={}", fixture.body.frame.position[0]).unwrap();
-    if near[0] > wall + 1e-3 || unpopped < wall + 1.0 || fixture.body.frame.position[0] < wall - 1.0
+    writeln!(report, "camera_popper eye={eye:?} near_plane={near:?} unpopped_eye_x={unpopped} wall_x={wall} character_x={}", fixture.world.body.frame.position[0]).unwrap();
+    if near[0] > wall + 1e-3
+        || unpopped < wall + 1.0
+        || fixture.world.body.frame.position[0] < wall - 1.0
     {
         return Err(format!(
             "PopperCam did not pull the camera in front of the wall: {report}"

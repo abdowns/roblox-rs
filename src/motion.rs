@@ -165,7 +165,7 @@ pub(crate) fn advance(
                 control.error = Some(error);
                 return;
             }
-            let published = control.walking.body.body_state();
+            let published = control.walking.world.body.body_state();
             for (name, mut body) in &mut bodies {
                 if name.0 == "HumanoidRootPart" {
                     *body = published.clone();
@@ -286,7 +286,7 @@ pub(crate) fn walking_frame(world: &World) -> Option<CoordinateFrame> {
     let control = world.resource::<MotionControl>();
     control
         .walking_probe
-        .then(|| control.walking.body.frame.clone())
+        .then(|| control.walking.world.body.frame.clone())
 }
 pub(crate) fn walking_torso(world: &World) -> Option<CoordinateFrame> {
     let control = world.resource::<MotionControl>();
@@ -307,8 +307,8 @@ pub(crate) fn walking_camera_raycast(
 }
 pub(crate) fn walking_geometry(world: &World) -> Vec<Draw> {
     let control = world.resource::<MotionControl>();
-    let y = control.walking.floor_y;
-    let x = control.walking.wall_x;
+    let y = control.walking.world.statics.floor_y;
+    let x = control.walking.world.statics.wall_x;
     let plane = |name: &str, points: [[f32; 3]; 4], normal: [f32; 3], color: [f32; 4]| Draw {
         name: name.into(),
         vertices: points
