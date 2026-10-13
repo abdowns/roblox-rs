@@ -1,5 +1,25 @@
 # MODLOG
 
+## 2026-10-13 BlockBlockContact reports connector events in native order
+
+**Changed:**
+- `BlockBlockContact::update` now records `events` for that update, in generation order:
+  - `Kept { index, reused }` for each connector placed in the live buffer;
+  - `Removed { connector, recomputed }` for each deletion.
+- Deletions fall into three cases:
+  - a found vertex/plane connector rejected by the plane test (ae376c → ae277e, no recompute);
+  - a found edge connector rejected after its geometry was recomputed (ae4e72 → +0x24 then ae277e; ae33a8 assumed to match);
+  - the unmatched leftovers at the end (+0x1c), including every connector when the pair stops colliding.
+- The kernel connector lists need this order. Native inserts a new connector when it is generated and deletes rejected ones at once.
+
+**Why:** Unanchored Parts step 3 (connector kernel lists and contact displacement).
+
+**Tested how:** The resting-box unit test now checks the events: 4 new Kept, then 4 reused Kept, then 4 Removed on separation. 73 tests pass, plus Clippy and fmt. audit-part-wall and audit-baseplate are byte-identical; audit-block-contact passes.
+
+**Still broken / not tested:** That ae33a8 deletes found-and-rejected connectors the same way as ae4e72 is assumed, not decompiled.
+
+**Next:** Loose Parts in the World.
+
 ## 2026-10-13 AwakeContact follows native a936d0 (resting flags, cache, separation)
 
 **Changed in `AwakeContact::solve`:**

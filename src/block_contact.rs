@@ -302,6 +302,23 @@ pub struct Connector<T> {
     pub state: T,
 }
 
+/// A connector lifetime event of the last `update`, in native order: kernel
+/// insertion happens as each new connector is generated (ae376c, ae4e72,
+/// ae33a8 call 00a95f22), deletion of a found-but-rejected connector at
+/// once (ae277e), and of the unmatched leftovers at the end (+0x1c).
+#[derive(Clone, Debug)]
+pub enum ContactEvent<T> {
+    /// Kept at `index` of the live buffer. `reused` when it was found again
+    /// and its geometry recomputed (virtual +0x24).
+    Kept { index: usize, reused: bool },
+    /// Deleted. `recomputed` when its geometry was refreshed first (edge
+    /// connectors rejected after +0x24).
+    Removed {
+        connector: Connector<T>,
+        recomputed: bool,
+    },
+}
+
 /// Native connector buffer capacity (BlockBlockContact data, 8 per buffer).
 const CAPACITY: usize = 8;
 
@@ -318,6 +335,8 @@ pub struct BlockBlockContact<T> {
     pub incident_body: usize,
     pub reference_face: i32,
     pub incident_face: i32,
+    /// Connector events of the last `update`.
+    pub events: Vec<ContactEvent<T>>,
 }
 
 impl<T> Default for BlockBlockContact<T> {
@@ -332,6 +351,7 @@ impl<T> Default for BlockBlockContact<T> {
             incident_body: 0,
             reference_face: 0,
             incident_face: 0,
+            events: Vec::new(),
         }
     }
 }
@@ -528,13 +548,14 @@ impl<T: Default> BlockBlockContact<T> {
         in_kernel: bool,
         tables: &BlockTables,
     ) -> Result<bool, String> {
+        self.events.clear();
         let (colliding, plane) = if extents_overlap(&blocks[0].extents(), &blocks[1].extents()) {
             self.compute_is_colliding(blocks, 0.0)
         } else {
             (false, false)
         };
         if !colliding {
-            self.buffers[self.current].clear();
+            self.remove_leftovers();
             self.features = [-1, -1];
             return Ok(false);
         }
@@ -545,7 +566,7 @@ impl<T: Default> BlockBlockContact<T> {
                 let [a, b] = self.features;
                 self.edge_edge(blocks, tables, (a - 6) as usize, (b - 6) as usize)?;
             }
-            self.buffers[self.current].clear();
+            self.remove_leftovers();
             self.current ^= 1;
         }
         Ok(true)
@@ -568,13 +589,24 @@ impl<T: Default> BlockBlockContact<T> {
         found.pair.body_b = b;
         Some(found)
     }
-    fn keep(&mut self, connector: Connector<T>) -> Result<(), String> {
+    fn keep(&mut self, connector: Connector<T>, reused: bool) -> Result<(), String> {
         let buffer = &mut self.buffers[self.current ^ 1];
         if buffer.len() == CAPACITY {
             return Err("BlockBlockContact connector buffer overflow".into());
         }
         buffer.push(connector);
+        let index = buffer.len() - 1;
+        self.events.push(ContactEvent::Kept { index, reused });
         Ok(())
+    }
+    /// Delete the unmatched connectors of the current buffer (+0x1c).
+    fn remove_leftovers(&mut self) {
+        for connector in self.buffers[self.current].drain(..) {
+            self.events.push(ContactEvent::Removed {
+                connector,
+                recomputed: false,
+            });
+        }
     }
     /// Plane-side test ae3bd4: the vertex is more than 0.01 inside the face.
     #[allow(clippy::too_many_arguments)] // Native argument list.
@@ -625,8 +657,15 @@ impl<T: Default> BlockBlockContact<T> {
             plane_face,
         );
         if !accept {
+            if let Some(connector) = found {
+                self.events.push(ContactEvent::Removed {
+                    connector,
+                    recomputed: false,
+                });
+            }
             return Ok(());
         }
+        let reused = found.is_some();
         let mut connector = found.unwrap_or_else(|| Connector {
             pair: GeoPair::new(PairKind::VertexPlane, vertex_body, plane_body),
             point: ContactPoint {
@@ -644,7 +683,7 @@ impl<T: Default> BlockBlockContact<T> {
         pair.id_b = plane_face;
         pair.id_c = corner as i32;
         connector.point = connector.pair.compute(blocks);
-        self.keep(connector)
+        self.keep(connector, reused)
     }
     /// Clipped edge connector ae4e72 (incident edge against reference edge).
     fn edge_face(
@@ -657,6 +696,7 @@ impl<T: Default> BlockBlockContact<T> {
         let (inc, re) = (self.incident_body, self.reference_body);
         let (id_a, id_b) = (edge_id(incident_edge), edge_id(reference_edge));
         let found = self.take(inc, re, PairKind::EdgeFace, id_a, id_b);
+        let reused = found.is_some();
         let mut connector = found.unwrap_or_else(|| Connector {
             pair: GeoPair::new(PairKind::EdgeFace, inc, re),
             point: ContactPoint {
@@ -677,9 +717,15 @@ impl<T: Default> BlockBlockContact<T> {
         pair.length_b = blocks[re].size[(id_b % 3) as usize];
         connector.point = connector.pair.compute(blocks);
         if -0.01 <= connector.point.length {
+            if reused {
+                self.events.push(ContactEvent::Removed {
+                    connector,
+                    recomputed: true,
+                });
+            }
             return Ok(());
         }
-        self.keep(connector)
+        self.keep(connector, reused)
     }
     /// Edge/edge connector ae33a8 (bodies 0 and 1).
     fn edge_edge(
@@ -691,6 +737,7 @@ impl<T: Default> BlockBlockContact<T> {
     ) -> Result<(), String> {
         let (id_a, id_b) = (edge_id(edge_a), edge_id(edge_b));
         let found = self.take(0, 1, PairKind::EdgeEdge, id_a, id_b);
+        let reused = found.is_some();
         let mut connector = found.unwrap_or_else(|| Connector {
             pair: GeoPair::new(PairKind::EdgeEdge, 0, 1),
             point: ContactPoint {
@@ -708,9 +755,15 @@ impl<T: Default> BlockBlockContact<T> {
         pair.id_b = id_b;
         connector.point = connector.pair.compute(blocks);
         if -0.01 <= connector.point.length {
+            if reused {
+                self.events.push(ContactEvent::Removed {
+                    connector,
+                    recomputed: true,
+                });
+            }
             return Ok(());
         }
-        self.keep(connector)
+        self.keep(connector, reused)
     }
     /// Face contact ae4974 and clipping ae533e.
     fn face_connectors(&mut self, blocks: [&Block; 2], tables: &BlockTables) -> Result<(), String> {
@@ -977,6 +1030,14 @@ mod tests {
         let part = block([1.0, 0.55, -2.0], identity(), [4.0, 1.2, 2.0]);
         let mut contact = BlockBlockContact::<u32>::default();
         assert!(contact.update([&part, &ground], true, &tables).unwrap());
+        let kept = |c: &BlockBlockContact<u32>, reused: bool| {
+            c.events
+                .iter()
+                .enumerate()
+                .all(|(i, e)| matches!(e, ContactEvent::Kept { index, reused: r } if *index == i && *r == reused))
+        };
+        assert_eq!(contact.events.len(), 4);
+        assert!(kept(&contact, false));
         // Body 0 bottom (-Y) is the smallest overlap: it is the reference.
         assert_eq!(contact.features, [4, -1]);
         assert_eq!(contact.incident_face, 1);
@@ -1000,10 +1061,20 @@ mod tests {
             .find(|c| c.pair.id_c == first)
             .unwrap();
         assert_eq!(again.state, 7);
+        assert_eq!(contact.events.len(), 4);
+        assert!(kept(&contact, true));
         // Lifted clear: connectors are deleted and features reset.
         let lifted = block([1.0, 0.7, -2.0], identity(), [4.0, 1.2, 2.0]);
         assert!(!contact.update([&lifted, &ground], true, &tables).unwrap());
         assert!(contact.connectors().is_empty());
+        assert_eq!(contact.events.len(), 4);
+        assert!(contact.events.iter().all(|e| matches!(
+            e,
+            ContactEvent::Removed {
+                recomputed: false,
+                ..
+            }
+        )));
         assert_eq!(contact.features, [-1, -1]);
     }
     #[test]
