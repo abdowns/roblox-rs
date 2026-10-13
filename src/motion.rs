@@ -9,6 +9,7 @@ use crate::{
     scene::CoordinateFrame,
     texture::{self, TexturedDraw},
     walking::WalkingFixture,
+    workspace::Workspace,
 };
 use bevy::prelude::*;
 use std::collections::BTreeMap;
@@ -19,6 +20,14 @@ pub(crate) struct LocalGeometry(Draw);
 struct OriginalBody(FreeFallBody);
 #[derive(Component)]
 pub(crate) struct BodyName(String);
+/// A drawn unanchored Workspace Part: its index in `World::loose`.
+#[derive(Component)]
+pub(crate) struct LooseDraw(usize);
+
+/// Components that pose a part-local draw from a loose Part's kernel body.
+pub(crate) fn loose_draw(local: Draw, index: usize) -> (LocalGeometry, LooseDraw) {
+    (LocalGeometry(local), LooseDraw(index))
+}
 #[derive(Resource)]
 struct OriginalRig(R6Rig);
 #[derive(Component)]
@@ -64,15 +73,18 @@ pub(crate) fn pose_draw(local: &Draw, frame: &CoordinateFrame) -> Draw {
     draw
 }
 
-/// `baseplate` puts the walking character in the Studio default place
-/// (`WalkingFixture::baseplate`) instead of the floor/wall fixture.
-pub(crate) fn install_world(app: &mut App, bundle: &Bundle, baseplate: bool) -> Result<(), String> {
+/// `workspace` puts the walking character in that place
+/// (`WalkingFixture::in_workspace`) instead of the floor/wall fixture.
+pub(crate) fn install_world(
+    app: &mut App,
+    bundle: &Bundle,
+    workspace: Option<&Workspace>,
+) -> Result<(), String> {
     let local = RenderScene::character_local(bundle)?;
     let rig = R6Rig::character(bundle, &local.scene)?;
-    let walking = if baseplate {
-        WalkingFixture::baseplate(bundle, &local.scene, &rig)?
-    } else {
-        WalkingFixture::new(bundle, &local.scene, &rig)?
+    let walking = match workspace {
+        Some(workspace) => WalkingFixture::in_workspace(bundle, &local.scene, &rig, workspace)?,
+        None => WalkingFixture::new(bundle, &local.scene, &rig)?,
     };
     let decals = texture::character_decals(bundle, &local)?;
     let mut draws: BTreeMap<_, _> = local
@@ -262,6 +274,19 @@ pub(crate) fn sync_bodies(mut draws: Query<(&LocalGeometry, &FreeFallBody, &mut 
     }
 }
 
+/// Pose each drawn loose Part from its kernel body.
+pub(crate) fn sync_loose(
+    mut draws: Query<(&LocalGeometry, &LooseDraw, &mut Draw)>,
+    mut control: ResMut<MotionControl>,
+) {
+    for (local, index, mut draw) in &mut draws {
+        match control.walking.world.loose.parts.get(index.0) {
+            Some(part) => *draw = pose_draw(&local.0, &part.body.frame),
+            None => control.error = Some("drawn loose Part lost its body".into()),
+        }
+    }
+}
+
 pub(crate) fn sync_decals(
     bodies: Query<&FreeFallBody>,
     mut decals: Query<(&LocalDecal, &mut TexturedDraw)>,
@@ -313,9 +338,19 @@ pub(crate) fn timestep(world: &World) -> f64 {
 
 pub(crate) fn walking_report(world: &World) -> Option<String> {
     let control = world.resource::<MotionControl>();
-    control
-        .walking_probe
-        .then(|| control.walking.report() + &control.walking.animation_report())
+    control.walking_probe.then(|| {
+        let loose = &control.walking.world.loose;
+        let mut report = control.walking.report() + &control.walking.animation_report();
+        if !loose.parts.is_empty() {
+            report.push_str(&format!(
+                "\nloose_parts character_connectors={} iterations={} {}",
+                loose.character_connector_count(),
+                loose.stats.iterations,
+                loose.report()
+            ));
+        }
+        report
+    })
 }
 pub(crate) fn walking_frame(world: &World) -> Option<CoordinateFrame> {
     let control = world.resource::<MotionControl>();

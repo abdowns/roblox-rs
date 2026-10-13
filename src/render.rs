@@ -166,14 +166,23 @@ fn scene_app(scene: RenderScene) -> App {
 }
 
 fn install_motion(app: &mut App, bundle: &Bundle) -> Result<(), String> {
-    install_motion_world(app, bundle, false)
+    install_motion_world(app, bundle, None)
 }
-fn install_motion_world(app: &mut App, bundle: &Bundle, baseplate: bool) -> Result<(), String> {
+fn install_motion_world(
+    app: &mut App,
+    bundle: &Bundle,
+    workspace: Option<&crate::workspace::Workspace>,
+) -> Result<(), String> {
     let before = app.world().resource::<Extracted>().0.clone();
-    motion::install_world(app, bundle, baseplate)?;
+    motion::install_world(app, bundle, workspace)?;
     app.add_systems(
         Update,
-        (motion::advance, motion::sync_bodies, motion::sync_decals)
+        (
+            motion::advance,
+            motion::sync_bodies,
+            motion::sync_loose,
+            motion::sync_decals,
+        )
             .chain()
             .before(extract),
     );
@@ -1720,7 +1729,11 @@ pub fn audit_baseplate(bundle: &Bundle) -> Result<String, String> {
         app.world_mut().spawn(decal);
     }
     app.update();
-    install_motion_world(&mut app, bundle, true)?;
+    install_motion_world(
+        &mut app,
+        bundle,
+        Some(&crate::workspace::Workspace::studio_new_document()),
+    )?;
     app.world_mut()
         .resource_mut::<MotionControl>()
         .walking_probe = true;
@@ -2502,7 +2515,9 @@ fn run_viewport(
         app.world_mut().spawn(draw);
     }
     app.update();
-    install_motion_world(&mut app, bundle, baseplate)?;
+    // The Play Solo viewport runs the demo place with unanchored Parts.
+    let demo = crate::workspace::Workspace::loose_parts_demo();
+    install_motion_world(&mut app, bundle, baseplate.then_some(&demo))?;
     let walking_camera_root = if walking && baseplate {
         app.world_mut()
             .resource_mut::<MotionControl>()
@@ -2513,17 +2528,36 @@ fn run_viewport(
                 .walking_input = [0.0, 0.0, -1.0];
         }
         motion::pose_walking(app.world_mut())?;
-        let (draws, coordinates, workspace_report) = crate::geometry::workspace_draws(
-            bundle,
-            &crate::workspace::Workspace::studio_new_document(),
-        )?;
+        // Unanchored Parts are generated at the identity frame (part-local)
+        // and posed from their kernel bodies every frame.
+        let mut local = demo.clone();
+        for part in local.parts.iter_mut().filter(|p| !p.anchored) {
+            part.frame.position = [0.0; 3];
+            part.frame.rotation = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        }
+        let (draws, coordinates, workspace_report) =
+            crate::geometry::workspace_draws(bundle, &local)?;
         report.push_str(&workspace_report);
         surfaces.coordinates.extend(coordinates);
+        let loose: Vec<&str> = demo
+            .parts
+            .iter()
+            .filter(|p| !p.anchored)
+            .map(|p| p.name.as_str())
+            .collect();
         for draw in draws {
-            app.world_mut().spawn(draw);
+            match loose.iter().position(|n| *n == draw.name) {
+                Some(index) => {
+                    let components = motion::loose_draw(draw.clone(), index);
+                    app.world_mut().spawn((draw, components));
+                }
+                None => {
+                    app.world_mut().spawn(draw);
+                }
+            }
         }
         app.update();
-        report.push_str("baseplate_world spawn=native_no_spawnlocation floor=baseplate_block_raycast block_contacts=not_ported camera_start=fixture_offset_until_studio_camera_port native_parity=not_tested\n");
+        writeln!(report, "baseplate_world spawn=native_no_spawnlocation floor=baseplate_block_raycast loose_parts={loose:?} loose_floor_raycast=not_ported camera_start=fixture_offset_until_studio_camera_port native_parity=not_tested").unwrap();
         motion::walking_frame(app.world()).map(|f| f.position)
     } else if walking {
         app.world_mut()

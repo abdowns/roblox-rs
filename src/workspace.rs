@@ -139,6 +139,44 @@ impl Workspace {
             parts: vec![baseplate],
         }
     }
+    /// Viewport demo place (not a native document): the new-document
+    /// Baseplate plus explicit unanchored Parts showing the kernel features.
+    /// - "Crate" (4 x 6 x 2, red) in the walking path, 8 studs ahead of the
+    ///   spawn, for the character to push.
+    /// - "Rest" and "Stack" (blue) placed just above the Baseplate and on
+    ///   each other.
+    /// - "Drop" (yellow) falling flat and "Tumble" (green) falling tilted,
+    ///   both released from heights the falling character passes.
+    pub fn loose_parts_demo() -> Self {
+        let mut workspace = Self::studio_new_document();
+        let part = |name: &str, color: u32, position: [f32; 3]| {
+            let mut p = PartInstance {
+                name: name.into(),
+                brick_color: color,
+                ..PartInstance::default()
+            };
+            p.frame.position = position;
+            p
+        };
+        let mut crate_part = part("Crate", 21, [0.0, 3.05, -8.0]);
+        crate_part.set_size([4.0, 6.0, 2.0]);
+        let rest = part("Rest", 23, [-8.0, 0.65, -6.0]);
+        let stack = part("Stack", 23, [-7.5, 1.9, -5.8]);
+        let drop = part("Drop", 24, [7.0, 40.0, -6.0]);
+        let mut tumble = part("Tumble", 28, [-6.0, 60.0, -14.0]);
+        // 30 degrees about Z, then 20 degrees about X.
+        let (sz, cz) = 30f32.to_radians().sin_cos();
+        let (sx, cx) = 20f32.to_radians().sin_cos();
+        let rz = [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]];
+        let rx = [[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]];
+        tumble.frame.rotation = std::array::from_fn(|r| {
+            std::array::from_fn(|c| (0..3).map(|k| rz[r][k] * rx[k][c]).sum())
+        });
+        workspace
+            .parts
+            .extend([crate_part, rest, stack, drop, tumble]);
+        workspace
+    }
     /// Model extents (009708e0) over the workspace parts.
     pub fn extents(&self) -> Option<([f32; 3], [f32; 3])> {
         self.parts.iter().map(PartInstance::extents).reduce(|a, b| {

@@ -16,6 +16,17 @@ sh tools/cargo.sh run --locked -- viewport-baseplate
 Expected: the Studio new-document place, a 512x512 dark stone grey Baseplate
 with studs on top, under the default sky. The character spawns with its Head at
 (0, 107, 0), falls about one second with the fall animation, lands and idles.
+The place also holds five unanchored demo Parts (`Workspace::loose_parts_demo`,
+not a native document):
+- a red 4x6x2 "Crate" 8 studs ahead of the spawn: walk forward (W) into it and
+  the character pushes it until it tips over;
+- two blue Parts resting on each other to the front left;
+- a yellow Part dropped flat from y = 40 and a green one dropped tilted from
+  y = 60, landing ahead of the spawn.
+
+Every 60 frames the live log gets a `loose_parts` line with each Part's kernel
+list, position and connector counts. You can't stand on a loose Part yet (the
+floor ray ignores them).
 Same controls as the walking fixture below (WASD, Space, camera keys, R
 respawns, Escape closes). The first camera frame is a fixture offset behind the
 character until the Studio edit camera is ported; ClassicCamera takes over

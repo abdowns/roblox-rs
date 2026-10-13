@@ -1,5 +1,25 @@
 # MODLOG
 
+## 2026-10-13 Viewport demo shows unanchored Parts
+
+**Changed:**
+- New `Workspace::loose_parts_demo()`: the new-document Baseplate plus Crate, Rest, Stack, Drop and Tumble.
+- `viewport-baseplate` (and its smoke) now runs that place.
+- Loose Parts are generated part-local, then posed every frame from their kernel bodies by the new `motion::sync_loose`.
+- The walking report in the live log now includes a `loose_parts` line.
+- `motion::install_world` takes an optional Workspace instead of a bool (crate-internal).
+- `audit-baseplate-render` keeps the pristine new document.
+
+**Why:** The user asked for the visual demo to show the new unanchored Part features.
+
+**Tested how:**
+- `viewport-baseplate-smoke`: 120 frames, exit 0. It logged all five Parts, which settle (Crate, Rest, Stack) or are still falling (Drop, Tumble) at the last log.
+- `audit-baseplate-render` is identical to the previous commit, apart from timing lines and log paths.
+- Tests, clippy and fmt are clean.
+- The interactive window was **not tested** by me: I can't see it.
+
+**Still broken / not tested:** No standing on loose Parts (the floor ray ignores them). No sleep stage. The demo layout is mine, not a native place.
+
 ## 2026-10-13 The character pushes unanchored Parts
 
 **Changed:**
