@@ -193,6 +193,10 @@ pub struct Statics {
     pub blocks: Vec<StaticBlock>,
     geometry: BlockContactProfile,
     tables: BlockTables,
+    /// RunningBase floor friction of each block, and of the fixture planes
+    /// (a Plastic stand-in).
+    floor_friction: Vec<f32>,
+    fixture_friction: f32,
 }
 
 impl Statics {
@@ -380,6 +384,26 @@ impl Surroundings<'_> {
             }
         })
     }
+    /// The RunningBase friction factor for a floor Part (00a43f4c against
+    /// Plastic; no Part here has custom physical properties).
+    pub fn floor_friction(&self, part: FloorPart) -> Result<f32, String> {
+        Ok(match part {
+            FloorPart::Fixture => self.statics.fixture_friction,
+            FloorPart::Static(index) => *self
+                .statics
+                .floor_friction
+                .get(index)
+                .ok_or("missing floor block friction")?,
+            FloorPart::Loose(index) => {
+                let loose = self.loose.as_deref().ok_or("missing loose floor")?;
+                loose
+                    .parts
+                    .get(index)
+                    .ok_or("missing loose floor")?
+                    .floor_friction()
+            }
+        })
+    }
     /// 00c0abf2: add a force at a world point to the floor's assembly SimBody
     /// (Body +0x34 -> +0x3c). Anchored floors have no SimBody.
     pub fn push_floor(
@@ -557,6 +581,8 @@ impl World {
                 blocks: Vec::new(),
                 geometry: BlockContactProfile::load(bundle)?,
                 tables: BlockTables::load(bundle)?,
+                floor_friction: Vec::new(),
+                fixture_friction: materials.floor_friction(&plastic)?,
             },
             kernel,
             steps: 0,
@@ -618,6 +644,10 @@ impl World {
                     frame: part.frame.clone(),
                     size: part.size,
                 });
+                world
+                    .statics
+                    .floor_friction
+                    .push(world.materials.floor_friction(&properties)?);
             }
         }
         let spawn = CoordinateFrame {

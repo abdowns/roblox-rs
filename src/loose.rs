@@ -140,12 +140,18 @@ pub struct LoosePart {
     /// Assembly +0x68 / +0x6c: recursive wake pass id and depth.
     pass: u32,
     depth: i32,
+    /// RunningBase friction factor when the Part is a Humanoid floor.
+    floor_friction: f32,
 }
 
 impl LoosePart {
     /// Part.CanCollide (Primitive +0xcc is its negation).
     pub fn can_collide(&self) -> bool {
         self.can_collide
+    }
+    /// The Part's material friction weighted against Plastic (00a43f4c).
+    pub fn floor_friction(&self) -> f32 {
+        self.floor_friction
     }
 }
 
@@ -456,6 +462,7 @@ impl LooseWorld {
             radius,
             pass: 0,
             depth: -1,
+            floor_friction: materials.floor_friction(&properties)?,
         });
         self.original = self.parts.clone();
         Ok(())

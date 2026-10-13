@@ -1,5 +1,26 @@
 # MODLOG
 
+## 2026-10-13 RunningBase floor friction
+
+**Changed:**
+- `MaterialTable::floor_friction` (00a43f4c / 00a43e7e): the weighted mean of the floor's friction and Plastic's, (w1*f1 + w2*f2)/(w1+w2), or 0 when the weights sum to 1e-6 or less.
+- The Humanoid's RunningBase horizontal force (00c09632) is scaled by it when there is a floor. Static blocks and loose Parts report their own value through `Surroundings::floor_friction`. With no floor the factor is 1.
+- The legacy MovingNoPhysicsBase path is unchanged: it has no friction.
+
+**Why:** The user listed "Floor friction is still held at 1."
+
+**Tested how:**
+- Ran all 13 audits and compared them with the previous build.
+- 77 tests pass; clippy and fmt are clean.
+
+**Result:**
+- Plastic on Plastic gives 0.3.
+- Walking still reaches -16 studs/s. Positions shift slightly, and the wall-release jitter drops from 0.0787 to about 0.
+- audit-part-push: the Crate moves 1.08 studs instead of 37.15.
+- audit-part-wall stops at z -9.51014.
+- part-stand, part-drop, camera, baseplate and the render audits still pass.
+- Native parity is **not tested**.
+
 ## 2026-10-13 SleepStage: still unanchored Parts fall asleep
 
 **Changed:**

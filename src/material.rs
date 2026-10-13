@@ -316,6 +316,18 @@ impl MaterialProfile {
         (w2 * v2 + w1 * v1) / denominator
     }
 
+    /// RunningBase floor friction (00c09632 tail): a floor without custom
+    /// properties goes through 00a43f4c, the floor material's friction
+    /// weighted against Plastic's (00a43e7e).
+    pub fn floor_friction(&self, floor: &PhysicalProperties) -> Result<f32, String> {
+        let plastic = self.defaults(PLASTIC)?;
+        Ok(self.weighted(
+            floor.friction_weight,
+            floor.friction,
+            plastic.friction_weight,
+            plastic.friction,
+        ))
+    }
     /// 00a91fda: elasticity -> kNeg/kSpring.
     pub fn restitution_factor(&self, elasticity: f32) -> f32 {
         let [s0, s1, s2, s3] = self.restitution_steps;

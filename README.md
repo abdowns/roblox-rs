@@ -218,7 +218,7 @@ are downloaded on first build; runtime data loading uses no network requests.
   Torso and Head use it against anchored Parts: run
   `sh tools/cargo.sh run --locked -- audit-part-wall`; expect
   `part_wall_first_contact step=145`, `VertexPlane` connectors and
-  `part_wall_result ... stop=[..., -9.510549] ... max_penetration=0.067427635 impulses=0`
+  `part_wall_result ... stop=[..., -9.51014] ... max_penetration=0.067126274 impulses=0`
   then `part_wall_pass blocked=true`. Native parity is **not tested**.
 - Unanchored Parts as their own kernel bodies: free fall, contact bodies with
   native awake impulses, resting flags and contact displacement, Part/Part and
@@ -242,11 +242,11 @@ are downloaded on first build; runtime data loading uses no network requests.
 
   Run `sh tools/cargo.sh run --locked -- audit-part-push`. Expect:
   - `part_push_first_contact step=101`;
-  - `part_push_result ... max_character_connectors=7 lists=[FreeFall, Joint, Contact, RealTime] crate_moved=[0.9231087, -2.0064368, -37.150524]`.
+  - `part_push_result ... max_character_connectors=7 lists=[FreeFall, Joint] crate_moved=[0.015719917, 0.00028276443, -1.0796337]`.
     The Crate is asleep when the character reaches it. The touch wakes it, and
     the character's realtime connector is its first, so 00a9be30 files it under
-    jointBodies. Its ground contact then uses joint springs, and it slides about
-    37 studs ahead of the character before it tips;
+    jointBodies. With the native floor friction (0.3 on Plastic) the character
+    pushes it about 1.08 studs;
   - `part_push_pass pushed=true`.
 
   Native parity is **not tested**.

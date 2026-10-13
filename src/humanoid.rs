@@ -813,7 +813,12 @@ impl Humanoid {
             root_mass,
             effective_mass: mass,
             floor_present: floor.is_some(),
-            floor_friction: 1.0,
+            // 00c09632: with a floor, the floor material's friction against
+            // Plastic (a43f4c) scales the force whatever the solver.
+            floor_friction: match floor {
+                Some(part) => surroundings.floor_friction(part)?,
+                None => 1.0,
+            },
             solver: Solver::Legacy,
         })?;
         // The legacy floor reaction for this force is pushed only when its Y

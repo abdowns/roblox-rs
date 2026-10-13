@@ -669,7 +669,11 @@ Fixture boundaries: the world is still a floor plane plus wall half-space;
 "touching" means the part generates a wall vertex/plane connector; climbing,
 FallingDown/GettingUp, Seated, PlatformStanding, Swimming, Dead and the PGS
 solver branches are not implemented (FallingDown returns an explicit error).
-Floor/part friction combination is not recovered (the factor stays 1).
+RunningBase floor friction (00c09632): when there is a floor, the horizontal
+force is scaled by 00a43f4c(floor material): (w_floor*f_floor + w_plastic*f_plastic)
+/ (w_floor + w_plastic), or 0 when the weights sum to 1e-6 or less; Parts with custom
+physical properties use 00a43e10 with the same formula. Plastic on Plastic gives
+0.3. The legacy MovingNoPhysicsBase path has no friction.
 Jumping from rest rises 8.66 studs in this model (three push frames, then free
 flight); native jump height is not tested. Evidence summary:
 RobloxStudio/analysis/humanoid-state-native-20261012.md.
