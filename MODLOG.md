@@ -1,5 +1,29 @@
 # MODLOG
 
+## 2026-10-12 Port the BlockBlockContact narrowphase (box/box connectors)
+
+**Changed:** New `block_contact` module: `Block`, `BlockTables`,
+`BlockBlockContact<T>` (separating-axis test, face clipping, edge/edge),
+`GeoPair` contact types 3/4/5 and connector reuse. Added `audit-block-contact`.
+**Why:** Parts step 4: Torso/Head must collide with Workspace Parts through the
+native narrowphase instead of the box-overlap stand-in.
+**Tested how:** Ghidra decompile and disassembly of ae32f4, ae31f8, ae3de4,
+adf6ac, ae4974, ae533e, ae376c, ae3bd4, ae4e72, ae33a8, ae30a8, ae6024,
+aa1d78, aa1f76, aa29c0, b61c9a, adf0a0, aec6e4, 006b2077, adf63a and ae4916.
+Constants read from the image: 1.01, 0.001, 10.0, 1e-5, 0.05, 1e-6, 0.5. Five
+new unit tests (68 total), Clippy, audit-block-contact.
+**Result:** Resting default Part sunk 0.05: features [4,-1], four vertex/plane
+connectors, length -0.050000, normal (0,-1,0). Lifted: none, features reset.
+Tilted on an edge: two connectors. Crossed bars: one edge/edge connector.
+Reused connectors keep their state.
+Test: `sh tools/cargo.sh run --locked -- audit-block-contact`.
+**Still broken / not tested:** Not wired into World yet. The broadphase
+primitive order and the post-compute kernel bookkeeping (a9457c) are not
+ported. Uninitialized native GeoPair ids are modeled as UNSET. The 00972080
+multiply order is assumed from G3D (not disassembled). Native numeric parity
+is not tested.
+**Next:** Use it for Torso/Head against static blocks in World.
+
 ## 2026-10-12 Render the Baseplate (native addBlock studs/inlet strips)
 
 **Changed:** `geometry::workspace_block`/`workspace_draws` (addBlock port for

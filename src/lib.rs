@@ -4,6 +4,7 @@ pub mod animation;
 pub mod animator;
 pub mod assembly;
 mod balancing;
+pub mod block_contact;
 pub mod bundle;
 pub mod camera;
 pub mod camera_script;

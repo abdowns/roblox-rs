@@ -191,6 +191,14 @@ are downloaded on first build; runtime data loading uses no network requests.
   world_steps=480 joint_step_ui=120 heartbeats=60 script_resumes=18`. Wall-clock
   jitter, thread interleaving, throttling and sleeping-joint skips are not modeled.
 
+- Native BlockBlockContact narrowphase (box/box separating axes, face clipping,
+  edge connectors, connector reuse). Run
+  `sh tools/cargo.sh run --locked -- audit-block-contact`; expect
+  `block_contact case=resting colliding=true features=[4, -1] ... connectors=4`,
+  four `length=-0.050000` connectors and
+  `block_contact_audit resting_ok=true separated_ok=true tilted_ok=true`.
+  It is not yet used by the walking World. Native parity is **not tested**.
+
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,
   inertia, angular momentum, restitution and friction. Run

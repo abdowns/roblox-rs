@@ -814,3 +814,91 @@ Plastic shader reads only stud coordinates; outlines are disabled). More than
 0x2000 quads is an error, as the native assert. `viewport-baseplate` and
 `audit-baseplate-render` add these draws to the walking viewport path with
 `motion::install_world(.., baseplate=true)`.
+
+## BlockBlockContact narrowphase (box against box)
+
+block_contact.rs ports the narrowphase the Contact class runs for two Block
+primitives (BlockBlockContact, vtable 01c86860). It works on `Block` values (a
+body frame and a Part size); body 0 is the contact's first primitive and body 1
+the second. The face vertex (017a3e68) and face edge (017a3ec8) tables are read
+from the install by `BlockTables::load`. Arithmetic keeps the G3D source order
+the disassembly shows: dot products and matrix rows are ((x + y) + z) and a
+point is (R * p) + t.
+
+`update` (ae32f4) does the following:
+
+1. It tests the primitive extents first. Each extent is the center ± the
+   largest |R * vertex| over vertices 0..3, widened by 0.01 (b61c9a, adf0a0).
+   The overlap test aec6e4 counts touching as overlap.
+2. It runs `compute_is_colliding` (ae3de4), a 15-axis separating-axis test:
+   - **Face axes.** The test starts at the cached separating body and axis and
+     re-reads them as the loop bounds, so it can revisit an axis. An overlap
+     ≤ 0 stores the separating (body, axis) and returns "apart". A strictly
+     smaller overlap becomes the face feature: the axis, +3 if the other box
+     lies on the negative side.
+   - **Hysteresis.** If the previous features were face features, the previous
+     face is kept unless the new minimum is 1.01 times smaller.
+   - **Edge axes.** Edge pairs are tested A axis i by B axis j. A near-parallel
+     cross product (length ≤ 0.001 after unitize at 1e-6) returns the current
+     plane flag immediately. An edge pair wins only when its overlap times 10
+     is below the face minimum. Its edges come from the quadrant of the
+     separation direction (adf6ac).
+3. If the boxes are not colliding, it deletes the live connectors and resets
+   the features to -1.
+4. Otherwise, in the kernel, it generates connectors into the other buffer,
+   deletes what is left in the current one, and flips the buffers.
+
+Face contacts (ae4974, ae533e) work as follows:
+
+- **Reference and incident faces.** The face feature names the reference
+  body. The incident face is the incident face most aligned with the reverse of
+  the reference normal (006b2077).
+- **Projection.** Both faces are projected to the reference face plane
+  (adf63a).
+- **Incident corners.** Corners that fall inside the reference rectangle are
+  emitted in the order 3, 2, 1, 0 as vertex/plane connectors. If all four are
+  inside, the function stops there.
+- **Reference corners.** Otherwise, reference corners inside the incident
+  polygon (cross ≥ 0 against each edge from corner e to corner e+3) are emitted
+  in the order 0..3.
+- **Edges.** Unless no incident corner and all four reference corners were
+  inside, each reference side 0..3 is tested against incident edges 2, 1, 0, 3.
+  Where both straddle tests change sign, a clipped edge connector is emitted.
+
+Connectors are kept only while they penetrate by more than 0.01:
+
+- Vertex/plane connectors are accepted by ae3bd4.
+- Edge connectors are dropped when their length is ≥ -0.01.
+
+The native GeoPair computations are ported:
+
+- **Type 3 (aa1d78).** Vertex against plane. The normal is minus the plane's
+  outward normal.
+- **Type 4 (aa1f76).** Closest points of the two edge lines in body A space.
+  They are kept only within each edge's length/2 + 0.05, compared in double.
+  Otherwise the result is the edge start with length 0.
+- **Type 5 (aa29c0).** Closest points of two infinite lines. The normal is
+  unitized from B to A; parallel lines give length 0.
+
+Connector reuse follows ae30a8/ae6024:
+
+- The previous buffer is searched by bodies and ids, using the queried pair
+  type rather than the stored one, and edge/edge matches either way round.
+- A match is swap-removed from the previous buffer and keeps its kernel state
+  (`Connector::state`), so spring and impulse accumulators persist across world
+  steps.
+- GeoPair id fields that the native constructor never initializes are `UNSET`
+  here; in the native they hold whatever the pool memory held. That is a known
+  difference.
+- A buffer holds 8 connectors, as the native data does; overflowing it is an
+  error.
+
+Not ported:
+
+- the kernel point bookkeeping that runs after each recompute (a9457c);
+- how the broadphase orders the two primitives. ContactManager::createContact
+  (00ae714a) keeps the order the broadphase gives it for two blocks.
+
+`audit-block-contact` logs a resting Part (four vertex connectors at -0.05), a
+lifted Part (none) and a tilted Part on an edge (two). Evidence:
+RobloxStudio/analysis/block-block-contact-native-20261012.md.
