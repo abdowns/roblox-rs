@@ -1,5 +1,35 @@
 # MODLOG
 
+## 2026-10-13 SimBody free-fall, contact pre-step and contact integration (kernel.rs)
+
+**Changed:**
+- `KernelBody` gains four new public fields:
+  - `reference_impulse` (SimBody +0xf0);
+  - `resting` flags (+0x12c/+0x12d);
+  - angular and linear displacement (+0x130/+0x13c).
+- It also gains the native routines a loose Part needs:
+  - `free_fall_step` (ab2d9a): ω damped by 0.99621, quaternion, half-step legacy gravity on Y, tiny additions;
+  - `contact_prestep` (ab230a): L = (T·dt + Aᵢ) + L·0.99621, ω = I⁻¹_world·L, reference impulse = F·dt + J, v += dp·invMass, accumulators reset;
+  - `contact_integrate` (ab290c): quaternion from ω, center += v·dt, no gravity or damping;
+  - `rebuild_momentum` (ab1c28): L = R I Rᵀ ω, run when a body leaves free fall;
+  - `has_external_force_or_impulse`.
+- The ω row products use the asm-verified z + (y + x) order (ab230a and ab267c loops). The damping constant is 0x017a1f74 (verified through ab230a's PIC base).
+- Nothing calls these routines yet.
+
+**Why:** Unanchored Parts step 1.
+
+**Tested how:**
+- Three new unit tests:
+  - `free_fall_step` equals `FreeFallBody::step` exactly for a centered body;
+  - the pre-step stores the reference impulse and keeps the position;
+  - momentum is rebuilt from the world inertia.
+- 71 tests pass, plus Clippy and fmt.
+- audit-walking, audit-part-wall and audit-baseplate are byte-identical to the previous commit.
+
+**Still broken / not tested:** Native differential not tested.
+
+**Next:** Bring AwakeContact up to native a936d0 (resting flags, cache semantics).
+
 ## 2026-10-13 Native substep order: contact springs before the Humanoid connector
 
 **Changed:**

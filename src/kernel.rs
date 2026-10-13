@@ -77,10 +77,26 @@ pub struct KernelBody {
     pub linear_impulse: [f32; 3],
     pub angular_impulse: [f32; 3],
     pub quaternion: [f32; 4],
+    /// SimBody +0xf0: the momentum change F*dt + J of the last contact
+    /// pre-step (ab230a); the impulse solver's reference impulse.
+    pub reference_impulse: [f32; 3],
+    /// SimBody +0x12c (angular) and +0x12d (linear) resting flags, set by the
+    /// Kernel::step pre-step (00a96eb0) and cleared by fast contacts.
+    pub resting: [bool; 2],
+    /// SimBody +0x130 / +0x13c: contact geometry displacement (00a942ee).
+    pub angular_displacement: [f32; 3],
+    pub linear_displacement: [f32; 3],
     center_in_body: [f32; 3],
     inverse_mass: f32,
+    /// SimBody +0x78 principal inertia (body space).
+    inertia_diagonal: [f32; 3],
     inverse_diagonal: [f32; 3],
     gravity_force: f32,
+}
+/// Row-by-vector product as the SimBody loops compile it (ab230a, ab267c,
+/// ab1c28): z + (y + x).
+fn row_product(m: Tensor, v: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|a| m[a][2] * v[2] + (m[a][1] * v[1] + m[a][0] * v[0]))
 }
 impl KernelBody {
     pub fn new(
@@ -118,8 +134,13 @@ impl KernelBody {
             linear_impulse: [0.0; 3],
             angular_impulse: [0.0; 3],
             quaternion: physics::matrix_quaternion(body.frame.rotation)?,
+            reference_impulse: [0.0; 3],
+            resting: [false; 2],
+            angular_displacement: [0.0; 3],
+            linear_displacement: [0.0; 3],
             center_in_body: assembly.center_in_body,
             inverse_mass: 1.0 / assembly.mass,
+            inertia_diagonal: inertia,
             inverse_diagonal: inertia.map(|v| 1.0 / v),
             gravity_force: assembly.mass * profile.physics.legacy_acceleration,
         };
@@ -138,6 +159,9 @@ impl KernelBody {
             .chain(&self.linear_impulse)
             .chain(&self.angular_impulse)
             .chain(&self.quaternion)
+            .chain(&self.reference_impulse)
+            .chain(&self.angular_displacement)
+            .chain(&self.linear_displacement)
             .chain(&self.center_in_body)
             .chain(&self.inverse_diagonal)
             .chain(&self.frame.position)
@@ -262,6 +286,101 @@ impl KernelBody {
         self.velocity = self.velocity.map(|v| v + profile.physics.anti_denormal);
         let offset = rotate(self.frame.rotation, self.center_in_body);
         self.frame.position = std::array::from_fn(|a| self.center[a] - offset[a]);
+        self.validate()
+    }
+    /// SimBody::hasExternalForceOrImpulse: anything beyond gravity in the
+    /// accumulators (exact float compares; NaN counts as external).
+    pub fn has_external_force_or_impulse(&self) -> bool {
+        self.force != [0.0, self.gravity_force, 0.0]
+            || self.torque != [0.0; 3]
+            || self.linear_impulse != [0.0; 3]
+            || self.angular_impulse != [0.0; 3]
+    }
+    /// Publish the origin from the center after the center moved.
+    fn place_origin(&mut self) {
+        let offset = rotate(self.frame.rotation, self.center_in_body);
+        self.frame.position = std::array::from_fn(|a| self.center[a] - offset[a]);
+    }
+    /// Quaternion Euler update shared by ab2d9a and ab290c (the `* 0.0`
+    /// terms are exact no-ops), then the rotation matrix (006ba600).
+    fn integrate_rotation(&mut self, dt: f32, w: [f32; 3]) -> Result<(), String> {
+        let [wx, wy, wz] = w;
+        let [x, y, z, q] = self.quaternion;
+        self.quaternion = physics::normalize([
+            dt * ((wy * z - wz * y) + wx * q + x * 0.0) * 0.5 + x,
+            dt * ((wz * x - wx * z) + wy * q + y * 0.0) * 0.5 + y,
+            dt * ((wx * y - wy * x) + wz * q + z * 0.0) * 0.5 + z,
+            dt * (q * 0.0 - (z * wz + wy * y + wx * x)) * 0.5 + q,
+        ])?;
+        self.frame.rotation = physics::quaternion_matrix(self.quaternion);
+        Ok(())
+    }
+    /// Free-fall SimBody step ab2d9a at freeFallDt: damps angular velocity
+    /// (not momentum), legacy gravity with a half-step on Y, then the tiny
+    /// additions. Only valid without external force or impulse.
+    pub fn free_fall_step(&mut self, profile: &KernelProfile) -> Result<(), String> {
+        self.validate()?;
+        let p = &profile.physics;
+        let dt = p.free_fall_dt;
+        let w = self.angular_velocity.map(|v| v * p.angular_damping);
+        self.angular_velocity = w;
+        self.integrate_rotation(dt, w)?;
+        let half = p.legacy_acceleration * dt * 0.5;
+        let middle = self.velocity[1] + half;
+        let full = half + middle;
+        self.center = [
+            dt * self.velocity[0] + self.center[0],
+            middle * dt + self.center[1],
+            dt * self.velocity[2] + self.center[2],
+        ];
+        self.angular_velocity = self.angular_velocity.map(|v| p.anti_denormal + v);
+        self.velocity = [
+            self.velocity[0] + p.anti_denormal,
+            full + p.anti_denormal,
+            self.velocity[2] + p.anti_denormal,
+        ];
+        self.place_origin();
+        self.validate()
+    }
+    /// ab1c28, run when a body leaves the free-fall list: L = (R I R^T) w.
+    pub fn rebuild_momentum(&mut self) {
+        let world = rotate_tensor(diagonal(self.inertia_diagonal), self.frame.rotation);
+        self.angular_momentum = row_product(world, self.angular_velocity);
+    }
+    /// Contact-body pre-step ab230a at freeFallDt: forces and impulses become
+    /// momentum (stored as the reference impulse), angular momentum is damped,
+    /// accumulators reset. Position is untouched until `contact_integrate`.
+    pub fn contact_prestep(&mut self, profile: &KernelProfile) -> Result<(), String> {
+        self.validate()?;
+        let p = &profile.physics;
+        let dt = p.free_fall_dt;
+        self.angular_momentum = std::array::from_fn(|a| {
+            (self.torque[a] * dt + self.angular_impulse[a])
+                + self.angular_momentum[a] * p.angular_damping
+        });
+        let w = row_product(self.inverse_inertia_world(), self.angular_momentum);
+        self.reference_impulse =
+            std::array::from_fn(|a| self.force[a] * dt + self.linear_impulse[a]);
+        self.velocity = std::array::from_fn(|a| {
+            self.velocity[a] + self.reference_impulse[a] * self.inverse_mass
+        });
+        self.angular_velocity = w.map(|v| v + p.anti_denormal);
+        self.force = [0.0, self.gravity_force, 0.0];
+        self.torque = [0.0; 3];
+        self.linear_impulse = [0.0; 3];
+        self.angular_impulse = [0.0; 3];
+        self.angular_momentum = self.angular_momentum.map(|v| v + p.anti_denormal);
+        self.velocity = self.velocity.map(|v| p.anti_denormal + v);
+        self.validate()
+    }
+    /// Contact-body integration ab290c at freeFallDt, after the impulses:
+    /// orientation from w and center += v*dt; no gravity, no damping.
+    pub fn contact_integrate(&mut self, profile: &KernelProfile) -> Result<(), String> {
+        self.validate()?;
+        let dt = profile.physics.free_fall_dt;
+        self.integrate_rotation(dt, self.angular_velocity)?;
+        self.center = std::array::from_fn(|a| self.velocity[a] * dt + self.center[a]);
+        self.place_origin();
         self.validate()
     }
     /// Kinematic placement (Primitive::setCoordinateFrame/setVelocity while the
@@ -562,6 +681,47 @@ mod tests {
         assert_eq!(b.linear_impulse, [0.0; 3]);
         b.step(&profile()).unwrap();
         assert!((b.center[0] - 0.4).abs() < 1e-7);
+    }
+    #[test]
+    fn free_fall_step_matches_the_free_fall_probe_for_a_centered_body() {
+        let mut b = body();
+        b.velocity = [1.0, 2.0, 3.0];
+        b.angular_velocity = [0.5, 0.25, 0.125];
+        let mut probe = FreeFallBody::new(b.frame.clone(), b.velocity, b.angular_velocity).unwrap();
+        b.free_fall_step(&profile()).unwrap();
+        probe
+            .step(&profile().physics, physics::GravitySource::Legacy)
+            .unwrap();
+        assert_eq!(b.frame, probe.frame);
+        assert_eq!(b.center, probe.frame.position);
+        assert_eq!(b.velocity, probe.velocity);
+        assert_eq!(b.angular_velocity, probe.angular_velocity);
+        assert!(!b.has_external_force_or_impulse());
+    }
+    #[test]
+    fn contact_prestep_stores_reference_impulse_and_keeps_position() {
+        let mut b = body();
+        b.angular_momentum = [0.0, 8.0, 0.0];
+        b.linear_impulse = [1.0, 0.0, 0.0];
+        assert!(b.has_external_force_or_impulse());
+        b.contact_prestep(&profile()).unwrap();
+        // force (0, -20, 0) * dt 1 + J (1, 0, 0).
+        assert_eq!(b.reference_impulse, [1.0, -20.0, 0.0]);
+        assert_eq!(b.velocity[..2], [0.5, -10.0]);
+        assert_eq!(b.center, [0.0; 3]);
+        assert!((b.angular_momentum[1] - 4.0).abs() < 1e-6);
+        assert!((b.angular_velocity[1] - 1.0).abs() < 1e-6);
+        assert!(!b.has_external_force_or_impulse());
+        b.contact_integrate(&profile()).unwrap();
+        assert_eq!(b.center[..2], [0.5, -10.0]);
+        assert_eq!(b.frame.position, b.center);
+    }
+    #[test]
+    fn rebuild_momentum_uses_world_inertia() {
+        let mut b = body();
+        b.angular_velocity = [1.0, 1.0, 1.0];
+        b.rebuild_momentum();
+        assert_eq!(b.angular_momentum, [2.0, 4.0, 8.0]);
     }
     #[test]
     fn force_at_contact_generates_torque_and_native_momentum_damping() {
