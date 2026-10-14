@@ -30,8 +30,9 @@ character until the Studio edit camera is ported; ClassicCamera takes over
 immediately. Torso and Head collide with anchored Parts (`audit-part-wall`).
 Unanchored Parts fall, land, stack and come to rest in the simulation
 (`audit-part-drop`), the character pushes them (`audit-part-push`) and stands
-on them (`audit-part-stand`), and still Parts fall asleep (SleepStage). Not
-ported yet: the broadphase, outlines and the Studio camera.
+on them (`audit-part-stand`), and still Parts fall asleep (SleepStage).
+Contacts come from the native broadphase (`audit-broadphase`). Not ported
+yet: outlines and the Studio camera.
 Manual keys are **not tested**.
 
 ```sh
@@ -66,8 +67,8 @@ Animated poses update the assembly center of mass and inertia.
 
 The floor support, wall, material coefficients, awake scheduling and camera are
 explicit research fixtures. Native legacy balancing and AutoRotate torque now
-keep the torso upright and turn it toward movement. Native floor/state queries
-and broadphase remain incomplete. Maximum wall penetration is 0.114 studs in
+keep the torso upright and turn it toward movement. The walking fixture has no
+broadphase (every collider meets every block). Maximum wall penetration is 0.114 studs in
 the rest-pose regression (0.104 with animation). The 32-second animated wall
 test remains upright. Native parity remains unverified. Manual keys
 are **not tested**; automated input and Metal presentation are tested.
