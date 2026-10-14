@@ -1126,8 +1126,9 @@ the others.
 
 **Not ported:**
 
-- the broadphase (SpatialHashMultiRes): every colliding pair is a contact for
-  the whole run, in a fixed order;
+- the broadphase does not drive the contacts yet: every colliding pair is a
+  contact for the whole run, in a fixed order. `broadphase.rs` runs
+  alongside (see **Broadphase**);
 - leaving realTimeBodies: a contact body moved there by an external force
   (for example the Humanoid's floor reaction) stays until a connector change
   or sleep reclassifies it;
@@ -1171,3 +1172,70 @@ rules).
 Evidence:
 RobloxStudio/analysis/kernel-lists-native-20261013.md.
 
+
+## Broadphase (SpatialHashMultiRes)
+
+`broadphase.rs` is SpatialHash<Primitive, Contact, ContactManager, 4>. It is
+built by the ContactManager constructor (00ae6b92 -> 00af0ddc with 100).
+It decides which primitive pairs have a Contact. `World::broadphase` keeps it
+up to date, but the contact pairs do not follow it yet.
+
+- **Extents (00b61c9a):** the body position -/+ the geometry's world half
+  extent, -/+ 0.01. For a Block (00adf0a0) the half extent is the largest
+  |R v| over its corners, that is |R| times half the size.
+- **Level (00af1350):** the first level i where
+  (dx + 16)(dy + 16)(dz + 16) < 51200 * 8^i. The cell size is 8 (017a9c50)
+  and the volume factor 100. The level is at most 3, or at most 2
+  (017a9c54) for a Part that is anchored or being dragged (+0xcb/+0xca).
+  The Studio Baseplate is at level 2 and a 4x1.2x2 brick at level 0.
+- **Cells (00b88880):** floor(v / (8 << level)) per axis, after clamping to
+  about +-1002456.7. The clamp's rand() jitter (0073c85c) is not modelled.
+- **Hash (00b8885c):** (y * 0x127409f ^ x * 0x466f45d ^ z * 0x4f9ffb7) &
+  0xffff, with 65536 buckets per level. A bucket chain is newest first, and
+  only nodes with the same grid id count, so collisions never matter. The
+  port keys cells directly.
+- **Adding a Part (World::insertPrimitive 00bab52a -> 00ae97aa -> 00aeca1c ->
+  00aee438):** creates no contacts. Contacts come from findAllContacts
+  (00af1684), which SpatialFilter runs for every primitive of an assembly
+  when the assembly changes phase (00b79514 -> 00af6e2c).
+- **Contact search (00af21cc / 00af1684):** for each cell, in this order:
+  - the nodes in the same cell at the primitive's level, newest first;
+  - the nodes in each ancestor cell (cell >> 1 per level, up to level 3);
+  - the descendant cells (00af19dc): children by offset 0..7 (x bit, y bit
+    << 1, z bit << 2), depth first.
+
+  createContact (00ae9612) gets (searching primitive, found primitive). It
+  makes no contact within one assembly, between two grounded assemblies, or
+  when the geometry pair makes none (CanCollide off, 00ae714a). A third
+  test (stage 7 mode 3 with grouped assemblies) is treated as never true
+  offline.
+- **Each step (doWorldStep 00ba9096):** after Kernel::step, updateBroadphase
+  (00ae9bf4 -> 00aecaea per primitive) runs over SimulateStage's realtime
+  assemblies, then (on unthrottled steps) its moving dynamic ones, each in
+  the order they entered (00b6ee0a). The character cannot throttle, so it
+  is first. `LooseWorld::simulating` holds the loose Parts' order. A
+  kinematic Humanoid (MovingNoPhysicsBase) moves the character with
+  setCoordinateFrame (00c07626 -> 00b639a2 -> 00b655a0), which updates the
+  hash at once.
+- **Extents changed (00aecaea):** if the new level is the stored one or one
+  below, the primitive moves at its stored level (00af1400).
+  - If the cell box is unchanged, nothing happens.
+  - If the old and new boxes are disjoint, it leaves all old cells, then
+    enters all new ones.
+  - Otherwise it walks their union (00aee5ec), entering new cells (with
+    contacts) and leaving old ones.
+  - Then 00aef1d8 destroys every contact whose cell boxes no longer overlap
+    at the coarser level. The finer box is shifted right by the level
+    difference (00aef442).
+
+  Any other level change removes the primitive (00aef058: leave the cells,
+  destroy its contacts in list order) and reinserts it with contacts.
+- **A primitive's contact list (+0x64):** appended on creation. Each edge
+  keeps its index, so removal moves the last entry into the hole. That is
+  assumed from the layout; the removal routine itself was not read.
+
+`audit-broadphase` checks two things on the part-drop scene: every
+overlapping collidable pair has a contact, and every contact's cells
+overlap. Not verified against the native order: the order in which
+assemblies run findAllContacts at the start (assumed Workspace order, then
+the character).

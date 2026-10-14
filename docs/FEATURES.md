@@ -171,6 +171,23 @@ output to expect. Anything not covered by an audit is marked **not tested**.
 
   Native parity is **not tested**.
 
+- Broadphase (SpatialHashMultiRes, `broadphase.rs`), running alongside the
+  physics. It logs which Parts have a contact and when, but it does not yet
+  decide the contacts the physics steps. Run
+  `sh tools/cargo.sh run --locked -- audit-broadphase`. Expect:
+  - `broadphase_prim id=0 prim=Static(0) name=Baseplate level=Some(2) cells=Some(CellBox { min: [-9, -1, -9], max: [8, 0, 8] })`
+    and the bricks at level 0;
+  - `broadphase_event step=0 create first=Baseplate second=Stack`, then
+    Rest, Drop and `first=Rest second=Stack` (findAllContacts at the start);
+  - `broadphase_event step=206 create first=Torso second=Baseplate` and
+    `step=209 ... first=Head`: the falling character reaches the
+    Baseplate's coarse cells;
+  - `broadphase_result contacts=6 events=6 creates_after_start=2 missing=[] inconsistent=[]`
+    and `broadphase_pass`.
+
+  The order in which assemblies run findAllContacts at the start is assumed.
+  Native parity is **not tested**.
+
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,
   inertia, angular momentum, restitution and friction. Run

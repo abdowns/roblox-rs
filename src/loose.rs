@@ -33,9 +33,10 @@
 //!   leaves the kernel; waking zeroes velocity and impulses and restarts
 //!   the history countdown; AWAKE enters the kernel.
 //!
-//! The broadphase (multi-resolution spatial hash 00aecaea) is not ported:
-//! every colliding (loose, static), (loose, loose) and (character, loose)
-//! pair is a contact for the whole run.
+//! The broadphase (`broadphase.rs`, SpatialHashMultiRes) runs alongside in
+//! `World`, but its contacts do not drive these pairs yet: every colliding
+//! (loose, static), (loose, loose) and (character, loose) pair is a contact
+//! for the whole run.
 use crate::sleep::{self, AssemblyState, MotionHistory, SleepProfile};
 use crate::{
     assembly::{AssemblyProperties, MassPart, MassProfile},
@@ -293,6 +294,10 @@ pub struct LooseWorld {
     /// Assembly state changes of the run: (step, node, new state).
     pub transitions: Vec<(u32, Node, AssemblyState)>,
     step_id: u32,
+    /// SimulateStage::movingDynamicAssemblies (+0x2c): the loose Parts in
+    /// the kernel, in the order they entered (00b6ee0a pushes at the back;
+    /// leaving unlinks).
+    simulating: Vec<usize>,
 }
 
 /// IndexArray::remove: the last element moves into the hole.
@@ -407,6 +412,7 @@ impl LooseWorld {
             pass: 0,
             transitions: Vec::new(),
             step_id: 0,
+            simulating: Vec::new(),
         })
     }
     /// A static (anchored, colliding) block, in Statics order.
@@ -496,6 +502,11 @@ impl LooseWorld {
         self.pass = 0;
         self.transitions.clear();
         self.step_id = 0;
+        self.simulating.clear();
+    }
+    /// The loose Parts in SimulateStage, in entry order.
+    pub fn simulating(&self) -> &[usize] {
+        &self.simulating
     }
     pub fn frames(&self) -> Vec<(String, CoordinateFrame)> {
         self.parts
@@ -1586,6 +1597,7 @@ impl LooseWorld {
                     // b6ee0a -> Kernel insertBody 00a957ce: classify 00a9be30.
                     self.drop_part_connectors(i)?;
                     self.parts[i].in_kernel = true;
+                    self.simulating.push(i);
                     let target = Self::target(&self.parts[i]);
                     self.enter(i, target);
                 }
@@ -1596,6 +1608,7 @@ impl LooseWorld {
                 body.angular_velocity = [0.0; 3];
                 self.drop_part_connectors(i)?;
                 self.leave(i)?;
+                self.simulating.retain(|p| *p != i);
                 let part = &mut self.parts[i];
                 part.in_kernel = false;
                 part.body.resting = [true, true];

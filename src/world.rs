@@ -6,6 +6,7 @@
 use crate::{
     assembly::{AssemblyProperties, MassPart, MassProfile, Tensor},
     block_contact::{Block, BlockBlockContact, BlockTables, Connector},
+    broadphase::{Event, Extents, SpatialHash, block_extents},
     bundle::Bundle,
     collision::ContactBodyState,
     humanoid_state::{FloorPart, Hit},
@@ -23,6 +24,89 @@ use std::collections::BTreeMap;
 #[derive(Default)]
 struct ContactState {
     spring: ContactSpring,
+}
+
+/// A primitive in the broadphase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BroadPrim {
+    Static(usize),
+    Loose(usize),
+    /// A character Part (index into the character's Part list).
+    Character(usize),
+}
+
+/// The World's SpatialHash and what ContactManager::createContact
+/// (00ae9612) needs about each primitive.
+#[derive(Clone, Default)]
+pub struct Broadphase {
+    pub hash: SpatialHash,
+    pub prims: Vec<BroadPrim>,
+    /// CanCollide (00ae714a makes no contact otherwise).
+    collides: Vec<bool>,
+    loose_ids: Vec<usize>,
+    character_ids: Vec<usize>,
+    /// Every contact change: (world step, event).
+    pub log: Vec<(u32, Event)>,
+}
+
+impl Broadphase {
+    fn add(&mut self, prim: BroadPrim, collides: bool) -> usize {
+        let id = self.prims.len();
+        self.prims.push(prim);
+        self.collides.push(collides);
+        match prim {
+            BroadPrim::Loose(_) => self.loose_ids.push(id),
+            BroadPrim::Character(_) => self.character_ids.push(id),
+            BroadPrim::Static(_) => {}
+        }
+        id
+    }
+    /// 00ae9612: not in the same assembly, not both grounded, and both
+    /// collide.
+    fn accept(prims: &[BroadPrim], collides: &[bool], a: usize, b: usize) -> bool {
+        let same = match (prims[a], prims[b]) {
+            (BroadPrim::Static(_), BroadPrim::Static(_)) => true,
+            (BroadPrim::Character(_), BroadPrim::Character(_)) => true,
+            (BroadPrim::Loose(i), BroadPrim::Loose(j)) => i == j,
+            _ => false,
+        };
+        !same && collides[a] && collides[b]
+    }
+    fn drain(&mut self, step: u32) {
+        for event in self.hash.events.drain(..) {
+            self.log.push((step, event));
+        }
+    }
+    fn insert(&mut self, id: usize, extents: Extents, fixed: bool) {
+        let (prims, collides) = (&self.prims, &self.collides);
+        self.hash.insert(id, extents, fixed, false, |a, b| {
+            Self::accept(prims, collides, a, b)
+        });
+    }
+    fn find_all(&mut self, id: usize, extents: Extents, step: u32) {
+        let (prims, collides) = (&self.prims, &self.collides);
+        self.hash
+            .find_all_contacts(id, extents, |a, b| Self::accept(prims, collides, a, b));
+        self.drain(step);
+    }
+    fn update(&mut self, id: usize, extents: Extents, step: u32) {
+        let (prims, collides) = (&self.prims, &self.collides);
+        self.hash
+            .update(id, extents, |a, b| Self::accept(prims, collides, a, b));
+        self.drain(step);
+    }
+    /// The primitive pairs with a contact now.
+    pub fn contact_pairs(&self) -> Vec<(BroadPrim, BroadPrim)> {
+        let mut out = Vec::new();
+        for (a, prim) in self.prims.iter().enumerate() {
+            for &b in self.hash.contacts_of(a) {
+                if a < b {
+                    out.push((*prim, self.prims[b]));
+                }
+            }
+        }
+        out
+    }
 }
 
 /// PopperCam.lua PiercingCast: `hitPart.Transparency > 0.95` is pierced.
@@ -526,6 +610,10 @@ pub struct World {
     mass_parts: BTreeMap<String, MassPart>,
     /// Every character Part's size, for the assembly radius (00ad853c).
     part_sizes: Vec<(String, [f32; 3])>,
+    /// SpatialHashMultiRes over the Workspace Parts and the character. It
+    /// logs contacts but does not drive the contact pairs yet.
+    pub broadphase: Broadphase,
+    original_broadphase: Broadphase,
 }
 
 impl World {
@@ -642,6 +730,8 @@ impl World {
             block_contacts: BTreeMap::new(),
             mass_parts: parts,
             part_sizes,
+            broadphase: Broadphase::default(),
+            original_broadphase: Broadphase::default(),
         })
     }
     /// The character in a Workspace instead of the fixture: the fixture
@@ -657,14 +747,31 @@ impl World {
         let mut world = Self::new(bundle, scene, rig)?;
         world.statics.floor_y = f32::NEG_INFINITY;
         world.statics.wall_x = f32::INFINITY;
+        // World::insertPrimitive 00bab52a -> onPrimitiveAdded 00ae97aa: each
+        // Part enters the hash without contacts, in Workspace order.
+        // Anchored CanCollide-off Parts are left out: they never get a
+        // contact (00ae714a), so they cannot change anyone's contact order.
+        let mut entered = Vec::new();
         for part in &workspace.parts {
+            let extents = block_extents(&part.frame, part.size);
             if !part.anchored {
+                let index = world.loose.parts.len();
                 world
                     .loose
                     .add_part(part, &world.materials, &world.kernel)?;
+                let id = world
+                    .broadphase
+                    .add(BroadPrim::Loose(index), part.can_collide);
+                world.broadphase.insert(id, extents, false);
+                entered.push((id, extents));
                 continue;
             }
             if part.can_collide {
+                let id = world
+                    .broadphase
+                    .add(BroadPrim::Static(world.statics.blocks.len()), true);
+                world.broadphase.insert(id, extents, true);
+                entered.push((id, extents));
                 let properties = world.materials.defaults(part.material)?;
                 let stiffness = world.materials.stiffness(part.size, Shape::Block)?;
                 world.loose.add_static(properties, stiffness);
@@ -708,7 +815,80 @@ impl World {
         state.angular_velocity = [0.0; 3];
         world.body.set_body_state(&state)?;
         world.original = world.body.clone();
+        // The character's Parts follow, then each assembly's primitives run
+        // findAllContacts (00af1684) as SpatialFilter moves it into the
+        // simulation phase (00b79514 -> 00af6e2c). Assumed order: the
+        // Workspace assemblies first, in Workspace order, then the character.
+        let frames = rig.pose(&world.body.frame)?;
+        for (k, (name, size)) in world.part_sizes.clone().iter().enumerate() {
+            let frame = frames.get(name).ok_or("missing character Part frame")?;
+            let extents = block_extents(frame, *size);
+            let collides = world.colliders.iter().any(|(n, _)| n == name);
+            let id = world.broadphase.add(BroadPrim::Character(k), collides);
+            world.broadphase.insert(id, extents, false);
+            entered.push((id, extents));
+        }
+        for (id, extents) in entered {
+            world.broadphase.find_all(id, extents, 0);
+        }
+        world.original_broadphase = world.broadphase.clone();
         Ok(world)
+    }
+    /// The Part name of a broadphase primitive.
+    pub fn broadphase_name(&self, prim: BroadPrim) -> String {
+        match prim {
+            BroadPrim::Static(i) => self.statics.blocks[i].name.clone(),
+            BroadPrim::Loose(i) => self.loose.parts[i].name.clone(),
+            BroadPrim::Character(k) => self.part_sizes[k].0.clone(),
+        }
+    }
+    /// The primitive's current extents.
+    pub fn broadphase_extents(&self, rig: &R6Rig, prim: BroadPrim) -> Result<Extents, String> {
+        Ok(match prim {
+            BroadPrim::Static(i) => {
+                let b = &self.statics.blocks[i];
+                block_extents(&b.frame, b.size)
+            }
+            BroadPrim::Loose(i) => {
+                let p = &self.loose.parts[i];
+                block_extents(&p.body.frame, p.size)
+            }
+            BroadPrim::Character(k) => {
+                let (name, size) = &self.part_sizes[k];
+                let frames = rig.pose(&self.body.frame)?;
+                block_extents(
+                    frames.get(name).ok_or("missing character Part frame")?,
+                    *size,
+                )
+            }
+        })
+    }
+    /// updateBroadphase for the character assembly: every Part's extents
+    /// (00aecaea per primitive, 00ae9bf4).
+    fn broadphase_character(&mut self, rig: &R6Rig) -> Result<(), String> {
+        if self.broadphase.character_ids.is_empty() {
+            return Ok(());
+        }
+        let frames = rig.pose(&self.body.frame)?;
+        for (k, (name, size)) in self.part_sizes.iter().enumerate() {
+            let frame = frames.get(name).ok_or("missing character Part frame")?;
+            let id = self.broadphase.character_ids[k];
+            let extents = block_extents(frame, *size);
+            self.broadphase.update(id, extents, self.steps);
+        }
+        Ok(())
+    }
+    /// doWorldStep's updateBroadphase (00ba9096) for the loose Parts in
+    /// SimulateStage, in entry order.
+    fn broadphase_loose(&mut self) {
+        for &index in self.loose.simulating() {
+            let Some(&id) = self.broadphase.loose_ids.get(index) else {
+                continue;
+            };
+            let part = &self.loose.parts[index];
+            let extents = block_extents(&part.body.frame, part.size);
+            self.broadphase.update(id, extents, self.steps);
+        }
     }
     pub fn reset(&mut self) {
         self.body = self.original.clone();
@@ -720,6 +900,7 @@ impl World {
         self.block_contacts.clear();
         self.inertia = self.original_inertia;
         self.loose.reset();
+        self.broadphase = self.original_broadphase.clone();
     }
     pub fn is_original(&self) -> bool {
         self.body.frame == self.original.frame && self.inertia == self.original_inertia
@@ -1005,6 +1186,9 @@ impl World {
         // generated (ae32f4 checks stage 0xf).
         self.update_block_contacts(&frames, false)?;
         self.contacts = 0;
+        // MovingNoPhysicsBase places the assembly with setCoordinateFrame
+        // (00c07626 -> 00b639a2 -> 00b655a0), which updates the hash at once.
+        self.broadphase_character(rig)?;
         // The character is in the Humanoid stage, outside SleepStage; the
         // loose Parts still step.
         self.sleep_stage(rig, false)?;
@@ -1012,6 +1196,7 @@ impl World {
         for _ in 0..self.kernel.physics.kernel_substeps {
             self.loose.substep(&self.kernel)?;
         }
+        self.broadphase_loose();
         self.steps = self.steps.checked_add(1).ok_or("walking tick overflow")?;
         Ok(())
     }
@@ -1160,6 +1345,10 @@ impl World {
             self.body.step(&self.kernel)?;
             self.loose.integrate(&self.kernel)?;
         }
+        // updateBroadphase after Kernel::step: SimulateStage's realtime list
+        // (the character cannot throttle) first, then the others.
+        self.broadphase_character(rig)?;
+        self.broadphase_loose();
         self.steps = self.steps.checked_add(1).ok_or("walking tick overflow")?;
         Ok(())
     }

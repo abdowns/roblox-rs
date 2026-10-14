@@ -1549,3 +1549,157 @@ pub fn audit_humanoid_slope(bundle: &Bundle) -> Result<String, String> {
 fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
     (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]
 }
+
+/// One line on the broadphase: contact count, event count and the pairs.
+fn broadphase_summary(label: &str, world: &crate::world::World) -> String {
+    let pairs: Vec<(String, String)> = world
+        .broadphase
+        .contact_pairs()
+        .into_iter()
+        .map(|(a, b)| (world.broadphase_name(a), world.broadphase_name(b)))
+        .collect();
+    format!(
+        "{label} prims={} contacts={} events={} pairs={pairs:?}",
+        world.broadphase.prims.len(),
+        world.broadphase.hash.contact_count(),
+        world.broadphase.log.len()
+    )
+}
+
+/// The broadphase (SpatialHashMultiRes, `broadphase.rs`) on the part-drop
+/// scene, run alongside the physics: every primitive's level and cells, the
+/// contact events, and two consistency checks at the end:
+/// - every pair whose extents overlap has a contact (unless createContact
+///   refuses it: same assembly, both anchored, CanCollide off);
+/// - every contact's cell boxes overlap at the coarser level.
+pub fn audit_broadphase(bundle: &Bundle) -> Result<String, String> {
+    use crate::broadphase::Event;
+    use crate::world::BroadPrim;
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    let part = |name: &str, position: [f32; 3]| {
+        let mut p = crate::workspace::PartInstance {
+            name: name.into(),
+            ..Default::default()
+        };
+        p.frame.position = position;
+        p
+    };
+    workspace.parts.extend([
+        part("Rest", [-20.0, 0.65, -20.0]),
+        part("Stack", [-19.5, 1.9, -19.8]),
+        part("Drop", [20.0, 8.0, 0.0]),
+    ]);
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let mut report = String::new();
+    let world = &fixture.world;
+    for (id, prim) in world.broadphase.prims.iter().enumerate() {
+        writeln!(
+            report,
+            "broadphase_prim id={id} prim={prim:?} name={} level={:?} cells={:?}",
+            world.broadphase_name(*prim),
+            world.broadphase.hash.level_of(id),
+            world.broadphase.hash.cells_of(id)
+        )
+        .unwrap();
+    }
+    for step in 0..480u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        if (step + 1) % 120 == 0 {
+            writeln!(
+                report,
+                "{}",
+                broadphase_summary(
+                    &format!("broadphase_step step={}", step + 1),
+                    &fixture.world
+                )
+            )
+            .unwrap();
+        }
+    }
+    let world = &fixture.world;
+    let name = |id: usize| world.broadphase_name(world.broadphase.prims[id]);
+    for (step, event) in &world.broadphase.log {
+        let (kind, a, b) = match event {
+            Event::Create(a, b) => ("create", *a, *b),
+            Event::Destroy(a, b) => ("destroy", *a, *b),
+        };
+        writeln!(
+            report,
+            "broadphase_event step={step} {kind} first={} second={}",
+            name(a),
+            name(b)
+        )
+        .unwrap();
+    }
+    // Checks.
+    let prims = &world.broadphase.prims;
+    let collides = |p: BroadPrim| match p {
+        BroadPrim::Static(_) => true,
+        BroadPrim::Loose(i) => world.loose.parts[i].can_collide(),
+        BroadPrim::Character(_) => ["Torso", "Head"].contains(&world.broadphase_name(p).as_str()),
+    };
+    let mut missing = Vec::new();
+    let mut inconsistent = Vec::new();
+    for a in 0..prims.len() {
+        for b in a + 1..prims.len() {
+            let same = matches!(
+                (prims[a], prims[b]),
+                (BroadPrim::Static(_), BroadPrim::Static(_))
+                    | (BroadPrim::Character(_), BroadPrim::Character(_))
+            );
+            let ea = world.broadphase_extents(&rig, prims[a])?;
+            let eb = world.broadphase_extents(&rig, prims[b])?;
+            let overlap = (0..3).all(|k| ea.min[k] <= eb.max[k] && eb.min[k] <= ea.max[k]);
+            let contact = world.broadphase.hash.has_contact(a, b);
+            if overlap && !same && collides(prims[a]) && collides(prims[b]) && !contact {
+                missing.push((name(a), name(b)));
+            }
+            if contact {
+                let (la, lb) = (
+                    world.broadphase.hash.level_of(a).unwrap_or(-1),
+                    world.broadphase.hash.level_of(b).unwrap_or(-1),
+                );
+                let (ca, cb) = (
+                    world.broadphase.hash.cells_of(a).ok_or("no cells")?,
+                    world.broadphase.hash.cells_of(b).ok_or("no cells")?,
+                );
+                let level = la.max(lb);
+                let shift = |c: crate::broadphase::CellBox, l: i32| {
+                    (
+                        c.min.map(|v| v >> (level - l)),
+                        c.max.map(|v| v >> (level - l)),
+                    )
+                };
+                let (a0, a1) = shift(ca, la);
+                let (b0, b1) = shift(cb, lb);
+                if !(0..3).all(|k| a0[k] <= b1[k] && b0[k] <= a1[k]) {
+                    inconsistent.push((name(a), name(b)));
+                }
+            }
+        }
+    }
+    let creates_after_start = world
+        .broadphase
+        .log
+        .iter()
+        .filter(|(s, e)| *s > 0 && matches!(e, Event::Create(..)))
+        .count();
+    writeln!(
+        report,
+        "broadphase_result contacts={} events={} creates_after_start={creates_after_start} missing={missing:?} inconsistent={inconsistent:?}",
+        world.broadphase.hash.contact_count(),
+        world.broadphase.log.len()
+    )
+    .unwrap();
+    if !missing.is_empty() || !inconsistent.is_empty() || creates_after_start == 0 {
+        return Err(format!("broadphase checks failed\n{report}"));
+    }
+    writeln!(report, "broadphase_pass shadow=true drives_contacts=false native_order=partly_assumed native_differential=not_tested").unwrap();
+    Ok(report)
+}

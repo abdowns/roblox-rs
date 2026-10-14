@@ -1,5 +1,37 @@
 # MODLOG
 
+## 2026-10-13 Broadphase (SpatialHashMultiRes), running alongside the physics
+
+**Changed:**
+- New `broadphase.rs`, reverse engineered from the native functions:
+  - extents (00b61c9a / 00adf0a0);
+  - level (00af1350; constants 8, 100, max level 3, 2 for fixed Parts);
+  - cells (00b88880) and the bucket hash (00b8885c);
+  - insert 00aee438, remove 00aef058, extents changed 00aecaea, move 00af1400, cell walk 00aee5ec;
+  - add node / contact search 00af21cc, descend 00af19dc, remove node 00af2714;
+  - separation 00aef1d8 / 00aef442, findAllContacts 00af1684.
+- `World::broadphase` (`Broadphase`, `BroadPrim`):
+  - Workspace Parts enter in Workspace order, then the character's Parts;
+  - each then runs findAllContacts;
+  - after every world step, the character, then the loose Parts in SimulateStage order (`LooseWorld::simulating`), update their extents.
+- It only logs contacts (`Broadphase::log`); the physics still uses every pair. New `World::broadphase_name` and `broadphase_extents`.
+- New `audit-broadphase`.
+- The README change you made ("open source") is committed separately as-is. AGENTS.md already describes the new docs layout, so it is unchanged.
+
+**Why:** The user asked to port the broadphase 1:1. This step adds it without changing the physics, so it can be checked first.
+
+**Tested how:**
+- Ran audit-broadphase, then all 16 other audits. The others are byte-identical to the previous build apart from evidence paths and timing.
+- 81 tests pass (4 new broadphase tests); clippy and fmt are clean.
+
+**Result:**
+- The Baseplate is at level 2 and the bricks at level 0.
+- 4 contacts at the start, Stack before Rest (the newest node in a cell comes first).
+- The falling character's Torso and Head get Baseplate contacts at steps 206 and 209.
+- No overlapping pair is missing a contact, and no contact is inconsistent.
+- Assumed, not verified: the order in which assemblies run findAllContacts at the start; the IndexArray swap on contact removal.
+- A RE finding that affects the next step: Drop, 7.4 studs above the Baseplate, already shares a level-2 cell with it, so native gives it a contact (with no connectors) from the start.
+
 ## 2026-10-13 Public-facing README; detail moved to docs/
 
 **Changed:**
