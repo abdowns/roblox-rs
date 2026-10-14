@@ -1,6 +1,6 @@
 # roblox-rs
 
-roblox-rs is an open-source rewrite of the 2016 Roblox Studio client for macOS
+roblox-rs is an open source rewrite of the 2016 Roblox Studio client for macOS
 (version **0.255.0.82159**), written in Rust with [Bevy](https://bevy.org/).
 Point it at a copy of that Studio build and it loads the build's own data
 (character, meshes, scripts, sky, materials) into a new engine. The goal is
