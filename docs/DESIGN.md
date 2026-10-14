@@ -1126,9 +1126,8 @@ the others.
 
 **Not ported:**
 
-- the broadphase does not drive the contacts yet: every colliding pair is a
-  contact for the whole run, in a fixed order. `broadphase.rs` runs
-  alongside (see **Broadphase**);
+- the character-static block contact's body order: it always keeps the
+  character Part as body 0 (see **Broadphase**);
 - leaving realTimeBodies: a contact body moved there by an external force
   (for example the Humanoid's floor reaction) stays until a connector change
   or sleep reclassifies it;
@@ -1178,7 +1177,17 @@ RobloxStudio/analysis/kernel-lists-native-20261013.md.
 `broadphase.rs` is SpatialHash<Primitive, Contact, ContactManager, 4>. It is
 built by the ContactManager constructor (00ae6b92 -> 00af0ddc with 100).
 It decides which primitive pairs have a Contact. `World::broadphase` keeps it
-up to date, but the contact pairs do not follow it yet.
+up to date and turns its events into contact pairs (`World::apply_broadphase`):
+- a character-static contact goes into `static_contacts`, stepped in
+  creation order;
+- every other contact becomes a `LooseWorld` pair (`contact_created` /
+  `contact_destroyed`), keyed in the broadphase's order (searching primitive
+  first, which 00ae714a keeps as body 0). Destroying a contact removes its
+  SleepStage edge (00b73f08), takes its connectors out of the kernel, and
+  deletes the pair, so its cached state starts fresh if it is created again.
+
+The fixture world has no broadphase; there every collider meets every
+static block, as before.
 
 - **Extents (00b61c9a):** the body position -/+ the geometry's world half
   extent, -/+ 0.01. For a Block (00adf0a0) the half extent is the largest

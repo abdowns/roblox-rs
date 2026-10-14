@@ -1,5 +1,37 @@
 # MODLOG
 
+## 2026-10-13 The broadphase decides the contacts
+
+**Changed:**
+- `World::apply_broadphase` turns broadphase events into contacts:
+  - character/static-block contacts go into `static_contacts` (stepped in creation order);
+  - every other contact becomes a `LooseWorld` pair through the new `contact_created` / `contact_destroyed` (World::insertContact 00bab0f0 / destroyContact 00bab1f6).
+- Loose pairs are keyed in the broadphase's order, searching primitive first. 00ae714a keeps that as body 0, so the Baseplate is now body 0 against the bricks it finds at the start.
+- Removed the all-pairs rule: `update_membership` no longer creates every (loose, static) and (loose, loose) pair. The character's edges come from its existing contacts.
+- The Head touch test (`collider_touching`) only tests existing contacts.
+- `clear_character_contacts` resets those caches instead of deleting the pairs.
+- `World::reset` replays the start contacts.
+- The character-static block contact keeps the character Part as body 0. `Broadphase::static_first` counts the contacts native would create the other way round: 0 in every audit.
+- Labels: `broadphase_order=assumed` became `broadphase=spatial_hash`. audit-part-push prints `part_push_broadphase`.
+
+**Why:** The user asked to port the broadphase 1:1. This is the second step: contacts now follow it.
+
+**Tested how:**
+- Ran all 17 audits.
+  - Walking, baseplate, camera, kernel, player, locomotion, runtime, animate, the render audits and audit-humanoid-slope: byte-identical.
+  - part-wall: label only.
+  - part-drop, part-push, part-stand, part-jump: changed slightly (below).
+- viewport-baseplate-smoke exits 0.
+- 81 tests pass; clippy and fmt are clean.
+
+**Result:**
+- part-drop: the heights move in the 4th digit and Drop ends on its side (up_y -9.4e-5).
+- part-push: the Crate moves 1.31 studs (was 1.08), with up to 8 character connectors (was 7). It enters contactBodies at step 780, when it wakes with only its ground contacts.
+- part-stand: pad_top 0.18826233 (was 0.18830347).
+- part-jump: the rise is unchanged.
+- No contact is destroyed in these scenes; destruction is covered by the unit test.
+- Native parity is **not tested**. Still assumed: the start order of findAllContacts, and the IndexArray swap.
+
 ## 2026-10-13 Broadphase (SpatialHashMultiRes), running alongside the physics
 
 **Changed:**

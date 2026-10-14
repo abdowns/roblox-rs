@@ -53,7 +53,7 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   PopperCam's ray sees static and unanchored Parts, and pierces Parts that are
   CanCollide off or have Transparency above 0.95. Run
   `sh tools/cargo.sh run --locked -- audit-part-push`; expect
-  `part_push_camera_ray ... hit=Some(([..., -8.080032], ...)) static_only=None crate_face_z=-8.080033`
+  `part_push_camera_ray ... hit=Some(([..., -8.309371], ...)) static_only=None crate_face_z=-8.309371`
   and `part_push_pass pushed=true camera_ray=static_and_loose`. Ties between
   Parts at exactly the same distance are not ordered like native (the spatial
   grid order is not ported).
@@ -89,7 +89,7 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   Part/Baseplate contacts. Run
   `sh tools/cargo.sh run --locked -- audit-part-drop`; expect
   `part_drop_first_contact` lines for Rest (step 7), Stack (10), Drop (67) and
-  Tumble (71), `part_drop_result ... heights=[0.58259946, 1.7632093, 0.98582256, 0.5856628] ... speeds=[0.0, 0.0, 0.0, 0.0]`,
+  Tumble (71), `part_drop_result ... heights=[0.58254874, 1.7640274, 0.9883815, 0.58554494] ... speeds=[0.0, 0.0, 0.0, 0.0]`,
   `part_drop_sleep` with every Part `final=SleepingDeeply in_kernel=false`
   (Rest and Stack at world step 120, Tumble 271, Drop 303), and
   `part_drop_pass rested=4 stacked=true asleep=4`. High drops bounce and spin.
@@ -106,11 +106,16 @@ output to expect. Anything not covered by an audit is marked **not tested**.
 
   Run `sh tools/cargo.sh run --locked -- audit-part-push`. Expect:
   - `part_push_first_contact step=101`;
-  - `part_push_result ... max_character_connectors=7 lists=[FreeFall, Joint] crate_moved=[0.015719917, 0.00028276443, -1.0796337]`.
+  - `part_push_result ... max_character_connectors=8 lists=[FreeFall, Joint, Contact] crate_moved=[0.020631112, 3.2424927e-5, -1.3100352]`.
     The Crate is asleep when the character reaches it. The touch wakes it, and
     the character's realtime connector is its first, so 00a9be30 files it under
     jointBodies. With the native floor friction (0.3 on Plastic) the character
-    pushes it about 1.08 studs;
+    pushes it about 1.31 studs. At step 780, after the character has stopped
+    touching it, the Crate wakes with only its ground contacts and is filed
+    under contactBodies;
+  - `part_push_broadphase prims=9 contacts=5 ... destroyed=0`: the
+    broadphase contacts (Baseplate-Crate, Baseplate-Torso, Baseplate-Head,
+    Crate-Torso, Crate-Head);
   - `part_push_pass pushed=true`.
 
   Native parity is **not tested**.
@@ -128,7 +133,7 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   - `part_stand_start character_mass=9.9 part_masses=[7.56, 25.199999]`: the
     Pad is lighter than the character, so the support force uses its mass;
   - `part_stand_landed step=241 ... floor=Some(Loose(0))`: it lands on the Pad;
-  - `part_stand_result ... root_on_pad=[..., 3.2041068, ...] pad_top=0.18830347 lowest_between=2.9966283 step_floor_at=Some(156) root_on_step=[..., 3.9999356, ...] step_top=0.98490196`:
+  - `part_stand_result ... root_on_pad=[..., 3.2040696, ...] pad_top=0.18826233 lowest_between=2.9966283 step_floor_at=Some(156) root_on_step=[..., 3.999967, ...] step_top=0.98490196`:
     it stands at Part top + 3 on both Parts and walks up the 1-stud Step;
   - `part_stand_sleep ... [Pad final=SleepingDeeply ... (239, WakePending), (240, Awake), (367, SleepingDeeply)] [Step final=SleepingDeeply ...]`:
     landing wakes the sleeping Pad, and both Parts sleep again under the idle
@@ -171,9 +176,10 @@ output to expect. Anything not covered by an audit is marked **not tested**.
 
   Native parity is **not tested**.
 
-- Broadphase (SpatialHashMultiRes, `broadphase.rs`), running alongside the
-  physics. It logs which Parts have a contact and when, but it does not yet
-  decide the contacts the physics steps. Run
+- Broadphase (SpatialHashMultiRes, `broadphase.rs`). It decides which Parts
+  have a contact: the loose-Part, character-loose and character-static
+  contacts exist only while their cell boxes overlap, and are created in its
+  order. Run
   `sh tools/cargo.sh run --locked -- audit-broadphase`. Expect:
   - `broadphase_prim id=0 prim=Static(0) name=Baseplate level=Some(2) cells=Some(CellBox { min: [-9, -1, -9], max: [8, 0, 8] })`
     and the bricks at level 0;
@@ -185,8 +191,10 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   - `broadphase_result contacts=6 events=6 creates_after_start=2 missing=[] inconsistent=[]`
     and `broadphase_pass`.
 
-  The order in which assemblies run findAllContacts at the start is assumed.
-  Native parity is **not tested**.
+  Assumed: the order in which assemblies run findAllContacts at the start.
+  The character-static block contact always keeps the character Part as
+  body 0; `Broadphase::static_first` counts the contacts native would create
+  the other way round (0 in the audits). Native parity is **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,

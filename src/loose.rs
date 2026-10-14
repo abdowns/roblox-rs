@@ -33,10 +33,11 @@
 //!   leaves the kernel; waking zeroes velocity and impulses and restarts
 //!   the history countdown; AWAKE enters the kernel.
 //!
-//! The broadphase (`broadphase.rs`, SpatialHashMultiRes) runs alongside in
-//! `World`, but its contacts do not drive these pairs yet: every colliding
-//! (loose, static), (loose, loose) and (character, loose) pair is a contact
-//! for the whole run.
+//! The contact pairs follow the broadphase (`broadphase.rs`,
+//! SpatialHashMultiRes, kept by `World`): `contact_created` and
+//! `contact_destroyed` mirror World::insertContact 00bab0f0 / destroyContact
+//! 00bab1f6, with the primitives in the broadphase's order (searching
+//! primitive first; 00ae714a keeps it for two blocks).
 use crate::sleep::{self, AssemblyState, MotionHistory, SleepProfile};
 use crate::{
     assembly::{AssemblyProperties, MassPart, MassProfile},
@@ -294,6 +295,8 @@ pub struct LooseWorld {
     /// Assembly state changes of the run: (step, node, new state).
     pub transitions: Vec<(u32, Node, AssemblyState)>,
     step_id: u32,
+    /// The broadphase contacts in creation order.
+    created: Vec<(Prim, Prim)>,
     /// SimulateStage::movingDynamicAssemblies (+0x2c): the loose Parts in
     /// the kernel, in the order they entered (00b6ee0a pushes at the back;
     /// leaving unlinks).
@@ -413,6 +416,7 @@ impl LooseWorld {
             transitions: Vec::new(),
             step_id: 0,
             simulating: Vec::new(),
+            created: Vec::new(),
         })
     }
     /// A static (anchored, colliding) block, in Statics order.
@@ -503,6 +507,7 @@ impl LooseWorld {
         self.transitions.clear();
         self.step_id = 0;
         self.simulating.clear();
+        self.created.clear();
     }
     /// The loose Parts in SimulateStage, in entry order.
     pub fn simulating(&self) -> &[usize] {
@@ -907,20 +912,29 @@ impl LooseWorld {
         if collider >= self.colliders.len() {
             return Err("missing character collider".into());
         }
+        let _ = materials;
         for i in 0..self.parts.len() {
-            if !self.parts[i].can_collide {
+            let forward = (Prim::Character(collider), Prim::Loose(i));
+            let backward = (Prim::Loose(i), Prim::Character(collider));
+            let (key, flipped) = if self.pairs.contains_key(&forward) {
+                (forward, false)
+            } else if self.pairs.contains_key(&backward) {
+                (backward, true)
+            } else {
+                // No broadphase contact: nothing to test.
                 continue;
-            }
-            let key = (Prim::Character(collider), Prim::Loose(i));
-            let other = self.block(key.1, &[], &[])?;
-            if !self.pairs.contains_key(&key) {
-                self.create_pair(key, materials);
-            }
+            };
+            let other = self.block(Prim::Loose(i), &[], &[])?;
             if !extents_overlap(&block.extents(), &other.extents()) {
                 continue;
             }
+            let blocks = if flipped {
+                [&other, block]
+            } else {
+                [block, &other]
+            };
             let pair = self.pairs.get_mut(&key).ok_or("missing contact pair")?;
-            if pair.contact.compute_is_colliding([block, &other], 0.0).0 {
+            if pair.contact.compute_is_colliding(blocks, 0.0).0 {
                 return Ok(true);
             }
         }
@@ -929,11 +943,13 @@ impl LooseWorld {
     /// Forget the character's contact caches (the character returned to the
     /// kernel). Pairs that still hold connectors are kept.
     pub fn clear_character_contacts(&mut self) {
-        self.pairs.retain(|key, pair| {
-            !matches!(key.0, Prim::Character(_))
-                || !pair.contact.connectors().is_empty()
-                || pair.edge.is_some()
-        });
+        for (key, pair) in self.pairs.iter_mut() {
+            let character =
+                matches!(key.0, Prim::Character(_)) || matches!(key.1, Prim::Character(_));
+            if character && pair.contact.connectors().is_empty() && pair.edge.is_none() {
+                pair.contact = BlockBlockContact::default();
+            }
+        }
     }
     /// Live connectors touching the character.
     pub fn character_connector_count(&self) -> usize {
@@ -1297,24 +1313,50 @@ impl LooseWorld {
         self.joint_springs(kernel)?;
         self.integrate(kernel)
     }
-    /// The colliding (loose, static) and (loose, loose) pairs in the
-    /// update_contacts order.
-    fn loose_keys(&self, statics: usize) -> Vec<(Prim, Prim)> {
-        let mut keys = Vec::new();
-        for i in 0..self.parts.len() {
-            if !self.parts[i].can_collide {
-                continue;
-            }
-            for j in 0..statics {
-                keys.push((Prim::Loose(i), Prim::Static(j)));
-            }
-            for k in i + 1..self.parts.len() {
-                if self.parts[k].can_collide {
-                    keys.push((Prim::Loose(i), Prim::Loose(k)));
-                }
-            }
+    /// World::insertContact 00bab0f0 for a broadphase contact: the pair, and
+    /// its SleepStage edge (00b73cfe, STEPPING) unless one side is the
+    /// character outside the stage.
+    pub fn contact_created(
+        &mut self,
+        key: (Prim, Prim),
+        materials: &MaterialProfile,
+    ) -> Result<(), String> {
+        if self.pairs.contains_key(&key) || self.pairs.contains_key(&(key.1, key.0)) {
+            return Err("contact created twice".into());
         }
-        keys
+        self.create_pair(key, materials);
+        self.created.push(key);
+        let character = matches!(key.0, Prim::Character(_)) || matches!(key.1, Prim::Character(_));
+        if !character || self.character.in_stage {
+            self.add_edge(key)?;
+        }
+        Ok(())
+    }
+    /// World::destroyContact 00bab1f6: SleepStage onEdgeRemoving (00b73f08),
+    /// the connectors leave the kernel, the pair is deleted.
+    pub fn contact_destroyed(&mut self, key: (Prim, Prim)) -> Result<(), String> {
+        let key = if self.pairs.contains_key(&key) {
+            key
+        } else {
+            (key.1, key.0)
+        };
+        if !self.pairs.contains_key(&key) {
+            return Err("destroyed contact is missing".into());
+        }
+        if self.pairs[&key].edge.is_some() {
+            self.remove_edge(key)?;
+        }
+        self.drop_connectors(key)?;
+        self.pairs.remove(&key);
+        self.created.retain(|k| *k != key);
+        for list in self.stepping.iter_mut().chain(self.touching.iter_mut()) {
+            list.retain(|k| *k != key);
+        }
+        Ok(())
+    }
+    /// The live contact pairs, in creation order.
+    pub fn contact_keys(&self) -> &[(Prim, Prim)] {
+        &self.created
     }
     /// SleepStage::onEdgeAdded 00b73cfe: a contact enters STEPPING.
     fn add_edge(&mut self, key: (Prim, Prim)) -> Result<(), String> {
@@ -1349,16 +1391,13 @@ impl LooseWorld {
         statics: usize,
         materials: &MaterialProfile,
     ) -> Result<(), String> {
-        for key in self.loose_keys(statics) {
-            if !self.pairs.contains_key(&key) {
-                self.create_pair(key, materials);
-            }
-            self.add_edge(key)?;
-        }
-        let keys: Vec<(Prim, Prim)> = (0..colliders)
-            .flat_map(|c| (0..self.parts.len()).map(move |i| (c, i)))
-            .filter(|(_, i)| self.parts[*i].can_collide)
-            .map(|(c, i)| (Prim::Character(c), Prim::Loose(i)))
+        let _ = (colliders, statics, materials);
+        // The character's existing contacts, in creation order.
+        let keys: Vec<(Prim, Prim)> = self
+            .created
+            .iter()
+            .copied()
+            .filter(|k| matches!(k.0, Prim::Character(_)) || matches!(k.1, Prim::Character(_)))
             .collect();
         match (character, self.character.in_stage) {
             (Some(motion), false) => {
@@ -1370,9 +1409,6 @@ impl LooseWorld {
                 )));
                 self.set_state(Node::Character, AssemblyState::WakePending)?;
                 for key in keys {
-                    if !self.pairs.contains_key(&key) {
-                        self.create_pair(key, materials);
-                    }
                     self.add_edge(key)?;
                 }
             }

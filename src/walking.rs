@@ -814,7 +814,7 @@ pub fn audit_part_wall(bundle: &Bundle) -> Result<String, String> {
     {
         return Err(format!("part wall failed\n{report}"));
     }
-    writeln!(report, "part_wall_pass blocked=true narrowphase=block_block_contact broadphase_order=assumed native_differential=not_tested").unwrap();
+    writeln!(report, "part_wall_pass blocked=true narrowphase=block_block_contact broadphase=spatial_hash native_differential=not_tested").unwrap();
     Ok(report)
 }
 
@@ -922,7 +922,7 @@ pub fn audit_part_drop(bundle: &Bundle) -> Result<String, String> {
     if parts.iter().any(|p| !p.sleep.sleeping() || p.in_kernel) {
         return Err(format!("part drop: a resting Part never slept\n{report}"));
     }
-    writeln!(report, "part_drop_pass rested=4 stacked=true asleep=4 sleep=sleep_stage broadphase_order=assumed native_differential=not_tested").unwrap();
+    writeln!(report, "part_drop_pass rested=4 stacked=true asleep=4 sleep=sleep_stage broadphase=spatial_hash native_differential=not_tested").unwrap();
     Ok(report)
 }
 
@@ -1032,6 +1032,19 @@ pub fn audit_part_push(bundle: &Bundle) -> Result<String, String> {
         sleep_summary("part_push_sleep", &fixture.world.loose)
     )
     .unwrap();
+    let destroyed = fixture
+        .world
+        .broadphase
+        .log
+        .iter()
+        .filter(|(_, e)| matches!(e, crate::broadphase::Event::Destroy(..)))
+        .count();
+    writeln!(
+        report,
+        "{} destroyed={destroyed}",
+        broadphase_summary("part_push_broadphase", &fixture.world)
+    )
+    .unwrap();
     // PopperCam's ray (World::camera_raycast) sees the loose Crate: a ray
     // from 10 studs behind its centre stops on its +z face. The static-only
     // query passes through it.
@@ -1051,7 +1064,7 @@ pub fn audit_part_push(bundle: &Bundle) -> Result<String, String> {
     if camera.is_none_or(|(point, _)| (point[2] - (centre[2] + part.size[2] * 0.5)).abs() > 0.05) {
         return Err(format!("camera ray missed the Crate\n{report}"));
     }
-    writeln!(report, "part_push_pass pushed=true camera_ray=static_and_loose connectors=realtime floor_raycast=static_and_loose sleep=sleep_stage broadphase_order=assumed native_differential=not_tested").unwrap();
+    writeln!(report, "part_push_pass pushed=true camera_ray=static_and_loose connectors=realtime floor_raycast=static_and_loose sleep=sleep_stage broadphase=spatial_hash native_differential=not_tested").unwrap();
     Ok(report)
 }
 
@@ -1692,14 +1705,16 @@ pub fn audit_broadphase(bundle: &Bundle) -> Result<String, String> {
         .count();
     writeln!(
         report,
-        "broadphase_result contacts={} events={} creates_after_start={creates_after_start} missing={missing:?} inconsistent={inconsistent:?}",
+        "broadphase_result contacts={} events={} creates_after_start={creates_after_start} missing={missing:?} inconsistent={inconsistent:?} static_first={} loose_pairs={}",
         world.broadphase.hash.contact_count(),
-        world.broadphase.log.len()
+        world.broadphase.log.len(),
+        world.broadphase.static_first,
+        world.loose.contact_keys().len()
     )
     .unwrap();
     if !missing.is_empty() || !inconsistent.is_empty() || creates_after_start == 0 {
         return Err(format!("broadphase checks failed\n{report}"));
     }
-    writeln!(report, "broadphase_pass shadow=true drives_contacts=false native_order=partly_assumed native_differential=not_tested").unwrap();
+    writeln!(report, "broadphase_pass drives_contacts=true native_order=partly_assumed native_differential=not_tested").unwrap();
     Ok(report)
 }

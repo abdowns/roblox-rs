@@ -12,7 +12,7 @@ use crate::{
     humanoid_state::{FloorPart, Hit},
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
     legacy_contact::{BlockContactProfile, ContactGeometry, ImpulseProfile},
-    loose::{CharacterMotion, LoosePart, LooseWorld},
+    loose::{CharacterMotion, LoosePart, LooseWorld, Prim},
     material::{MaterialProfile, Shape},
     physics,
     rig::{R6Rig, compose},
@@ -47,6 +47,11 @@ pub struct Broadphase {
     character_ids: Vec<usize>,
     /// Every contact change: (world step, event).
     pub log: Vec<(u32, Event)>,
+    /// How many log entries the contacts have taken in.
+    applied: usize,
+    /// Character/static contacts the broadphase created static first (the
+    /// block contact keeps the character Part as body 0 regardless).
+    pub static_first: usize,
 }
 
 impl Broadphase {
@@ -610,10 +615,13 @@ pub struct World {
     mass_parts: BTreeMap<String, MassPart>,
     /// Every character Part's size, for the assembly radius (00ad853c).
     part_sizes: Vec<(String, [f32; 3])>,
-    /// SpatialHashMultiRes over the Workspace Parts and the character. It
-    /// logs contacts but does not drive the contact pairs yet.
+    /// SpatialHashMultiRes over the Workspace Parts and the character. Its
+    /// contacts are the contact pairs.
     pub broadphase: Broadphase,
     original_broadphase: Broadphase,
+    /// Character/static-block contacts from the broadphase, in creation
+    /// order: (collider name, block index).
+    static_contacts: Vec<(String, usize)>,
 }
 
 impl World {
@@ -732,6 +740,7 @@ impl World {
             part_sizes,
             broadphase: Broadphase::default(),
             original_broadphase: Broadphase::default(),
+            static_contacts: Vec::new(),
         })
     }
     /// The character in a Workspace instead of the fixture: the fixture
@@ -832,7 +841,60 @@ impl World {
             world.broadphase.find_all(id, extents, 0);
         }
         world.original_broadphase = world.broadphase.clone();
+        world.apply_broadphase()?;
         Ok(world)
+    }
+    /// The broadphase's new contact events become contact pairs: character
+    /// against a static block in `static_contacts`, everything else in
+    /// `LooseWorld`.
+    fn apply_broadphase(&mut self) -> Result<(), String> {
+        while self.broadphase.applied < self.broadphase.log.len() {
+            let (_, event) = self.broadphase.log[self.broadphase.applied];
+            self.broadphase.applied += 1;
+            let (created, a, b) = match event {
+                Event::Create(a, b) => (true, a, b),
+                Event::Destroy(a, b) => (false, a, b),
+            };
+            let (pa, pb) = (self.broadphase.prims[a], self.broadphase.prims[b]);
+            let static_pair = match (pa, pb) {
+                (BroadPrim::Character(k), BroadPrim::Static(j)) => Some((k, j, false)),
+                (BroadPrim::Static(j), BroadPrim::Character(k)) => Some((k, j, true)),
+                _ => None,
+            };
+            if let Some((k, j, static_first)) = static_pair {
+                let name = self.part_sizes[k].0.clone();
+                if created {
+                    self.broadphase.static_first += usize::from(static_first);
+                    self.static_contacts.push((name, j));
+                } else {
+                    self.static_contacts.retain(|c| *c != (name.clone(), j));
+                    self.block_contacts.remove(&(name, j));
+                }
+                continue;
+            }
+            let key = (self.prim_of(pa)?, self.prim_of(pb)?);
+            if created {
+                self.loose.contact_created(key, &self.materials)?;
+            } else {
+                self.loose.contact_destroyed(key)?;
+            }
+        }
+        Ok(())
+    }
+    fn prim_of(&self, prim: BroadPrim) -> Result<Prim, String> {
+        Ok(match prim {
+            BroadPrim::Static(j) => Prim::Static(j),
+            BroadPrim::Loose(i) => Prim::Loose(i),
+            BroadPrim::Character(k) => {
+                let name = &self.part_sizes[k].0;
+                Prim::Character(
+                    self.colliders
+                        .iter()
+                        .position(|(n, _)| n == name)
+                        .ok_or("contact on a non-colliding character Part")?,
+                )
+            }
+        })
     }
     /// The Part name of a broadphase primitive.
     pub fn broadphase_name(&self, prim: BroadPrim) -> String {
@@ -876,19 +938,21 @@ impl World {
             let extents = block_extents(frame, *size);
             self.broadphase.update(id, extents, self.steps);
         }
-        Ok(())
+        self.apply_broadphase()
     }
     /// doWorldStep's updateBroadphase (00ba9096) for the loose Parts in
     /// SimulateStage, in entry order.
-    fn broadphase_loose(&mut self) {
-        for &index in self.loose.simulating() {
+    fn broadphase_loose(&mut self) -> Result<(), String> {
+        for index in self.loose.simulating().to_vec() {
             let Some(&id) = self.broadphase.loose_ids.get(index) else {
                 continue;
             };
             let part = &self.loose.parts[index];
             let extents = block_extents(&part.body.frame, part.size);
             self.broadphase.update(id, extents, self.steps);
+            self.apply_broadphase()?;
         }
+        Ok(())
     }
     pub fn reset(&mut self) {
         self.body = self.original.clone();
@@ -901,6 +965,11 @@ impl World {
         self.inertia = self.original_inertia;
         self.loose.reset();
         self.broadphase = self.original_broadphase.clone();
+        self.static_contacts.clear();
+        // The start contacts again (the reset world is the one just built).
+        if let Err(e) = self.apply_broadphase() {
+            panic!("broadphase reset: {e}");
+        }
     }
     pub fn is_original(&self) -> bool {
         self.body.frame == self.original.frame && self.inertia == self.original_inertia
@@ -968,32 +1037,46 @@ impl World {
         self.inertia = assembly.inertia_in_body;
         Ok(())
     }
-    /// BlockBlockContact::update for every character collider against every
-    /// static block (body 0 = character Part, body 1 = static block; the
-    /// native broadphase order is not recovered).
+    /// BlockBlockContact::update for each broadphase contact between a
+    /// character collider and a static block, in creation order (body 0 =
+    /// character Part, body 1 = static block). In the fixture world, which
+    /// has no broadphase, every collider meets every block.
     fn update_block_contacts(
         &mut self,
         frames: &BTreeMap<String, CoordinateFrame>,
         in_kernel: bool,
     ) -> Result<(), String> {
-        for (name, size) in &self.colliders {
+        let pairs: Vec<(String, usize)> = if self.broadphase.prims.is_empty() {
+            self.colliders
+                .iter()
+                .flat_map(|(n, _)| (0..self.statics.blocks.len()).map(move |j| (n.clone(), j)))
+                .collect()
+        } else {
+            self.static_contacts.clone()
+        };
+        for (name, index) in pairs {
+            let size = self
+                .colliders
+                .iter()
+                .find(|(n, _)| *n == name)
+                .ok_or("missing block collider")?
+                .1;
             let part = Block {
                 frame: frames
-                    .get(name)
+                    .get(&name)
                     .ok_or("missing block collider frame")?
                     .clone(),
-                size: *size,
+                size,
             };
-            for (index, block) in self.statics.blocks.iter().enumerate() {
-                let other = Block {
-                    frame: block.frame.clone(),
-                    size: block.size,
-                };
-                self.block_contacts
-                    .entry((name.clone(), index))
-                    .or_default()
-                    .update([&part, &other], in_kernel, &self.statics.tables)?;
-            }
+            let block = &self.statics.blocks[index];
+            let other = Block {
+                frame: block.frame.clone(),
+                size: block.size,
+            };
+            self.block_contacts
+                .entry((name, index))
+                .or_default()
+                .update([&part, &other], in_kernel, &self.statics.tables)?;
         }
         Ok(())
     }
@@ -1196,7 +1279,7 @@ impl World {
         for _ in 0..self.kernel.physics.kernel_substeps {
             self.loose.substep(&self.kernel)?;
         }
-        self.broadphase_loose();
+        self.broadphase_loose()?;
         self.steps = self.steps.checked_add(1).ok_or("walking tick overflow")?;
         Ok(())
     }
@@ -1348,7 +1431,7 @@ impl World {
         // updateBroadphase after Kernel::step: SimulateStage's realtime list
         // (the character cannot throttle) first, then the others.
         self.broadphase_character(rig)?;
-        self.broadphase_loose();
+        self.broadphase_loose()?;
         self.steps = self.steps.checked_add(1).ok_or("walking tick overflow")?;
         Ok(())
     }
