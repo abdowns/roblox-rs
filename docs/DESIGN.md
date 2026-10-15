@@ -1003,6 +1003,74 @@ Two things are not native: the connector order across pairs, and the
 pair-per-block lifetime (the broadphase is not ported). `audit-part-wall`
 walks into an anchored 20x10x2 Part whose face is at z = -10.
 
+## Ball geometry and its contacts (ball_contact.rs)
+
+A Part's Shape picks its Primitive geometry (00708d58, factory 00b614f4):
+Ball (Shape 0) is geometry type 1, Block (1) is 2 and Cylinder (2) is 3. The
+size setter (00988cfc) makes a Ball's size (x, x, x), because
+`hasThreeDimensionalSize` (0070915c) is false for a Ball.
+
+Ball geometry (Ball.cpp, vtable 01c865e0):
+
+- **Radius.** size.x / 2 (setSize 00adc208, stored at +0x14).
+- **Volume.** ((4/3 pi r) r) r (00adc148, constant at 01834ffc). The
+  Primitive mass is volume x density (00b62e8e), as for a block.
+- **Moment.** ((m 0.4) r) r on the diagonal (00adcb76, 0.4 at 016f753c).
+- **Extents.** center -/+ r -/+ 0.01 (00b61c9a with the Ball half extents
+  00adcb5e).
+
+`MassProfile::ball_volume` and `ball_inertia` hold the volume and moment.
+
+ContactManager::createContact (00ae714a) picks the contact class from the
+collide types (geometry +0x10: Ball 1, Block 2, Poly 3). The lower type becomes
+the contact's first primitive; equal types keep the broadphase order. A
+ball/ball pair is a BallBallContact and a ball/block pair a BallBlockContact.
+Each holds at most one connector, which `BallContact` models. Its connectors
+are `block_contact::Connector`s with four new GeoPair kinds, so the kernel code
+that reads connector geometry needs no change.
+
+- **BallBall test (00ae2824).** It does no extents test. Colliding means
+  r0 + r1 - ignored > 0 and |p1 - p0|^2 < (r0 + r1 - ignored)^2.
+- **BallBall connector (00a946c6).** The normal is unitize(p1 - p0). The
+  length is that distance minus both radii. The point is on ball 0's surface.
+- **BallBlock test (00ae2aec).** It runs in four steps:
+  1. The extents must overlap.
+  2. The ball center goes into block space.
+  3. The Block clamp (00adf544) pulls it onto the box. It counts the clamped
+     axes and records each axis's side.
+  4. The pair collides when the distance from the center to the clamped point
+     is below r - ignored.
+- **BallBlock feature (00ae2d16).** The clamp count picks it:
+  - 0 (center inside): the nearest face (00adf472);
+  - 1: the clamped face (00adf30c);
+  - 2: the edge along the unclamped axis, from its -axis end (00adf206);
+  - 3: the clamped corner vertex.
+
+  The connector stores the radius, the block vertex, the face or edge id and
+  the kind.
+- **BallBlock connector (00a947b8).**
+  - **Plane (00a94800).** The normal is minus the face normal. The point is
+    the center projected onto the face plane. The length is the *unsigned*
+    distance to the plane minus r, so a center past the plane does not give a
+    deeper penetration.
+  - **Edge (00a94a18).** The point is the nearest point of the edge line. The
+    normal points from the center to it.
+  - **Vertex (00a94c50).** The point is the vertex.
+
+  FFlag BallBlockNarrowphaseFixEnabled (01d72b94) is BSS, so off. Turned on,
+  it would move the plane and edge points onto the ball's surface.
+- **Step order.** Both steps share it:
+  - A separated pair deletes its connector.
+  - A colliding pair outside the kernel stage keeps its connector untouched.
+    BlockBlock behaves the same way.
+  - A new connector is inserted before its first geometry update (+0x24, which
+    ends in 00a9457c). `update` therefore reports it as Kept, then Kept again
+    as reused, so the loose world inserts it and then applies its
+    displacement.
+
+The narrowphase is unit-tested only (`sh tools/cargo.sh test --locked ball`).
+It is not yet used by the world.
+
 ## Unanchored Parts (loose.rs)
 
 Each unanchored Workspace Part is its own single-Part assembly and SimBody, a

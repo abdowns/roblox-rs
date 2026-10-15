@@ -4,6 +4,7 @@ pub mod animation;
 pub mod animator;
 pub mod assembly;
 mod balancing;
+pub mod ball_contact;
 pub mod block_contact;
 pub mod broadphase;
 pub mod bundle;

@@ -312,6 +312,17 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   drives only the character), and a motor in an anchored assembly
   (refused). Native parity is **not tested**.
 
+- Ball geometry and the BallBall / BallBlock narrowphase
+  (`ball_contact.rs`): radius, volume, moment, extents, the collision tests,
+  the block feature a ball touches (face, edge, vertex, or the nearest face
+  from inside) and the connector geometry. Run
+  `sh tools/cargo.sh test --locked ball`. Expect 6 passing tests:
+  `ball_volume_and_moment` and five `ball_contact::tests`, covering two
+  touching balls, a ball on a face, off an edge and a corner, a center inside
+  the block, and a contact outside the kernel. These are hand-computed
+  cases. Balls are **not yet in the world**: Parts are still all blocks.
+  Native parity is **not tested**.
+
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,
   inertia, angular momentum, restitution and friction. Run

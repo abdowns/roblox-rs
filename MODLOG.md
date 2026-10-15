@@ -1,5 +1,29 @@
 # MODLOG
 
+## 2026-10-15 Ball geometry and the ball contacts (narrowphase only)
+
+**Changed:**
+- New `ball_contact.rs`. It holds the Ball radius (size.x / 2), the extents
+  and the BallBall and BallBlock collision tests. It also has the Block clamp
+  and feature lookup, the connector geometry and `BallContact`, the
+  one-connector contact with the same `update` and events as
+  BlockBlockContact.
+- `block_contact::PairKind` gains BallBall, BallVertex, BallEdge and
+  BallPlane. `GeoPair::compute` sends them to `ball_contact`. A few vector
+  helpers became `pub(crate)`.
+- `MassProfile::ball_volume` and `ball_inertia`, with their constants
+  (01834ffc, 016f753c) read from the install.
+
+**Why:** Roadmap item 3 (shapes) starts with the Ball. This step is the
+narrowphase only, so it can be checked on its own before the world uses
+it.
+
+**Tested how:** `sh tools/cargo.sh test --locked` (105 pass, 6 new), clippy
+clean, audit-assembly still passes (MassProfile loads the two new constants).
+
+**Result:** The unit tests pass on hand-computed cases. Not yet wired into
+the world: Parts are still all blocks. Native parity is **not tested**.
+
 ## 2026-10-15 An animating character wakes what it touches
 
 **Changed:**

@@ -11,23 +11,23 @@ use std::fmt::Write;
 
 type Matrix = [[f32; 3]; 3];
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+pub(crate) fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]
 }
-fn mul(m: &Matrix, v: [f32; 3]) -> [f32; 3] {
+pub(crate) fn mul(m: &Matrix, v: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|i| (m[i][0] * v[0] + m[i][1] * v[1]) + m[i][2] * v[2])
 }
-fn mul_transpose(m: &Matrix, v: [f32; 3]) -> [f32; 3] {
+pub(crate) fn mul_transpose(m: &Matrix, v: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|i| (m[0][i] * v[0] + m[1][i] * v[1]) + m[2][i] * v[2])
 }
-fn to_world(f: &CoordinateFrame, p: [f32; 3]) -> [f32; 3] {
+pub(crate) fn to_world(f: &CoordinateFrame, p: [f32; 3]) -> [f32; 3] {
     let r = mul(&f.rotation, p);
     std::array::from_fn(|i| r[i] + f.position[i])
 }
 fn column(m: &Matrix, axis: usize) -> [f32; 3] {
     [m[0][axis], m[1][axis], m[2][axis]]
 }
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+pub(crate) fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|i| a[i] - b[i])
 }
 /// NormalId sign: (id / 3) * -2 | 1.
@@ -35,7 +35,7 @@ fn sign(id: i32) -> f32 {
     if id / 3 == 0 { 1.0 } else { -1.0 }
 }
 /// Direction of a NormalId on a body: sign * rotation column.
-fn normal_direction(m: &Matrix, id: i32) -> [f32; 3] {
+pub(crate) fn normal_direction(m: &Matrix, id: i32) -> [f32; 3] {
     let axis = id.rem_euclid(3) as usize;
     let s = sign(id);
     [m[0][axis] * s, m[1][axis] * s, s * m[2][axis]]
@@ -133,6 +133,17 @@ pub enum PairKind {
     EdgeFace,
     /// Native 5: two infinite edge lines.
     EdgeEdge,
+    /// BallBallConnector (`ball_contact`): A and B are balls; `length_a` is
+    /// A's radius (+0x110) and `length_b` both radii (+0x114).
+    BallBall,
+    /// BallBlockConnector kind 0 (+0x124): A is the ball, `point_b` a block
+    /// vertex (+0x114) and `length_a` the radius (+0x110).
+    BallVertex,
+    /// BallBlockConnector kind 1: `point_b` is the start of the block edge
+    /// along axis `id_b` (+0x120).
+    BallEdge,
+    /// BallBlockConnector kind 2: `point_b` is a vertex on face `id_b`.
+    BallPlane,
 }
 
 /// GeoPair fields the native constructor leaves uninitialized (pool memory).
@@ -195,6 +206,11 @@ impl GeoPair {
                         && self.id_b == first
                         && self.id_a == second)
             }
+            // Ball connectors are never looked up.
+            PairKind::BallBall
+            | PairKind::BallVertex
+            | PairKind::BallEdge
+            | PairKind::BallPlane => false,
         }
     }
     /// GeoPair::computeContactPoint (ae5f1a).
@@ -205,6 +221,12 @@ impl GeoPair {
             PairKind::VertexPlane => self.vertex_plane(a, b),
             PairKind::EdgeFace => self.edge_face(a, b),
             PairKind::EdgeEdge => self.edge_edge(a, b),
+            PairKind::BallBall => {
+                crate::ball_contact::ball_ball_point(a, b, self.length_a, self.length_b)
+            }
+            PairKind::BallVertex | PairKind::BallEdge | PairKind::BallPlane => {
+                crate::ball_contact::ball_block_point(self, a, b)
+            }
         }
     }
     /// aa1d78.

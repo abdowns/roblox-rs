@@ -14,6 +14,10 @@ pub struct MassProfile {
     plastic_density: f32,
     root_mass: f32,
     three: f32,
+    /// 01834ffc: 4/3 pi (Ball::getVolume 00adc148).
+    ball_volume: f32,
+    /// 016f753c: 0.4 (Ball::getMoment 00adcb76).
+    two_fifths: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -88,7 +92,28 @@ impl MassProfile {
             plastic_density: float(0x01782284)?,
             root_mass,
             three: float(0x01834cd8)?,
+            ball_volume: float(0x01834ffc)?,
+            two_fifths: float(0x016f753c)?,
         })
+    }
+
+    /// Ball::getVolume 00adc148: ((4/3 pi r) r) r.
+    pub fn ball_volume(&self, radius: f32) -> f32 {
+        ((self.ball_volume * radius) * radius) * radius
+    }
+
+    /// Ball::getMoment 00adcb76: ((m 0.4) r) r on the diagonal.
+    pub fn ball_inertia(&self, radius: f32, mass: f32) -> Result<Tensor, String> {
+        if !radius.is_finite() || radius <= 0.0 || !mass.is_finite() || mass <= 0.0 {
+            return Err("invalid ball mass/radius".into());
+        }
+        let moment = ((mass * self.two_fifths) * radius) * radius;
+        if !moment.is_finite() || moment <= 0.0 {
+            return Err("native ball inertia overflow".into());
+        }
+        Ok(std::array::from_fn(|r| {
+            std::array::from_fn(|c| if r == c { moment } else { 0.0 })
+        }))
     }
 
     /// Native Block::getMoment, FUN_00adee8a. Its surface-weighted polynomial
@@ -380,7 +405,18 @@ mod tests {
             plastic_density: 0.7,
             root_mass: 0.1,
             three: 3.0,
+            ball_volume: f32::from_bits(0x4086_0a92),
+            two_fifths: 0.4,
         }
+    }
+    #[test]
+    fn ball_volume_and_moment() {
+        let p = profile();
+        // 4/3 pi 2^3 and 0.4 m r^2.
+        assert!((p.ball_volume(2.0) - 33.510323).abs() < 1e-4);
+        let t = p.ball_inertia(2.0, 5.0).unwrap();
+        assert_eq!(t[0][0], 8.0);
+        assert_eq!((t[1][1], t[2][2], t[0][1]), (8.0, 8.0, 0.0));
     }
     fn part(p: [f32; 3]) -> MassPart {
         MassPart {
