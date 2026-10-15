@@ -53,7 +53,7 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   PopperCam's ray sees static and unanchored Parts, and pierces Parts that are
   CanCollide off or have Transparency above 0.95. Run
   `sh tools/cargo.sh run --locked -- audit-part-push`; expect
-  `part_push_camera_ray ... hit=Some(([..., -8.309371], ...)) static_only=None crate_face_z=-8.309371`
+  `part_push_camera_ray ... hit=Some(([..., -8.426032], ...)) static_only=None crate_face_z=-8.426032`
   and `part_push_pass pushed=true camera_ray=static_and_loose`. Ties between
   Parts at exactly the same distance are not ordered like native (the spatial
   grid order is not ported).
@@ -106,13 +106,14 @@ output to expect. Anything not covered by an audit is marked **not tested**.
 
   Run `sh tools/cargo.sh run --locked -- audit-part-push`. Expect:
   - `part_push_first_contact step=101`;
-  - `part_push_result ... max_character_connectors=8 lists=[FreeFall, Joint, Contact] crate_moved=[0.020631112, 3.2424927e-5, -1.3100352]`.
+  - `part_push_result ... max_character_connectors=7 lists=[FreeFall, Joint, Contact] crate_moved=[0.02115126, -0.00053167343, -1.4266963]`.
     The Crate is asleep when the character reaches it. The touch wakes it, and
     the character's realtime connector is its first, so 00a9be30 files it under
     jointBodies. With the native floor friction (0.3 on Plastic) the character
-    pushes it about 1.31 studs. At step 780, after the character has stopped
-    touching it, the Crate wakes with only its ground contacts and is filed
-    under contactBodies;
+    pushes it about 1.43 studs. While the character animates, its Motor6Ds
+    wake it recursively every frame (00b37550), and the wake reaches the
+    Crate through their touching contact, so the Crate stays awake as long
+    as the Torso touches it (to the end of the run);
   - `part_push_broadphase prims=9 contacts=5 ... destroyed=0`: the
     broadphase contacts (Baseplate-Crate, Baseplate-Torso, Baseplate-Head,
     Crate-Torso, Crate-Head);

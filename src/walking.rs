@@ -180,8 +180,14 @@ impl WalkingFixture {
             self.world.break_joints()?;
             self.world.step_ui(self.schedule.game_time)?;
             let before: Vec<_> = rig.joints.iter().map(|j| j.link_state()).collect();
-            for joint in &mut rig.joints {
+            for (joint, old) in rig.joints.iter_mut().zip(&before) {
                 joint.step()?;
+                // 00b37550: a changed link wakes Part0's and Part1's assembly
+                // (the character's) recursively.
+                if joint.link_state() != *old {
+                    self.world.loose.wake_character_recursive()?;
+                    self.world.loose.wake_character_recursive()?;
+                }
             }
             self.joint_callbacks += 1;
             self.limb_angles = std::array::from_fn(|a| rig.joints[a + 1].current_angle);

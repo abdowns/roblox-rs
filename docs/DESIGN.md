@@ -581,7 +581,12 @@ steps*(float)1/240 and fires Stepped, the keyframe "Animation" signal and the
 world steps. uiStep reaches MovingAssemblyStage 00b39200, which calls Motor6D
 vtable +0x44 (00b3717c) once per job, before the four world steps. Walking
 now steps motors there instead of before the fourth world step. The same
-pass runs the motor hinges' stepUi (see Kernel joints).
+pass runs the motor hinges' stepUi (see Kernel joints). A Motor6D whose
+link changes wakes Part0's and Part1's assembly recursively (00b37550 ->
+World::wakeAssembly 00ba7fb0), so an animating character goes
+RECURSIVE_WAKE_PENDING every frame while it is in SleepStage, with
+SleepStage +0x16c set: the recursive pass then wakes every assembly it
+touches, up to depth 8, awake or not (`LooseWorld::wake_character_recursive`).
 
 Lua `wait` (005b0774) clamps to the Lua setting minimum 0.03 and enqueues
 wall-clock now and now+seconds. WaitingScriptsJob (60 Hz) resumes threads whose

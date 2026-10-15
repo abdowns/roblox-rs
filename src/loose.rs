@@ -2529,6 +2529,19 @@ impl LooseWorld {
         part.history.reset_countdown();
         self.wake(Node::Loose(index))
     }
+    /// `wake_assembly_recursive` for the character's assembly, which a
+    /// changed Motor6D link wakes (00b37550). It only acts while the
+    /// character is in SleepStage (00b74144).
+    pub fn wake_character_recursive(&mut self) -> Result<(), String> {
+        if !self.character.in_stage {
+            return Ok(());
+        }
+        if let Some(history) = self.character.history.as_mut() {
+            history.reset_countdown();
+        }
+        self.wake_through_awake = true;
+        self.wake_recursive(Node::Character)
+    }
     /// World::wakeAssembly 00ba7fb0 -> 00b737c4, recursive: the history
     /// countdown restarts, SleepStage +0x16c is set, and a sleeping or
     /// WAKE_PENDING assembly becomes RECURSIVE_WAKE_PENDING (00b735e6).

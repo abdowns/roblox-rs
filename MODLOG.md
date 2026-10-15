@@ -1,5 +1,36 @@
 # MODLOG
 
+## 2026-10-15 An animating character wakes what it touches
+
+**Changed:**
+- `LooseWorld::wake_character_recursive`: 00b737c4 for the character's
+  assembly. While the character is in SleepStage, the history countdown
+  restarts, SleepStage +0x16c is set, and the character becomes
+  RECURSIVE_WAKE_PENDING.
+- `WalkingFixture::step_animated` calls it for each Motor6D whose link
+  changed in stepUi (00b37550 wakes Part0's and Part1's assembly, recursive),
+  as native does.
+
+**Why:** Found while decoding the Motor6D setter for the previous change.
+The port never woke the character from its motors, so a Part touching an
+animating character could fall asleep under it.
+
+**Tested how:** `sh tools/cargo.sh test --locked` (99 pass), clippy clean,
+all 22 audits against the outputs of the previous commit.
+
+**Result:**
+- audit-part-push changes and still passes. The Crate stays awake while
+  the Torso touches it, which is to the end of the run (before, it slept
+  with the character pressed against it). The character pushes it 1.4267
+  studs instead of 1.3100, and the peak character connector count is 7
+  instead of 8. FEATURES updated.
+- Every other audit is unchanged (audit-runtime differs only in timing).
+  In audit-part-stand the character stands on its Parts in
+  RunningNoPhysics, which keeps it outside SleepStage, so its motors wake
+  nothing. In audit-part-jump the Pad still sleeps under the standing
+  character, which fits the same reason (not checked step by step).
+- Whether native keeps the Crate awake this way is **not tested**.
+
 ## 2026-10-15 Motor6D links outside the character
 
 **Changed:**
