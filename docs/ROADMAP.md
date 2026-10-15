@@ -81,7 +81,9 @@ Left, in order:
 3. **Shapes.** Ball (BallBall/BallBlock contacts), Cylinder, Wedge and
    CornerWedge (PolyContact), TrussPart, and the legacy ramp/prism/pyramid
    Parts. Done: Ball Parts, loose and anchored, and against the character
-   (`ball_contact.rs`, `audit-part-ball`, `audit-part-ball-push`). Left: Ball rendering, then the Poly geometries
+   (`ball_contact.rs`, `audit-part-ball`, `audit-part-ball-push`), and Ball
+   rendering (`geometry::workspace_sphere`, `audit-ball-render`). Left: the
+   Poly geometries
    (Cylinder, WedgePoly, CornerWedgePoly) and PolyPolyContact, which also
    serves Block against Poly.
 4. **Body movers.** BodyPosition, BodyGyro, BodyVelocity,

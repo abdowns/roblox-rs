@@ -37,8 +37,8 @@ Parts swing, spin and follow their motors (`audit-part-hinge`), and Motors
 and Motor6Ds turn the Parts they link (`audit-part-motor`). Ball Parts land,
 roll down a ramp and knock into each other (`audit-part-ball`), and the
 character pushes a loose ball and is stopped by an anchored one
-(`audit-part-ball-push`). The demo place
-has no joints and no Balls.
+(`audit-part-ball-push`). Balls are drawn as spheres (`audit-ball-render`).
+The demo place has no joints and no Balls.
 Contacts come from the native broadphase (`audit-broadphase`). Not ported
 yet: outlines and the Studio camera.
 Manual keys are **not tested**.

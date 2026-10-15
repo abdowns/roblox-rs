@@ -96,6 +96,21 @@ impl NativeImage {
         Ok(rows)
     }
 
+    /// GeometryGenerator::addSphere (010caee0): the largest side it tiles
+    /// (017efdbc, 350) and the tile size its side count divides by (01787ef0,
+    /// 7).
+    pub fn sphere_tiling(&self) -> Result<[f32; 2], String> {
+        let read = |address| -> Result<f32, String> {
+            let bytes = self.region(address, 4)?;
+            Ok(f32::from_le_bytes(bytes.try_into().unwrap()))
+        };
+        let tiling = [read(0x017efdbc)?, read(0x01787ef0)?];
+        if tiling.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err("invalid native sphere tiling".into());
+        }
+        Ok(tiling)
+    }
+
     /// First four vectors copied by HumanoidIdentifier's static initializer
     /// (012a1132..012a1155). The fifth vector is three immediate 1.0 writes.
     pub fn humanoid_mesh_sizes(&self) -> Result<[[f32; 3]; 4], String> {

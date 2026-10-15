@@ -1,5 +1,42 @@
 # MODLOG
 
+## 2026-10-15 Ball rendering
+
+**Changed:**
+- `geometry::workspace_sphere`, a port of GeometryGenerator::addSphere
+  (010caee0) without a decal: the cube sphere described in DESIGN.md.
+  `geometry::sphere_grid` gives its tile and row counts.
+  `NativeImage::sphere_tiling` reads its two constants (350 at 017efdbc and
+  7 at 01787ef0) from the executable.
+- `workspace_draws` dispatches on Part.Shape, as addPartImpl (010d1850) does:
+  a Ball becomes a "sphere" draw; anything other than a Block or Ball is an
+  error. Its report prints a `workspace_draw ... geometry=sphere` line per
+  Ball.
+- The walking viewport probe keeps "sphere" draws with the Workspace, as it
+  does "block" draws.
+- `part_color` (010ca980 without a decal) is now shared by both generators.
+- New `audit-ball-render` (`render::audit_ball_render`, with
+  `geometry::sphere_mesh_report`).
+
+**Why:** Roadmap item 3: Balls were simulated but not drawn.
+
+**Tested how:** `sh tools/cargo.sh test --locked` (107 pass), clippy clean,
+all 24 earlier audits (unchanged; audit-runtime differs only in timing),
+audit-geometry and audit-render (both pass), and the new audit.
+
+**Result:**
+- Six Balls (diameters 1, 4, 20 Smooth, 20 studded, 400 and a tilted 6)
+  match addSphere's vertex and quad counts:
+  - 294/216 for one tile;
+  - 378/216 for three tiles of two rows;
+  - 30600/15000 at the 350 clamp.
+- Every vertex is within 1e-6 of the radius, normals are radial, no
+  triangle faces inward, and the seams close (218 distinct points for 6x6
+  quads per face).
+- On the GPU, the diameter-4 Ball fills 0.784 of its bounding box (pi/4 is
+  0.785); a 4x4x4 block beside it fills 0.993.
+- No viewport shows a Ball yet. Native parity is **not tested**.
+
 ## 2026-10-15 The character against Ball Parts
 
 **Changed:**

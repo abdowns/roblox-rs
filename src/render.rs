@@ -1132,6 +1132,122 @@ fn draw_bytes_with_studs(
 }
 
 /// Real GPU execution and readback; no screenshots or visual inspection.
+/// Ball rendering: the mesh checks (`geometry::sphere_mesh_report`), then a
+/// GPU readback of a diameter-4 Ball "Ball" beside a 4 x 4 x 4 block "Cube"
+/// seen from 20 studs. Each Part's pixels are the ones that change when it
+/// is moved away; a round silhouette fills about pi/4 of its bounding box, a
+/// block's nearly all of it.
+pub fn audit_ball_render(bundle: &Bundle) -> Result<String, String> {
+    use crate::workspace::{PartInstance, SHAPE_BALL, Workspace};
+    let mut report = crate::geometry::sphere_mesh_report(bundle)?;
+    let scene = RenderScene::character(bundle)?;
+    let mut surfaces = surface::character(bundle, &scene)?;
+    let character_decals = texture::character_decals(bundle, &scene)?;
+    let mut app = scene_app(scene);
+    for decal in character_decals.draws {
+        app.world_mut().spawn(decal);
+    }
+    let mut ball = PartInstance {
+        name: "Ball".into(),
+        ..Default::default()
+    };
+    ball.set_shape(SHAPE_BALL);
+    ball.set_size([4.0; 3]);
+    ball.frame.position = [-4.0, 60.0, 0.0];
+    let mut cube = PartInstance {
+        name: "Cube".into(),
+        ..Default::default()
+    };
+    cube.set_size([4.0; 3]);
+    cube.frame.position = [4.0, 60.0, 0.0];
+    let workspace = Workspace {
+        parts: vec![ball, cube],
+        joints: Vec::new(),
+    };
+    let (draws, coordinates, draw_report) = crate::geometry::workspace_draws(bundle, &workspace)?;
+    report.push_str(&draw_report);
+    surfaces.coordinates.extend(coordinates);
+    for draw in draws {
+        app.world_mut().spawn(draw);
+    }
+    app.update();
+    let mut inputs = RenderInputs::character_probe();
+    inputs.frame = CoordinateFrame {
+        position: [0.0, 60.0, 20.0],
+        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    };
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let extracted = app.world().resource::<Extracted>().0.clone();
+    let decals = app.world().resource::<ExtractedDecals>().0.clone();
+    let (mut gpu, _) = Gpu::new(&instance, None, wgpu::TextureFormat::Rgba8Unorm, &extracted)?;
+    gpu.add_studs(&extracted, &surfaces)?;
+    gpu.add_decals(&decals)?;
+    let (width, height) = (640u32, 480u32);
+    let full = gpu.read_frame(width, height, &inputs)?;
+    if gpu.read_frame(width, height, &inputs)? != full {
+        return Err("ball render repeat readback mismatch".into());
+    }
+    let mut checks = Vec::new();
+    for name in ["Ball", "Cube"] {
+        let mut hidden = extracted.clone();
+        for draw in hidden.iter_mut().filter(|d| d.name == name) {
+            for v in &mut draw.vertices {
+                v.position = [1e6; 3];
+            }
+        }
+        gpu.update_geometry(&hidden, &decals, &surfaces)?;
+        let without = gpu.read_frame(width, height, &inputs)?;
+        let mut count = 0u32;
+        let mut bounds = [u32::MAX, u32::MAX, 0u32, 0u32];
+        for (i, (a, b)) in full
+            .chunks_exact(4)
+            .zip(without.chunks_exact(4))
+            .enumerate()
+        {
+            if a != b {
+                let (x, y) = (i as u32 % width, i as u32 / width);
+                count += 1;
+                bounds = [
+                    bounds[0].min(x),
+                    bounds[1].min(y),
+                    bounds[2].max(x),
+                    bounds[3].max(y),
+                ];
+            }
+        }
+        let (w, h) = (
+            bounds[2].saturating_sub(bounds[0]) + 1,
+            bounds[3].saturating_sub(bounds[1]) + 1,
+        );
+        let fill = count as f32 / (w * h) as f32;
+        writeln!(
+            report,
+            "ball_render_part name={name:?} pixels={count} bounds={bounds:?} width={w} height={h} fill={fill}"
+        )
+        .unwrap();
+        checks.push((count, w as f32 / h as f32, fill));
+    }
+    gpu.update_geometry(&extracted, &decals, &surfaces)?;
+    if gpu.read_frame(width, height, &inputs)? != full {
+        return Err("ball render restore readback mismatch".into());
+    }
+    let (ball, cube) = (checks[0], checks[1]);
+    let round = ball.0 > 500
+        && (0.95..1.05).contains(&ball.1)
+        && (0.74..0.82).contains(&ball.2)
+        && cube.0 > 500
+        && cube.2 > 0.9;
+    if !round {
+        return Err(format!("ball render failed\n{report}"));
+    }
+    writeln!(
+        report,
+        "ball_render_pass round=true repeat_identical=true native_differential=not_tested"
+    )
+    .unwrap();
+    Ok(report)
+}
+
 pub fn audit(bundle: &Bundle) -> Result<String, String> {
     let start = Instant::now();
     let scene = RenderScene::character(bundle)?;
@@ -2042,7 +2158,10 @@ impl ApplicationHandler for Viewport {
                 let mut hidden = original.clone();
                 let mut hidden_decals = decals.clone();
                 for draw in &mut hidden {
-                    if !matches!(draw.geometry.as_str(), "walking_fixture" | "block") {
+                    if !matches!(
+                        draw.geometry.as_str(),
+                        "walking_fixture" | "block" | "sphere"
+                    ) {
                         for vertex in &mut draw.vertices {
                             vertex.position = [1e6; 3];
                         }

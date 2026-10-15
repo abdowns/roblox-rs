@@ -136,6 +136,17 @@ fn vertex(
     })
 }
 
+/// The vertex color of a Workspace Part (010ca980 without a decal).
+fn part_color(colors: &BTreeMap<u32, [u8; 3]>, part: &PartInstance) -> Result<[f32; 4], String> {
+    let rgb = colors.get(&part.brick_color).ok_or("invalid BrickColor")?;
+    Ok([
+        rgb[0] as f32 / 255.0,
+        rgb[1] as f32 / 255.0,
+        rgb[2] as f32 / 255.0,
+        (255 - (part.transparency * 255.0) as u32) as f32 / 255.0,
+    ])
+}
+
 /// GeometryGenerator::addBlock (010cca80) for a Workspace block Part without
 /// a decal: world-space corners from the part CFrame, one quad per Smooth
 /// face, and faces with any other surface cut into 8-stud strips along Y
@@ -206,13 +217,7 @@ pub fn workspace_block(
     let down = column(1).map(|x| -x);
     let back = column(2).map(|x| -x);
     let steps = [down, back, down, down, column(2), down];
-    let rgb = colors.get(&part.brick_color).ok_or("invalid BrickColor")?;
-    let color = [
-        rgb[0] as f32 / 255.0,
-        rgb[1] as f32 / 255.0,
-        rgb[2] as f32 / 255.0,
-        (255 - (part.transparency * 255.0) as u32) as f32 / 255.0,
-    ];
+    let color = part_color(colors, part)?;
     let specular = specular(part.material)?;
     let mut draw = Draw {
         name: part.name.clone(),
@@ -306,22 +311,375 @@ pub fn workspace_block(
     Ok((draw, studs))
 }
 
-/// Draws and stud coordinates for every Workspace Part (blocks only).
+/// addSphere's grid for a Ball Part: `tiles` strips per cube face, each
+/// `rows` quads tall, and `tiles * rows` quads across. A Part whose six
+/// surfaces are all Smooth (isPartSmooth 010cae50) gets one tile; otherwise
+/// tiles = ceil(min(size.x, size.y, size.z, 350) / 7) and
+/// rows = (tiles + 5) / tiles. Zero tiles draw nothing.
+pub fn sphere_grid(part: &PartInstance, tiling: [f32; 2]) -> (u32, u32) {
+    let (_, clamped) = sphere_side(part, tiling);
+    let tiles = if part.surfaces.iter().all(|s| *s == 0) {
+        1.0
+    } else {
+        (clamped / tiling[1]).ceil()
+    };
+    let tiles = tiles as i64 as u32;
+    if tiles == 0 {
+        return (0, 0);
+    }
+    (tiles, (tiles + 5) / tiles)
+}
+
+/// MINSS dest, src.
+fn minss(dest: f32, src: f32) -> f32 {
+    if dest < src { dest } else { src }
+}
+
+/// addSphere's smallest side min(z, min(y, x)) and that side clamped to 350.
+fn sphere_side(part: &PartInstance, tiling: [f32; 2]) -> (f32, f32) {
+    let size = part.size;
+    let side = minss(size[2], minss(size[1], size[0]));
+    (side, minss(tiling[0], side))
+}
+
+/// GeometryGenerator::addSphere (010caee0) for a Workspace Ball Part without
+/// a decal: a cube sphere. Each cube face (corners from the block face table,
+/// stepping along the column directions 0224e0f0 and the row directions
+/// 0224e0a0) is cut into `tiles` strips of `rows + 1` vertex rows, each row
+/// `tiles * rows + 1` vertices across; a strip's last row repeats as the next
+/// strip's first. Every grid point d on the [-1, 1] cube is projected to
+/// size * 0.5 * d / |d|, with the ellipsoid normal (d / |d|) / (size * 0.5).
+/// Faces with surface types 1-5 get stud coordinates: u runs from
+/// side / (2 tiles) down by side / (2 tiles rows) per vertex, v starts each
+/// strip at frac(strip * side / tiles) / 8 * 0.25 + row and grows by
+/// side * 0.25 / (8 tiles rows) per row (side = the clamped smallest size).
+/// Material UVs, tangents and outline edge distances are not produced, as
+/// for blocks. Returns the draw and its stud coordinates.
+pub fn workspace_sphere(
+    faces: &[[usize; 4]; 6],
+    rows: &[f32; 6],
+    tiling: [f32; 2],
+    colors: &BTreeMap<u32, [u8; 3]>,
+    part: &PartInstance,
+) -> Result<(Draw, Vec<[f32; 2]>), String> {
+    // The cube corners 0224e02c: bit 4 = +X, bit 2 = +Y, bit 1 = +Z.
+    let corner = |k: usize| -> [f32; 3] {
+        [
+            if k & 4 != 0 { 1.0 } else { -1.0 },
+            if k & 2 != 0 { 1.0 } else { -1.0 },
+            if k & 1 != 0 { 1.0 } else { -1.0 },
+        ]
+    };
+    const ROW_STEP: [[f32; 3]; 6] = [
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.0, -1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, -1.0, 0.0],
+    ];
+    const COLUMN_STEP: [[f32; 3]; 6] = [
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+    ];
+    let mut draw = Draw {
+        name: part.name.clone(),
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        material: part.material,
+        geometry: "sphere".into(),
+    };
+    let mut studs = Vec::new();
+    let (tiles, strip_rows) = sphere_grid(part, tiling);
+    if tiles == 0 {
+        return Ok((draw, studs));
+    }
+    let size = part.size;
+    let (side, clamped) = sphere_side(part, tiling);
+    let tiles_f = tiles as f32;
+    let rows_f = strip_rows as f32;
+    let across = tiles * strip_rows + 1;
+    let total = 6 * (strip_rows + 1) * tiles * across;
+    if total > 0x10000 {
+        return Err("sphere exceeds 16-bit vertex indices".into());
+    }
+    let fraction = 1.0 / (tiles_f * rows_f);
+    let half = (side * 0.5) / side;
+    let color = part_color(colors, part)?;
+    let specular = specular(part.material)?;
+    let r = &part.frame.rotation;
+    let t = part.frame.position;
+    for face in 0..6 {
+        let mut start = corner(faces[face][0]);
+        let row_step = ROW_STEP[face].map(|v| fraction * v);
+        let column_step = COLUMN_STEP[face].map(|v| fraction * v);
+        let surface = part.surfaces[face] as usize;
+        let (row, extent, u_step) = if (1..=5).contains(&surface) {
+            (rows[surface], 0.25f32, clamped * fraction * 0.5)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        for strip in 0..tiles {
+            let first = draw.vertices.len() as u32;
+            let x = (strip as f32 * clamped) / tiles_f;
+            let mut v = (x - x.floor()) * 0.125 * extent + row;
+            for row_index in 0..=strip_rows {
+                let mut d = start;
+                let mut u = rows_f * u_step;
+                for _ in 0..across {
+                    let inverse = 1.0 / (d[2] * d[2] + d[1] * d[1] + d[0] * d[0]).sqrt();
+                    let local = [
+                        size[0] * half * d[0] * inverse + 0.0,
+                        size[1] * half * d[1] * inverse + 0.0,
+                        half * size[2] * inverse * d[2] + 0.0,
+                    ];
+                    let n = [
+                        (d[0] * inverse) / (size[0] * half),
+                        (d[1] * inverse) / (size[1] * half),
+                        (inverse * d[2]) / (half * size[2]),
+                    ];
+                    let position: [f32; 3] = std::array::from_fn(|i| {
+                        local[2] * r[i][2] + local[1] * r[i][1] + local[0] * r[i][0] + t[i]
+                    });
+                    let w: [f32; 3] =
+                        std::array::from_fn(|i| r[i][2] * n[2] + r[i][1] * n[1] + r[i][0] * n[0]);
+                    let length = 1.0 / (w[2] * w[2] + w[1] * w[1] + w[0] * w[0]).sqrt();
+                    draw.vertices.push(RenderVertex {
+                        position,
+                        normal: [w[0] * length, w[1] * length, length * w[2]],
+                        uv: [0.0; 2],
+                        color,
+                        specular,
+                    });
+                    studs.push([u, v]);
+                    d = std::array::from_fn(|i| d[i] + column_step[i] + column_step[i]);
+                    u -= u_step;
+                }
+                if row_index < strip_rows {
+                    start = std::array::from_fn(|i| start[i] + row_step[i] + row_step[i]);
+                }
+                v += clamped * extent * fraction * 0.125;
+            }
+            for row_index in 0..strip_rows {
+                for column in 0..across - 1 {
+                    let a = first + row_index * across + column;
+                    let b = a + across;
+                    draw.indices.extend([a, a + 1, b, b, a + 1, b + 1]);
+                }
+            }
+        }
+    }
+    if draw.vertices.len() as u32 != total
+        || draw.indices.len() as u32 != 36 * (across - 1) * (across - 1)
+    {
+        return Err("sphere vertex or quad count mismatch".into());
+    }
+    Ok((draw, studs))
+}
+
+/// The mesh half of `audit-ball-render`: Ball draws from `workspace_sphere`
+/// checked against addSphere's own counts (its asserts "faceCounter ==
+/// quads" and "vertexCounter == totalVerts") and against the sphere they
+/// approximate: vertex distance from the center, normals along the radius,
+/// outward winding, closed seams (6 N^2 + 2 distinct points for N quads
+/// across a face) and the stud coordinate ranges per face.
+pub fn sphere_mesh_report(bundle: &Bundle) -> Result<String, String> {
+    use crate::workspace::{SHAPE_BALL, SURFACE_SMOOTH};
+    let image = NativeImage::load(bundle)?;
+    let (faces, rows, colors, tiling) = (
+        image.block_faces()?,
+        image.surface_rows()?,
+        image.brick_colors()?,
+        image.sphere_tiling()?,
+    );
+    // 30 degrees about (1, 1, 0) / sqrt(2).
+    let (c, s) = (30.0f32.to_radians().cos(), 30.0f32.to_radians().sin());
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    let axis = [k, k, 0.0];
+    let tilted: [[f32; 3]; 3] = std::array::from_fn(|i| {
+        std::array::from_fn(|j| {
+            let cross = [
+                [0.0, -axis[2], axis[1]],
+                [axis[2], 0.0, -axis[0]],
+                [-axis[1], axis[0], 0.0],
+            ];
+            let identity = if i == j { 1.0 } else { 0.0 };
+            c * identity + s * cross[i][j] + (1.0 - c) * axis[i] * axis[j]
+        })
+    });
+    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let cases = [
+        ("Pebble", 1.0, false, identity),
+        ("Boulder", 4.0, false, identity),
+        ("Smooth", 20.0, true, identity),
+        ("Big", 20.0, false, identity),
+        ("Huge", 400.0, false, identity),
+        ("Tilted", 6.0, false, tilted),
+    ];
+    let mut report = String::new();
+    let mut failures = Vec::new();
+    for (name, diameter, smooth, rotation) in cases {
+        let mut part = PartInstance {
+            name: name.into(),
+            ..Default::default()
+        };
+        part.set_shape(SHAPE_BALL);
+        part.set_size([diameter; 3]);
+        part.frame.position = [3.0, 7.0, -5.0];
+        part.frame.rotation = rotation;
+        if smooth {
+            part.surfaces = [SURFACE_SMOOTH; 6];
+        }
+        let (draw, studs) = workspace_sphere(&faces, &rows, tiling, &colors, &part)?;
+        let (tiles, strip_rows) = sphere_grid(&part, tiling);
+        let across = tiles * strip_rows;
+        let vertices = 6 * (strip_rows + 1) * tiles * (across + 1);
+        let quads = 6 * across * across;
+        let radius = diameter * 0.5;
+        let center = part.frame.position;
+        let offset = |p: [f32; 3]| -> [f32; 3] { std::array::from_fn(|i| p[i] - center[i]) };
+        let length = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let mut radius_error = 0.0f32;
+        let mut normal_error = 0.0f32;
+        let mut least_alignment = 1.0f32;
+        for v in &draw.vertices {
+            let d = offset(v.position);
+            let l = length(d);
+            radius_error = radius_error.max((l / radius - 1.0).abs());
+            normal_error = normal_error.max((length(v.normal) - 1.0).abs());
+            let along = (v.normal[0] * d[0] + v.normal[1] * d[1] + v.normal[2] * d[2]) / l;
+            least_alignment = least_alignment.min(along);
+        }
+        let mut inward = 0;
+        for t in draw.indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|i| draw.vertices[t[i] as usize].position);
+            let e1: [f32; 3] = std::array::from_fn(|i| b[i] - a[i]);
+            let e2: [f32; 3] = std::array::from_fn(|i| c[i] - a[i]);
+            let n = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let mid = offset(std::array::from_fn(|i| (a[i] + b[i] + c[i]) / 3.0));
+            if n[0] * mid[0] + n[1] * mid[1] + n[2] * mid[2] <= 0.0 {
+                inward += 1;
+            }
+        }
+        // Distinct points (within 1e-4 of the radius), for small meshes.
+        let distinct = if draw.vertices.len() <= 2000 {
+            let mut points: Vec<[f32; 3]> = Vec::new();
+            for v in &draw.vertices {
+                let near = points.iter().any(|p| {
+                    length(std::array::from_fn(|i| p[i] - v.position[i])) <= radius * 1e-4
+                });
+                if !near {
+                    points.push(v.position);
+                }
+            }
+            Some(points.len() as u32)
+        } else {
+            None
+        };
+        let per_face = vertices as usize / 6;
+        let mut ranges = Vec::new();
+        for face in 0..6 {
+            let range = studs[face * per_face..(face + 1) * per_face].iter().fold(
+                [f32::MAX, f32::MIN, f32::MAX, f32::MIN],
+                |r, s| {
+                    [
+                        r[0].min(s[0]),
+                        r[1].max(s[0]),
+                        r[2].min(s[1]),
+                        r[3].max(s[1]),
+                    ]
+                },
+            );
+            ranges.push(range);
+        }
+        writeln!(
+            report,
+            "ball_mesh name={name:?} diameter={diameter} smooth={smooth} tiles={tiles} rows={strip_rows} vertices={} expected_vertices={vertices} quads={} expected_quads={quads} radius_error={radius_error} normal_length_error={normal_error} least_normal_alignment={least_alignment} inward_triangles={inward} distinct_points={distinct:?} expected_distinct={}",
+            draw.vertices.len(),
+            draw.indices.len() / 6,
+            6 * across * across + 2
+        )
+        .unwrap();
+        writeln!(
+            report,
+            "ball_mesh_studs name={name:?} surfaces={:?} u_min_max_v_min_max={ranges:?}",
+            part.surfaces
+        )
+        .unwrap();
+        let closed = distinct.is_none_or(|d| d == 6 * across * across + 2);
+        if draw.vertices.len() as u32 != vertices
+            || draw.indices.len() as u32 != quads * 6
+            || radius_error > 1e-5
+            || normal_error > 1e-5
+            || least_alignment < 0.99999
+            || inward != 0
+            || !closed
+        {
+            failures.push(name);
+        }
+    }
+    if !failures.is_empty() {
+        return Err(format!("ball mesh failed {failures:?}\n{report}"));
+    }
+    Ok(report)
+}
+
+/// Draws and stud coordinates for every Workspace Part (Blocks and Balls).
 #[allow(clippy::type_complexity)] // Draws plus their per-vertex stud coordinates.
 pub fn workspace_draws(
     bundle: &Bundle,
     workspace: &Workspace,
 ) -> Result<(Vec<Draw>, BTreeMap<String, Vec<[f32; 2]>>, String), String> {
     let image = NativeImage::load(bundle)?;
-    let (faces, rows, colors) = (
+    let (faces, rows, colors, tiling) = (
         image.block_faces()?,
         image.surface_rows()?,
         image.brick_colors()?,
+        image.sphere_tiling()?,
     );
     let mut draws = Vec::new();
     let mut coordinates = BTreeMap::new();
     let mut report = String::new();
     for part in &workspace.parts {
+        if part.shape == crate::workspace::SHAPE_BALL {
+            let (draw, studs) = workspace_sphere(&faces, &rows, tiling, &colors, part)?;
+            let (tiles, strip_rows) = sphere_grid(part, tiling);
+            let center = part.frame.position;
+            let (near, far) = draw.vertices.iter().fold((f32::MAX, 0.0f32), |(n, f), v| {
+                let d: [f32; 3] = std::array::from_fn(|i| v.position[i] - center[i]);
+                let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                (n.min(l), f.max(l))
+            });
+            writeln!(
+                report,
+                "workspace_draw name={:?} geometry=sphere tiles={tiles} rows={strip_rows} vertices={} triangles={} color={:?} radius_range=[{near}, {far}] stud_extent={:?}",
+                draw.name,
+                draw.vertices.len(),
+                draw.indices.len() / 3,
+                draw.vertices.first().map(|v| v.color),
+                studs.iter().fold([0.0f32; 2], |m, s| [m[0].max(s[0]), m[1].max(s[1])])
+            )
+            .unwrap();
+            if coordinates.insert(draw.name.clone(), studs).is_some() {
+                return Err(format!("duplicate Workspace Part name {:?}", draw.name));
+            }
+            draws.push(draw);
+            continue;
+        }
+        if part.shape != crate::workspace::SHAPE_BLOCK {
+            return Err(format!(
+                "Part {:?}: only Block and Ball Parts render",
+                part.name
+            ));
+        }
         let (draw, studs) = workspace_block(&faces, &rows, &colors, part)?;
         writeln!(
             report,

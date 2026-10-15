@@ -341,8 +341,26 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   between steps 300 and 900 (exponential decay at about 0.29/s). The kernel's
   angular damping (0.9998 per pre-step and per impulse) explains only part of
   that. Whether native balls slow the same way is **not tested**. Not
-  ported: Cylinders (refused), Ball rendering (drawn as blocks), Balls in the
-  character. Native parity is **not tested**.
+  ported: Cylinders (refused), Balls in the character. Native parity is
+  **not tested**.
+
+- Ball Parts are drawn as addSphere's cube sphere (`geometry::workspace_sphere`).
+  Run `sh tools/cargo.sh run --locked -- audit-ball-render`. Expect:
+  - `ball_mesh name="Boulder" diameter=4 smooth=false tiles=1 rows=6 vertices=294 expected_vertices=294 quads=216 expected_quads=216 radius_error=0.00000023841858 ... least_normal_alignment=0.9999999 inward_triangles=0 distinct_points=Some(218) expected_distinct=218`,
+    and the same checks for diameters 1, 20 (Smooth and studded), 400 and a
+    tilted 6:
+    - `Big` (diameter 20) has `tiles=3 rows=2 vertices=378`;
+    - `Huge` (diameter 400, clamped to 350) has `tiles=50 rows=1 vertices=30600 ... quads=15000`;
+  - `ball_mesh_studs name="Boulder" ... [-1.7881393e-7, 2.0, 0.0, 0.125] ... [-1.7881393e-7, 2.0, 0.5, 0.6249999] ...`:
+    Top and Bottom stud coordinates, matching a 4-stud block's top face;
+  - `ball_render_part name="Ball" pixels=3730 bounds=[216, 206, 285, 273] width=70 height=68 fill=0.78361344`
+    (a disc fills pi/4 = 0.785 of its box) and
+    `ball_render_part name="Cube" pixels=6266 ... fill=0.9933418`;
+  - `ball_render_pass round=true repeat_identical=true native_differential=not_tested`.
+
+  The pixel counts depend on the GPU. No viewport shows a Ball yet (the demo
+  place has none). Not ported: decals on Balls, material UVs, tangents and
+  outline distances (as for blocks). Native parity is **not tested**.
 
 - The character against Ball Parts. A ball 4 studs across stays below the
   Head, so the Torso's touch ends RunningNoPhysics. Run

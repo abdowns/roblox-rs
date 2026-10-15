@@ -902,6 +902,45 @@ Plastic shader reads only stud coordinates; outlines are disabled). More than
 `audit-baseplate-render` add these draws to the walking viewport path with
 `motion::install_world(.., baseplate=true)`.
 
+GeometryGenerator::addPartImpl (010d1850) picks the generator by Part type:
+- 0 Ball → addSphere (010caee0);
+- 1 Block → addBlock;
+- 2 Cylinder → 010da0d0;
+- 3 Truss → addTruss;
+- 4 Wedge → 010dc290;
+- 9 CornerWedge → 010e14b0;
+- 0xb Operation and 0xc MeshPart have their own.
+
+A SpecialMesh's MeshType (+0x78) reroutes to the same generators (3 Sphere,
+6 Brick, 1 Torso, ...).
+
+`geometry::workspace_sphere` ports addSphere for a Ball without a decal. It
+builds a cube sphere:
+- **Grid size.** side = min(x, y, z), clamped to 350 (017efdbc). A Part
+  whose six surfaces are all Smooth (isPartSmooth 010cae50, raw type 0, so
+  SmoothNoOutlines does not count) gets tiles = 1. Otherwise
+  tiles = ceil(side / 7) (01787ef0). Each tile is rows = (tiles + 5) / tiles
+  quads tall, and a face is tiles x rows quads across.
+- **Face grid.** Each cube face starts at the block corner table's first
+  corner (017f0140). It steps along a column direction (0224e0f0:
+  +Z, +X, -X, -Z, +X, +X) and a row direction (0224e0a0: -Y, -Z, -Y, -Y,
+  +Z, -Y), by 2 / (tiles x rows) each, adding the half step twice as the
+  native does. Each strip has rows + 1 vertex rows; its last row repeats as
+  the next strip's first.
+- **Projection.** A grid point d becomes size x 0.5 x d / |d|. Its normal is
+  (d / |d|) / (size x 0.5), rotated by the CFrame and normalized (an
+  ellipsoid's normal; the Part size is uniform for a Ball anyway).
+- **Studs.** Surface types 1-5 get stud coordinates: u runs from
+  side / (2 tiles) down by side / (2 tiles rows) per vertex. v starts each
+  strip at frac(strip x side / tiles) / 8 x 0.25 + row and grows by
+  side x 0.25 / (8 tiles rows) per row. side here is the clamped one.
+- **Indices.** Quads use the block's order (a, a+1, a+W, a+W, a+1, a+W+1).
+- **Not produced.** Material UVs, tangents and outline distances are left
+  out, as for blocks. The vertex color is 010ca980, shared with blocks.
+
+`audit-ball-render` checks the mesh against the native counts and the
+sphere, then renders a Ball beside a cube and compares their silhouettes.
+
 ## BlockBlockContact narrowphase (box against box)
 
 block_contact.rs ports the narrowphase the Contact class runs for two Block
