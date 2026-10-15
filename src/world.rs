@@ -5,8 +5,9 @@
 //! anchored Parts of a Workspace (`World::in_workspace`).
 use crate::{
     assembly::{AssemblyProperties, MassPart, MassProfile, Tensor},
+    ball_contact,
     block_contact::{Block, BlockBlockContact, BlockTables, Connector},
-    broadphase::{Event, Extents, SpatialHash, block_extents},
+    broadphase::{Event, Extents, SpatialHash, ball_extents, block_extents},
     bundle::Bundle,
     collision::ContactBodyState,
     humanoid_state::{FloorPart, Hit},
@@ -20,7 +21,7 @@ use crate::{
     physics,
     rig::{Motor6D, R6Rig, compose},
     scene::{CoordinateFrame, Scene},
-    workspace::{Workspace, character_placement},
+    workspace::{SHAPE_BALL, SHAPE_BLOCK, Workspace, character_placement},
 };
 use std::collections::BTreeMap;
 
@@ -211,6 +212,48 @@ fn box_hit_test(
     ))
 }
 
+/// Primitive hitTest (00b631de) with Ball geometry (vtable +0x70, 00adc17c):
+/// G3D::CollisionDetection::collisionTimeForMovingPointFixedSphere
+/// (0124e2c8, not solid) in part space against the ball at the origin. The
+/// hit counts when the time is not infinite.
+fn ball_hit_test(
+    frame: &CoordinateFrame,
+    radius: f32,
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> Option<Hit> {
+    let r = &frame.rotation;
+    let t = frame.position;
+    let p: [f32; 3] = std::array::from_fn(|i| origin[i] - t[i]);
+    let point: [f32; 3] = std::array::from_fn(|i| r[0][i] * p[0] + r[1][i] * p[1] + r[2][i] * p[2]);
+    let v: [f32; 3] = std::array::from_fn(|i| {
+        r[0][i] * direction[0] + r[1][i] * direction[1] + r[2][i] * direction[2]
+    });
+    let speed = ((v[0] * v[0] + v[1] * v[1]) + v[2] * v[2]).sqrt();
+    let inverse = 1.0 / speed;
+    let u = [v[0] * inverse, v[1] * inverse, inverse * v[2]];
+    // The sphere center is Vector3::zero (0025a930).
+    let l = point.map(|x| 0.0 - x);
+    let d = (u[0] * l[0] + u[1] * l[1]) + u[2] * l[2];
+    let l2 = (l[0] * l[0] + l[1] * l[1]) + l[2] * l[2];
+    let r2 = radius * radius;
+    if (d < 0.0 && l2 > r2) || l2 - d * d > r2 {
+        return None;
+    }
+    let q = (r2 - (l2 - d * d)).sqrt();
+    let time = (d + if r2 < l2 { -q } else { q }) / speed;
+    if time == f32::INFINITY {
+        return None;
+    }
+    let hit: [f32; 3] = std::array::from_fn(|i| point[i] + v[i] * time);
+    let inverse = 1.0 / ((hit[0] * hit[0] + hit[1] * hit[1]) + hit[2] * hit[2]).sqrt();
+    let normal = [hit[0] * inverse, hit[1] * inverse, inverse * hit[2]];
+    Some((
+        std::array::from_fn(|i| r[i][2] * hit[2] + r[i][1] * hit[1] + r[i][0] * hit[0] + t[i]),
+        std::array::from_fn(|i| r[i][2] * normal[2] + r[i][1] * normal[1] + r[i][0] * normal[0]),
+    ))
+}
+
 /// One getSlowHit (00ae7d08) candidate: the bounding-sphere test (vtable
 /// +0x10 radius), the hit test, then a positive distance strictly below the
 /// best so far.
@@ -221,17 +264,36 @@ fn slow_hit_candidate(
     direction: [f32; 3],
     best: f32,
 ) -> Option<(f32, Hit)> {
+    slow_hit_shape(frame, size, Shape::Block, origin, direction, best)
+}
+
+/// `slow_hit_candidate` for a Primitive of either geometry: a Ball's
+/// bounding radius is its radius (00adc208).
+fn slow_hit_shape(
+    frame: &CoordinateFrame,
+    size: [f32; 3],
+    shape: Shape,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    best: f32,
+) -> Option<(f32, Hit)> {
     let c = frame.position;
     let along = (c[2] - origin[2]) * direction[2]
         + (c[1] - origin[1]) * direction[1]
         + (c[0] - origin[0]) * direction[0];
     let off: [f32; 3] = std::array::from_fn(|i| c[i] - (direction[i] * along + origin[i]));
     let h = size.map(|s| s * 0.5);
-    let radius = (h[0] * h[0] + h[1] * h[1] + h[2] * h[2]).sqrt();
+    let radius = match shape {
+        Shape::Block => (h[0] * h[0] + h[1] * h[1] + h[2] * h[2]).sqrt(),
+        Shape::Ball => crate::ball_contact::radius(size),
+    };
     if (off[2] * off[2] + off[1] * off[1] + off[0] * off[0]).sqrt() > radius {
         return None;
     }
-    let (point, normal) = box_hit_test(frame, size, origin, direction)?;
+    let (point, normal) = match shape {
+        Shape::Block => box_hit_test(frame, size, origin, direction)?,
+        Shape::Ball => ball_hit_test(frame, radius, origin, direction)?,
+    };
     let distance = (point[2] - origin[2]) * direction[2]
         + (point[1] - origin[1]) * direction[1]
         + (point[0] - origin[0]) * direction[0];
@@ -421,6 +483,14 @@ impl Statics {
     }
 }
 
+/// Primitive extents 00b61c9a of a loose Part.
+fn loose_extents(frame: &CoordinateFrame, part: &LoosePrim) -> Extents {
+    match part.shape {
+        Shape::Block => block_extents(frame, part.size),
+        Shape::Ball => ball_extents(frame, ball_contact::radius(part.size)),
+    }
+}
+
 /// The Humanoid ray query (getHit 00ae818c through the HumanoidState filter
 /// 00c02844): every primitive in the ContactManager, anchored or not, except
 /// CanCollide-false Parts (+0xcc), dragged Parts (+0xca) and the character's
@@ -466,7 +536,7 @@ fn raycast_where(
                 continue;
             };
             if let Some((distance, hit)) =
-                slow_hit_candidate(&frame, part.size, origin, direction, limit)
+                slow_hit_shape(&frame, part.size, part.shape, origin, direction, limit)
             {
                 limit = distance;
                 best = Some((distance, hit, FloorPart::Loose(index)));
@@ -836,8 +906,24 @@ impl World {
         let mut entered = Vec::new();
         let mut prim_of = vec![None; workspace.parts.len()];
         for (n, part) in workspace.parts.iter().enumerate() {
-            let extents = block_extents(&frames[n], part.size);
             let grounded = part.anchored || tree.grounded(n);
+            if grounded && part.shape != SHAPE_BLOCK {
+                // Static contents are blocks (StaticBlock).
+                return Err(format!(
+                    "{:?}: an anchored {} is not ported",
+                    part.name,
+                    if part.shape == SHAPE_BALL {
+                        "Ball"
+                    } else {
+                        "Cylinder"
+                    }
+                ));
+            }
+            let extents = if part.shape == SHAPE_BALL {
+                ball_extents(&frames[n], ball_contact::radius(part.size))
+            } else {
+                block_extents(&frames[n], part.size)
+            };
             if grounded && matches!(tree.link(n), Some(Link::Motor(_))) {
                 // MovingAssemblyStage moves an anchored assembly's motor
                 // links kinematically (not ported).
@@ -1118,9 +1204,7 @@ impl World {
                 let b = &self.statics.blocks[i];
                 block_extents(&b.frame, b.size)
             }
-            BroadPrim::Loose(i) => {
-                block_extents(&self.loose.prim_frame(i)?, self.loose.prims[i].size)
-            }
+            BroadPrim::Loose(i) => loose_extents(&self.loose.prim_frame(i)?, &self.loose.prims[i]),
             BroadPrim::Character(k) => {
                 let (name, size) = &self.part_sizes[k];
                 let frames = rig.pose(&self.body.frame)?;
@@ -1156,7 +1240,7 @@ impl World {
                     continue;
                 };
                 let frame = self.loose.prim_frame(prim)?;
-                let extents = block_extents(&frame, self.loose.prims[prim].size);
+                let extents = loose_extents(&frame, &self.loose.prims[prim]);
                 self.broadphase.update(id, extents, self.steps);
                 self.apply_broadphase()?;
             }
@@ -1687,6 +1771,28 @@ mod tests {
         assert!(moving_point_fixed_aabox([1.0, 5.0, 0.0], [0.0, -1.0, 0.0], low, high).is_some());
         let side = moving_point_fixed_aabox([-5.0, 0.5, 0.0], [1.0, 0.0, 0.0], low, high);
         assert_eq!(side, Some(([-1.0, 0.5, 0.0], [-1.0, 0.0, 0.0])));
+    }
+    #[test]
+    fn ball_hit_is_the_first_sphere_crossing() {
+        let ball = CoordinateFrame {
+            position: [0.0, 5.0, 0.0],
+            rotation: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        let (point, normal) =
+            ball_hit_test(&ball, 1.0, [0.0, 10.0, 0.0], [0.0, -1.0, 0.0]).unwrap();
+        assert_eq!(point, [0.0, 6.0, 0.0]);
+        assert_eq!(normal, [0.0, 1.0, 0.0]);
+        // Passing beside it, or pointing away, misses.
+        assert!(ball_hit_test(&ball, 1.0, [1.5, 10.0, 0.0], [0.0, -1.0, 0.0]).is_none());
+        assert!(ball_hit_test(&ball, 1.0, [0.0, 10.0, 0.0], [0.0, 1.0, 0.0]).is_none());
+        // From the center (not solid): the far side.
+        let (point, _) = ball_hit_test(&ball, 1.0, [0.0, 5.0, 0.0], [1.0, 0.0, 0.0]).unwrap();
+        assert!((point[0] - 1.0).abs() < 1e-6 && point[1] == 5.0);
+        // getSlowHit takes the radius, not the half diagonal, as its bound.
+        let near = [0.0, 10.0, 1.2];
+        assert!(
+            slow_hit_shape(&ball, [2.0; 3], Shape::Ball, near, [0.0, -1.0, 0.0], 100.0).is_none()
+        );
     }
     #[test]
     fn rotated_block_hit_is_in_world_space() {

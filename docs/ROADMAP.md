@@ -80,7 +80,11 @@ Left, in order:
    face geometry the surface joints need.
 3. **Shapes.** Ball (BallBall/BallBlock contacts), Cylinder, Wedge and
    CornerWedge (PolyContact), TrussPart, and the legacy ramp/prism/pyramid
-   Parts.
+   Parts. Done: loose Ball Parts (`ball_contact.rs`, `audit-part-ball`).
+   Left: anchored Balls (statics, the character/static contacts and the
+   static ray tests are Block-only), Ball rendering, then the Poly
+   geometries (Cylinder, WedgePoly, CornerWedgePoly) and PolyPolyContact,
+   which also serves Block against Poly.
 4. **Body movers.** BodyPosition, BodyGyro, BodyVelocity,
    BodyAngularVelocity, BodyForce, BodyThrust, RocketPropulsion.
 5. **Automatic joints.** JointsService and the surface pairs (studs/inlets,
@@ -91,6 +95,13 @@ Left, in order:
 8. **Throttling.** Environmental throttling and the throttled-step lists.
 
 Open findings:
+
+- **Rolling balls slow down.** In `audit-part-ball` a ball rolling on the
+  flat Baseplate loses about a quarter of its speed each second (exponential
+  decay at about 0.29/s), without slipping.
+  The kernel's angular damping (017a1f70, 0.9998 per pre-step and per
+  impulse) accounts for only about a seventh of that by estimate. The rest
+  is not traced. Native behaviour is **not tested**.
 
 - **Fast impacts on a high center of mass.** A 4x4x2 block dropped flat at
   about 46 studs/s, with no welds, leaves its first contact with a sideways

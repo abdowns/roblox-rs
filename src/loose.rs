@@ -58,8 +58,10 @@
 use crate::sleep::{self, AssemblyState, MotionHistory, SleepProfile};
 use crate::{
     assembly::{AssemblyProperties, MassPart, MassProfile},
+    ball_contact::{self, BallContact, BallPair},
     block_contact::{
-        Block, BlockBlockContact, BlockTables, ContactEvent, ContactPoint, extents_overlap,
+        Block, BlockBlockContact, BlockTables, Connector, ContactEvent, ContactPoint,
+        extents_overlap,
     },
     bundle::Bundle,
     collision::{ContactBodyState, point_velocity},
@@ -76,7 +78,7 @@ use crate::{
     physics::FreeFallBody,
     rig::Motor6D,
     scene::CoordinateFrame,
-    workspace::PartInstance,
+    workspace::{PartInstance, SHAPE_BALL, SHAPE_BLOCK},
 };
 use std::collections::{BTreeMap, VecDeque};
 
@@ -176,6 +178,8 @@ pub struct LoosePart {
 pub struct LoosePrim {
     pub name: String,
     pub size: [f32; 3],
+    /// The Primitive geometry: Block, or Ball (radius size.x / 2).
+    pub shape: Shape,
     /// Its assembly in `LooseWorld::parts`.
     pub assembly: usize,
     /// The parent Body's Part and the rigid offset in it (coordInParent,
@@ -373,9 +377,84 @@ struct JointSnapshot {
     joint_connectors: Vec<u64>,
 }
 
+/// A contact pair's narrowphase, by the primitives' collide types
+/// (ContactManager::createContact 00ae714a).
+#[derive(Clone, Debug)]
+enum PairContact {
+    Block(BlockBlockContact<Link>),
+    Ball(BallContact<Link>),
+}
+
+impl PairContact {
+    /// BallBallContact, BallBlockContact (the ball is the native first
+    /// primitive) or BlockBlockContact.
+    fn new(shapes: [Shape; 2]) -> Self {
+        match shapes {
+            [Shape::Ball, Shape::Ball] => Self::Ball(BallContact::new(BallPair::BallBall)),
+            [Shape::Ball, Shape::Block] => {
+                Self::Ball(BallContact::new(BallPair::BallBlock { ball: 0 }))
+            }
+            [Shape::Block, Shape::Ball] => {
+                Self::Ball(BallContact::new(BallPair::BallBlock { ball: 1 }))
+            }
+            [Shape::Block, Shape::Block] => Self::Block(BlockBlockContact::default()),
+        }
+    }
+    fn connectors(&self) -> &[Connector<Link>] {
+        match self {
+            Self::Block(c) => c.connectors(),
+            Self::Ball(c) => c.connectors(),
+        }
+    }
+    fn connectors_mut(&mut self) -> &mut [Connector<Link>] {
+        match self {
+            Self::Block(c) => c.connectors_mut(),
+            Self::Ball(c) => c.connectors_mut(),
+        }
+    }
+    fn take_connectors(&mut self) -> Vec<Connector<Link>> {
+        match self {
+            Self::Block(c) => c.take_connectors(),
+            Self::Ball(c) => c.take_connectors(),
+        }
+    }
+    fn take_events(&mut self) -> Vec<ContactEvent<Link>> {
+        match self {
+            Self::Block(c) => std::mem::take(&mut c.events),
+            Self::Ball(c) => std::mem::take(&mut c.events),
+        }
+    }
+    /// computeIsColliding (vtable +0x28) with no ignored overlap.
+    fn compute_is_colliding(&mut self, blocks: [&Block; 2]) -> bool {
+        match self {
+            Self::Block(c) => c.compute_is_colliding(blocks, 0.0).0,
+            Self::Ball(c) => c.compute_is_colliding(blocks, 0.0),
+        }
+    }
+    /// The contact step (vtable +0x20).
+    fn update(
+        &mut self,
+        blocks: [&Block; 2],
+        in_kernel: bool,
+        tables: &BlockTables,
+    ) -> Result<bool, String> {
+        match self {
+            Self::Block(c) => c.update(blocks, in_kernel, tables),
+            Self::Ball(c) => c.update(blocks, in_kernel),
+        }
+    }
+    /// Forget the cached features (a fresh contact of the same kind).
+    fn reset(&mut self) {
+        match self {
+            Self::Block(c) => *c = BlockBlockContact::default(),
+            Self::Ball(c) => *c = BallContact::new(c.pair),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Pair {
-    contact: BlockBlockContact<Link>,
+    contact: PairContact,
     parameters: ContactParameters,
     /// None while the contact is not in SleepStage.
     edge: Option<EdgeState>,
@@ -660,15 +739,21 @@ impl LooseWorld {
         materials: &MaterialProfile,
     ) -> Result<usize, String> {
         let properties = materials.defaults(part.material)?;
+        let shape = match part.shape {
+            SHAPE_BALL => Shape::Ball,
+            SHAPE_BLOCK => Shape::Block,
+            _ => return Err(format!("{:?}: a Cylinder Part is not ported", part.name)),
+        };
         self.prims.push(LoosePrim {
             name: part.name.clone(),
             size: part.size,
+            shape,
             assembly: usize::MAX,
             parent: None,
             frame: part.frame.clone(),
             can_collide: part.can_collide,
             properties,
-            stiffness: materials.stiffness(part.size, Shape::Block)?,
+            stiffness: materials.stiffness(part.size, shape)?,
             floor_friction: materials.floor_friction(&properties)?,
             transparency: part.transparency,
         });
@@ -769,7 +854,18 @@ impl LooseWorld {
         ) -> Result<AssemblyProperties, String> {
             let prim = &world.prims[n];
             let size = prim.size;
-            let mass = (size[0] * size[1]) * size[2] * prim.properties.density;
+            // Volume (Block 00adf1e0, Ball 00adc148) x density (00b62e8e).
+            let (mass, inertia) = match prim.shape {
+                Shape::Block => {
+                    let mass = (size[0] * size[1]) * size[2] * prim.properties.density;
+                    (mass, world.mass.block_inertia(size, mass)?)
+                }
+                Shape::Ball => {
+                    let r = ball_contact::radius(size);
+                    let mass = world.mass.ball_volume(r) * prim.properties.density;
+                    (mass, world.mass.ball_inertia(r, mass)?)
+                }
+            };
             let children = links
                 .iter()
                 .filter(|l| l.1 == n)
@@ -780,7 +876,7 @@ impl LooseWorld {
                     name: prim.name.clone(),
                     frame: frames[&n].clone(),
                     mass,
-                    inertia: world.mass.block_inertia(size, mass)?,
+                    inertia,
                 },
                 &children,
             )
@@ -1792,6 +1888,14 @@ impl LooseWorld {
         }
         Ok(())
     }
+    /// A primitive's geometry: the character's colliders and the static
+    /// blocks are Blocks.
+    fn prim_shape(&self, prim: Prim) -> Shape {
+        match prim {
+            Prim::Loose(i) => self.prims[i].shape,
+            Prim::Static(_) | Prim::Character(_) => Shape::Block,
+        }
+    }
     /// A contact for a primitive pair, outside SleepStage.
     fn create_pair(&mut self, key: (Prim, Prim), materials: &MaterialProfile) {
         let parameters = self.pair_parameters(key.0, key.1, materials);
@@ -1799,7 +1903,7 @@ impl LooseWorld {
         self.pairs.insert(
             key,
             Pair {
-                contact: BlockBlockContact::default(),
+                contact: PairContact::new([self.prim_shape(key.0), self.prim_shape(key.1)]),
                 parameters,
                 edge: None,
                 throttle: usize::from(!character),
@@ -1823,7 +1927,7 @@ impl LooseWorld {
         let colliding = pair
             .contact
             .update([&blocks[0], &blocks[1]], in_kernel, tables)?;
-        let events = std::mem::take(&mut pair.contact.events);
+        let events = pair.contact.take_events();
         for event in events {
             match event {
                 ContactEvent::Kept { index, reused } => {
@@ -1898,7 +2002,7 @@ impl LooseWorld {
                 [block, &other]
             };
             let pair = self.pairs.get_mut(&key).ok_or("missing contact pair")?;
-            if pair.contact.compute_is_colliding(blocks, 0.0).0 {
+            if pair.contact.compute_is_colliding(blocks) {
                 return Ok(true);
             }
         }
@@ -1911,7 +2015,7 @@ impl LooseWorld {
             let character =
                 matches!(key.0, Prim::Character(_)) || matches!(key.1, Prim::Character(_));
             if character && pair.contact.connectors().is_empty() && pair.edge.is_none() {
-                pair.contact = BlockBlockContact::default();
+                pair.contact.reset();
             }
         }
     }
@@ -3108,6 +3212,30 @@ impl LooseWorld {
         counts
     }
     /// One line per part for logs.
+    /// Every live contact connector, for logs: its primitives in connector
+    /// order (statics and character colliders by index), GeoPair kind and
+    /// length.
+    pub fn contact_report(&self) -> String {
+        let name = |p: Prim| match p {
+            Prim::Loose(i) => self.prims[i].name.clone(),
+            Prim::Static(j) => format!("static{j}"),
+            Prim::Character(c) => format!("collider{c}"),
+        };
+        let mut out = String::new();
+        for (key, pair) in &self.pairs {
+            for c in pair.contact.connectors() {
+                let (a, b) = Self::connector_prims(*key, c.pair.body_a);
+                out.push_str(&format!(
+                    "[{}/{} {:?} length={}]",
+                    name(a),
+                    name(b),
+                    c.pair.kind,
+                    c.point.length
+                ));
+            }
+        }
+        out
+    }
     pub fn report(&self) -> String {
         let mut out = String::new();
         for p in &self.parts {

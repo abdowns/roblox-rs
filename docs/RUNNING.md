@@ -34,8 +34,9 @@ on them (`audit-part-stand`), and still Parts fall asleep (SleepStage).
 Welded Parts move as one assembly (`audit-part-weld`), glued Parts hang,
 fall together and break off under load (`audit-part-glue`), hinged
 Parts swing, spin and follow their motors (`audit-part-hinge`), and Motors
-and Motor6Ds turn the Parts they link (`audit-part-motor`). The demo place has no
-joints.
+and Motor6Ds turn the Parts they link (`audit-part-motor`). Ball Parts land,
+roll down a ramp and knock into each other (`audit-part-ball`). The demo place
+has no joints and no Balls.
 Contacts come from the native broadphase (`audit-broadphase`). Not ported
 yet: outlines and the Studio camera.
 Manual keys are **not tested**.

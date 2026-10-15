@@ -92,6 +92,12 @@ pub fn block_extents(frame: &CoordinateFrame, size: [f32; 3]) -> Extents {
     }
 }
 
+/// 00b61c9a for a Ball Part (half extents 00adcb5e: the radius).
+pub fn ball_extents(frame: &CoordinateFrame, radius: f32) -> Extents {
+    let (min, max) = crate::ball_contact::ball_extents(frame, radius);
+    Extents { min, max }
+}
+
 /// 00af1350.
 pub fn level(extents: &Extents, fixed: bool) -> i32 {
     let max_level = if fixed { MAX_FIXED_LEVEL } else { MAX_LEVEL };

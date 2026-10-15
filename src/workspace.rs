@@ -22,6 +22,10 @@ use std::fmt::Write;
 pub const SURFACE_SMOOTH: u32 = 0;
 pub const SURFACE_STUDS: u32 = 3;
 pub const SURFACE_INLET: u32 = 4;
+/// Part.Shape (PartType, PartInstance +0xb7).
+pub const SHAPE_BALL: u32 = 0;
+pub const SHAPE_BLOCK: u32 = 1;
+pub const SHAPE_CYLINDER: u32 = 2;
 /// NormalId order used by the surfaces array: Right, Top, Back, Left, Bottom, Front.
 pub const FACE_NAMES: [&str; 6] = [
     "RightSurface",
@@ -50,6 +54,9 @@ pub struct PartInstance {
     /// PartInstance +0xb5 (vtable +0x12c setter, property descriptor 01d719a4).
     pub locked: bool,
     pub can_collide: bool,
+    /// Part.Shape: `SHAPE_BALL`, `SHAPE_BLOCK` or `SHAPE_CYLINDER`. Set it
+    /// with `set_shape`, which keeps a Ball's size uniform.
+    pub shape: u32,
     /// Primitive +0xbc.
     pub friction: f32,
     pub elasticity: f32,
@@ -81,6 +88,7 @@ impl Default for PartInstance {
             anchored: false,
             locked: false,
             can_collide: true,
+            shape: SHAPE_BLOCK,
             friction: 0.3,
             elasticity: 0.5,
             surfaces,
@@ -92,8 +100,26 @@ impl Default for PartInstance {
 impl PartInstance {
     /// PartInstance size setter (vtable +0xbc -> +0xd0 00984658): each axis is
     /// raised to the 0.2 minimum (0081b8c0); no FormFactor snapping here.
+    /// A Ball has no three-dimensional size (0070915c), so +0xd4 00988cfc
+    /// stores (x, x, x).
     pub fn set_size(&mut self, size: [f32; 3]) {
-        self.size = std::array::from_fn(|a| if size[a] <= 0.2 { 0.2 } else { size[a] });
+        let size: [f32; 3] = std::array::from_fn(|a| if size[a] <= 0.2 { 0.2 } else { size[a] });
+        self.size = if self.shape == SHAPE_BALL {
+            [size[0]; 3]
+        } else {
+            size
+        };
+    }
+    /// Part.Shape setter 00708de2: a new shape, then a Ball's size is set
+    /// again through the size setter (00988e50), which makes it (x, x, x).
+    pub fn set_shape(&mut self, shape: u32) {
+        if self.shape == shape {
+            return;
+        }
+        self.shape = shape;
+        if shape == SHAPE_BALL {
+            self.set_size(self.size);
+        }
     }
     /// World-space axis-aligned extents of the block.
     pub fn extents(&self) -> ([f32; 3], [f32; 3]) {
@@ -112,7 +138,7 @@ impl PartInstance {
         Part {
             frame: self.frame.clone(),
             size: self.size,
-            shape: 1,
+            shape: self.shape,
             brick_color: self.brick_color,
             transparency: self.transparency,
             anchored: self.anchored,
@@ -399,6 +425,20 @@ mod tests {
         assert_eq!(b.extents(), ([-256.0, -20.0, -256.0], [256.0, 0.0, 256.0]));
         assert_eq!(b.surfaces, [0, 3, 0, 0, 4, 0]);
         assert_eq!(w.next_spawn_location().unwrap(), [0.0, 100.0, 0.0]);
+    }
+    #[test]
+    fn a_ball_keeps_a_uniform_size() {
+        let mut part = PartInstance::default();
+        part.set_shape(SHAPE_BALL);
+        assert_eq!(part.size, [4.0; 3]);
+        part.set_size([3.0, 1.0, 2.0]);
+        assert_eq!(part.size, [3.0; 3]);
+        part.set_size([0.1, 5.0, 5.0]);
+        assert_eq!(part.size, [0.2; 3]);
+        // Back to a block: the size stays as it is.
+        part.set_shape(SHAPE_BLOCK);
+        part.set_size([3.0, 1.0, 2.0]);
+        assert_eq!(part.size, [3.0, 1.0, 2.0]);
     }
     #[test]
     fn spawn_moves_over_extents_that_miss_the_origin() {

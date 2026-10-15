@@ -1,5 +1,46 @@
 # MODLOG
 
+## 2026-10-15 Ball Parts in the world
+
+**Changed:**
+- `PartInstance::shape` (Part.Shape) and `set_shape` (00708de2). For a Ball,
+  `set_size` stores (x, x, x) (00988cfc, `hasThreeDimensionalSize` 0070915c).
+- `LoosePrim::shape`. A loose Ball gets the Ball mass, inertia and
+  stiffness, and its pairs get a `BallContact`: `PairContact` holds either
+  contact class (createContact 00ae714a).
+- Broadphase extents for a loose Ball (`broadphase::ball_extents`).
+- The Humanoid ray query tests a loose Ball as a sphere (`ball_hit_test`:
+  Ball +0x70 00adc17c -> G3D collisionTimeForMovingPointFixedSphere
+  0124e2c8), bounded by its radius.
+- Anchored Balls and any Cylinder are refused with an error: statics are
+  Block-only.
+- `LooseWorld::contact_report` logs each live connector's kind and length.
+- New `audit-part-ball`, and unit tests for the Ball size and the sphere ray
+  test.
+
+**Why:** Roadmap item 3. This puts the Ball narrowphase from the previous
+commit to use.
+
+**Tested how:** `sh tools/cargo.sh test --locked` (107 pass), clippy clean,
+`audit-part-ball`, and the 22 other audits against the previous commit's
+outputs.
+
+**Result:**
+- `audit-part-ball` passes:
+  - the dropped ball rests 0.02 studs into the Baseplate and sleeps;
+  - a ball rides a loose block and both sleep;
+  - a ball rolls down a 10 degree ramp at 0.958 of 5/7 g sin 10 with
+    w r / v = 1.01;
+  - two balls that meet push apart.
+- **First attempt failed, and the fault was in the audit.** It measured the
+  roll per 1/60 s, but `step_animated` is one 240 Hz world step. A
+  per-step trace showed free fall gaining g/240 per call.
+- **Open:** a ball rolling on flat ground slows down (about 0.29/s). Angular
+  damping explains only part of that. Not traced; native **not tested**.
+  Recorded in ROADMAP.
+- Every other audit is unchanged (audit-runtime differs only in timing).
+  Native parity is **not tested**.
+
 ## 2026-10-15 Ball geometry and the ball contacts (narrowphase only)
 
 **Changed:**

@@ -1493,6 +1493,261 @@ pub fn audit_part_glue(bundle: &Bundle) -> Result<String, String> {
     Ok(report)
 }
 
+/// Ball Parts (Shape = Ball, `ball_contact.rs`) in the kernel:
+/// - "Drop" (diameter 2) falls 7 studs onto the Baseplate (BallBlock against
+///   a static block) and comes to rest on it;
+/// - "Roll" (diameter 2) is set down on "Ramp", an anchored 20 x 1 x 10
+///   block tilted 10 degrees about Z, and rolls down it toward the anchored
+///   "Stop" wall. A ball rolling without slipping accelerates at
+///   5/7 g sin 10 (sliding without friction would be 7/5 of that) and
+///   turns at v / r;
+/// - "Rider" (diameter 2) lands on top of "Crate", a loose 4 x 1.2 x 2
+///   block on the Baseplate (BallBlock between two kernel bodies);
+/// - "Top" (diameter 2) falls onto "Bottom" (diameter 3) half a stud off
+///   its center (BallBall), so the two push apart along X.
+pub fn audit_part_ball(bundle: &Bundle) -> Result<String, String> {
+    use crate::workspace::{PartInstance, SHAPE_BALL};
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let add = |workspace: &mut Workspace,
+               name: &str,
+               ball: bool,
+               size: [f32; 3],
+               frame: CoordinateFrame,
+               anchored: bool| {
+        let mut part = PartInstance {
+            name: name.into(),
+            anchored,
+            frame,
+            ..Default::default()
+        };
+        if ball {
+            part.set_shape(SHAPE_BALL);
+        }
+        part.set_size(size);
+        workspace.parts.push(part);
+    };
+    let at = |position: [f32; 3]| CoordinateFrame {
+        position,
+        rotation: IDENTITY,
+    };
+    // The ramp's low bottom edge rests on the Baseplate top (y = 0).
+    let (s, c) = 10f32.to_radians().sin_cos();
+    let ramp = CoordinateFrame {
+        position: [0.0, 10.0 * s + 0.5 * c, 45.0],
+        rotation: [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]],
+    };
+    let roll_start = ramp.transform_point([8.0, 0.5 + 1.0 + 0.05, 0.0]);
+    add(
+        &mut workspace,
+        "Drop",
+        true,
+        [2.0; 3],
+        at([30.0, 8.0, -30.0]),
+        false,
+    );
+    add(
+        &mut workspace,
+        "Ramp",
+        false,
+        [20.0, 1.0, 10.0],
+        ramp.clone(),
+        true,
+    );
+    add(
+        &mut workspace,
+        "Stop",
+        false,
+        [1.0, 6.0, 10.0],
+        at([-18.0, 3.0, 45.0]),
+        true,
+    );
+    add(
+        &mut workspace,
+        "Roll",
+        true,
+        [2.0; 3],
+        at(roll_start),
+        false,
+    );
+    add(
+        &mut workspace,
+        "Crate",
+        false,
+        [4.0, 1.2, 2.0],
+        at([-30.0, 0.6, -30.0]),
+        false,
+    );
+    add(
+        &mut workspace,
+        "Rider",
+        true,
+        [2.0; 3],
+        at([-30.0, 4.2, -30.0]),
+        false,
+    );
+    add(
+        &mut workspace,
+        "Bottom",
+        true,
+        [3.0; 3],
+        at([25.0, 1.5, 20.0]),
+        false,
+    );
+    add(
+        &mut workspace,
+        "Top",
+        true,
+        [2.0; 3],
+        at([25.5, 6.0, 20.0]),
+        false,
+    );
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let index = |name: &str| {
+        fixture
+            .world
+            .loose
+            .parts
+            .iter()
+            .position(|p| p.name == name)
+            .ok_or(format!("missing assembly {name}"))
+    };
+    let [drop, roll, crate_part, rider, bottom, top] =
+        ["Drop", "Roll", "Crate", "Rider", "Bottom", "Top"].map(index);
+    let (drop, roll, crate_part, rider, bottom, top) =
+        (drop?, roll?, crate_part?, rider?, bottom?, top?);
+    let mut report = String::new();
+    writeln!(
+        report,
+        "part_ball_load masses={:?} radii={:?}",
+        fixture
+            .world
+            .loose
+            .parts
+            .iter()
+            .map(|p| (p.name.clone(), 1.0 / p.body.inverse_mass()))
+            .collect::<Vec<_>>(),
+        fixture
+            .world
+            .loose
+            .prims
+            .iter()
+            .map(|p| (p.name.clone(), p.shape, crate::ball_contact::radius(p.size)))
+            .collect::<Vec<_>>()
+    )
+    .unwrap();
+    let g = -fixture.world.kernel.physics.legacy_acceleration;
+    let downhill = [-c, -s, 0.0];
+    let along = |v: [f32; 3]| v[0] * downhill[0] + v[1] * downhill[1] + v[2] * downhill[2];
+    let length = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let mut roll_speed = [0.0f32; 2];
+    let mut roll_spin = 0.0f32;
+    let mut min_gap = f32::INFINITY;
+    let mut first_contact: Vec<Option<u32>> = vec![None; fixture.world.loose.parts.len()];
+    for step in 0..900u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        let loose = &fixture.world.loose;
+        let parts = &loose.parts;
+        for (i, p) in parts.iter().enumerate() {
+            if first_contact[i].is_none() && p.list != crate::loose::BodyList::FreeFall {
+                first_contact[i] = Some(step + 1);
+                writeln!(
+                    report,
+                    "part_ball_first_contact part={} step={} contacts={}",
+                    p.name,
+                    step + 1,
+                    loose.contact_report()
+                )
+                .unwrap();
+            }
+        }
+        let gap = length(crate::block_contact::sub(
+            parts[top].body.frame.position,
+            parts[bottom].body.frame.position,
+        ));
+        min_gap = min_gap.min(gap);
+        // The roll on the ramp, 10 and 50 world steps (1/240 s) in.
+        let frame = step + 1;
+        if frame == 10 || frame == 50 {
+            roll_speed[usize::from(frame == 50)] = along(parts[roll].body.velocity);
+        }
+        if frame == 50 {
+            roll_spin = length(parts[roll].body.angular_velocity);
+            writeln!(
+                report,
+                "part_ball_roll step=50 position={:?} velocity={:?} angular_velocity={:?} contacts={}",
+                parts[roll].body.frame.position,
+                parts[roll].body.velocity,
+                parts[roll].body.angular_velocity,
+                loose.contact_report()
+            )
+            .unwrap();
+        }
+        if frame % 150 == 0 {
+            writeln!(
+                report,
+                "part_ball_state step={frame} iterations={} contact_connectors={} {}",
+                loose.stats.iterations,
+                loose.stats.contact_connectors,
+                loose.report()
+            )
+            .unwrap();
+        }
+    }
+    let parts = &fixture.world.loose.parts;
+    let y = |i: usize| parts[i].body.frame.position[1];
+    let expected = 5.0 / 7.0 * g * s;
+    let dt = fixture.world.kernel.physics.free_fall_dt;
+    let acceleration = (roll_speed[1] - roll_speed[0]) / (40.0 * dt);
+    let rolling = roll_spin * 1.0 / roll_speed[1];
+    writeln!(
+        report,
+        "part_ball_result first_contact={first_contact:?} drop_y={} rider_y={} crate_y={} roll_acceleration={acceleration} expected={expected} ratio={} spin_ratio={rolling} min_gap={min_gap} top={:?} top_velocity={:?} bottom={:?} bottom_velocity={:?} roll={:?}",
+        y(drop),
+        y(rider),
+        y(crate_part),
+        acceleration / expected,
+        parts[top].body.frame.position,
+        parts[top].body.velocity,
+        parts[bottom].body.frame.position,
+        parts[bottom].body.velocity,
+        parts[roll].body.frame.position,
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "{}",
+        sleep_summary("part_ball_sleep", &fixture.world.loose)
+    )
+    .unwrap();
+    let ratio = acceleration / expected;
+    let rested = (y(drop) - 1.0).abs() < 0.05 && length(parts[drop].body.velocity) < 0.05;
+    let rides = (y(rider) - 2.2).abs() < 0.08 && (y(crate_part) - 0.6).abs() < 0.05;
+    let rolls = (0.9..1.1).contains(&ratio) && (0.9..1.1).contains(&rolling);
+    let parted = min_gap < 2.5
+        && parts[top].body.velocity[0] > 0.0
+        && parts[bottom].body.velocity[0] < 0.0
+        && (y(top) - 1.0).abs() < 0.05
+        && (y(bottom) - 1.5).abs() < 0.05;
+    if !(rested && rides && rolls && parted) || first_contact.iter().any(Option::is_none) {
+        return Err(format!(
+            "part ball failed rested={rested} rides={rides} rolls={rolls} parted={parted}\n{report}"
+        ));
+    }
+    writeln!(
+        report,
+        "part_ball_pass rested=true rides=true rolls={ratio:.3} parted=true native_differential=not_tested"
+    )
+    .unwrap();
+    Ok(report)
+}
+
 /// Legacy hinges in a Workspace, with the character idling at the origin.
 /// Each pair is an anchored 1 x 1 x 1 block (Part0, the axle) and a plank
 /// in front of it, 0.1 studs clear, on a hinge through the block's center:

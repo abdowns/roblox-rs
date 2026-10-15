@@ -312,16 +312,32 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   drives only the character), and a motor in an anchored assembly
   (refused). Native parity is **not tested**.
 
-- Ball geometry and the BallBall / BallBlock narrowphase
-  (`ball_contact.rs`): radius, volume, moment, extents, the collision tests,
-  the block feature a ball touches (face, edge, vertex, or the nearest face
-  from inside) and the connector geometry. Run
-  `sh tools/cargo.sh test --locked ball`. Expect 6 passing tests:
-  `ball_volume_and_moment` and five `ball_contact::tests`, covering two
-  touching balls, a ball on a face, off an edge and a corner, a center inside
-  the block, and a contact outside the kernel. These are hand-computed
-  cases. Balls are **not yet in the world**: Parts are still all blocks.
-  Native parity is **not tested**.
+- Ball Parts in the physics: a loose Part with Shape Ball (`set_shape(SHAPE_BALL)`,
+  size forced to (x, x, x)) has the Ball radius, volume, moment and extents.
+  It collides through BallBallContact and BallBlockContact (`ball_contact.rs`),
+  and the Humanoid ray query hits it as a sphere. Run
+  `sh tools/cargo.sh run --locked -- audit-part-ball`. Expect:
+  - `part_ball_load masses=[("Drop", 2.9321532), ...] radii=[("Drop", Ball, 1.0), ...]`:
+    a diameter-2 Plastic ball weighs 4/3 pi x 0.7;
+  - `part_ball_first_contact part=Top step=36 contacts=[... [Bottom/Top BallBall length=-0.03341818] ...`,
+    and BallPlane connectors for balls on the Baseplate, the Ramp and the
+    Crate (`Rider/Crate BallPlane`);
+  - `part_ball_result ... drop_y=0.9799997 rider_y=2.1593502 crate_y=0.5793512 roll_acceleration=23.315145 expected=24.335554 ratio=0.9580692 spin_ratio=1.0102892 min_gap=2.4665818 ...`:
+    - a dropped ball rests on the Baseplate, 0.02 studs in;
+    - a ball rests on top of a loose block;
+    - a ball rolls down a 10 degree ramp at 0.96 of the rolling-without-slipping
+      acceleration 5/7 g sin 10 (sliding would be 1.4), turning at v / r;
+    - two balls that land on each other push apart;
+  - `part_ball_sleep ... [Drop final=SleepingDeeply ... (191, SleepingDeeply)] ... [Rider final=SleepingDeeply ...`;
+  - `part_ball_pass rested=true rides=true rolls=0.958 parted=true native_differential=not_tested`.
+
+  The narrowphase also has unit tests (`sh tools/cargo.sh test --locked ball`).
+  Balls rolling on flat ground slow down: Top goes from 8.5 to 4.1 studs/s
+  between steps 300 and 900 (exponential decay at about 0.29/s). The kernel's
+  angular damping (0.9998 per pre-step and per impulse) explains only part of
+  that. Whether native balls slow the same way is **not tested**. Not ported:
+  anchored Balls and Cylinders (refused), Ball rendering (drawn as blocks),
+  Balls in the character. Native parity is **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,

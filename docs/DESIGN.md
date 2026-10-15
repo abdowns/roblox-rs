@@ -1068,8 +1068,21 @@ that reads connector geometry needs no change.
     as reused, so the loose world inserts it and then applies its
     displacement.
 
-The narrowphase is unit-tested only (`sh tools/cargo.sh test --locked ball`).
-It is not yet used by the world.
+In the world (`audit-part-ball`):
+
+- **Shape.** `PartInstance::shape` holds Part.Shape. `set_shape` and
+  `set_size` keep a Ball's size uniform.
+- **Loose Parts.** `LoosePrim::shape` picks the mass, inertia and stiffness
+  (00a92640 with the Ball flag). It also picks the broadphase extents and the
+  contact class: `PairContact` holds a BlockBlockContact or a `BallContact`.
+  Statics and the character's colliders are Blocks.
+- **Ray test.** The Humanoid ray query tests a loose Ball with Ball +0x70
+  (00adc17c). That is G3D collisionTimeForMovingPointFixedSphere (0124e2c8),
+  not solid, in part space against a sphere at the origin; a hit is a time
+  that is not infinite. getSlowHit's bound for a Ball is its radius.
+- **Not ported.** Anchored Balls and Cylinders are refused when the world is
+  built: StaticBlock, the character/static contacts and the static ray tests
+  are all Block-only. Balls render as blocks.
 
 ## Unanchored Parts (loose.rs)
 
