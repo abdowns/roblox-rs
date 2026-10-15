@@ -1,5 +1,38 @@
 # MODLOG
 
+## 2026-10-15 Motor6D links outside the character
+
+**Changed:**
+- `motor::d6_offset` (D6Link::computeJointCoord 00a9d6d0): (parent x T) x
+  child^-1.
+- `rig::Motor6D::new` and `threshold`, so a Workspace Motor6D can be built
+  with the rig's DesiredAngle dead zone.
+- `LooseWorld`: motors are `MotorKind::Revolute` (MotorJoint) or
+  `MotorKind::D6` (Motor6D, stepped by the ported 00b3717c; a changed link
+  state counts as moved, 00b37550). `add_motor_6d`, `motor_6d`.
+- `World::in_workspace` builds Motor6D links the same way as Motor links
+  (parent side from 00b36f5a, the same test as 00b3807c).
+  `Workspace::joint_tree` accepts Motor6D.
+- `audit-part-motor` adds "Tower3" on a Motor6D.
+
+**Why:** Rigs in places (dummies, NPCs) hold their limbs with Motor6Ds.
+Without this, a Workspace with one could not load.
+
+**Tested how:** `sh tools/cargo.sh test --locked` (99 pass), clippy clean,
+`audit-part-motor`, and the other 21 audits against the outputs of the
+previous commit.
+
+**Result:**
+- audit-part-motor passes. The Motor6D tower reaches pi/2 at step 125 like
+  the other two, its arm ends at (-3.8e-6, 0.6999999, -2.0) in its tower's
+  frame, and it sleeps at step 239. Its center of mass differs from the
+  Motor towers' by 2e-5 studs (the D6Link rotation comes from
+  fromAxisAngleFast).
+- Every other audit is unchanged (audit-runtime differs only in timing).
+- Found while decoding 00b37550: a Motor6D whose link changes wakes its
+  assembly recursively. The character's Motor6Ds do this every frame they
+  animate, and the port does not do it yet (next change).
+
 ## 2026-10-15 Motor joints inside assemblies
 
 **Changed:**

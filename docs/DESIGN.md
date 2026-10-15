@@ -1421,8 +1421,9 @@ stepUi is not recovered either: the port steps every motor hinge still in
 SleepStage, asleep or not. A surface input is read from the Part's
 properties as loaded (no property changes while running yet).
 
-**Motors (motor.rs, MotorJoint).** A Motor (Joint type 4) is a Body link
-inside one assembly, like a weld, but its offset follows an angle:
+**Motors (motor.rs, MotorJoint and Motor6D).** A Motor (Joint type 4) or
+Motor6D (5) is a Body link inside one assembly, like a weld, but its offset
+follows an angle:
 - *The link (00b38196 -> 00a9d39a, RevoluteLink).* It keeps the joint frame
   on the parent Body's side and the child's (with its inverse): C0 and C1
   when Part0's Body is the parent (00b3807c), C1 and C0 otherwise. The
@@ -1440,6 +1441,13 @@ inside one assembly, like a weld, but its offset follows an angle:
   access (00ab16aa), keeping the root's state and the accumulators. The
   port rebuilds right after stepUi (`LooseWorld::step_motors`), which reads
   the same state.
+- *Motor6D (D6Link).* Motor6DJoint builds its link the same way (00b370ec,
+  parent side from 00b36f5a). D6Link::computeJointCoord (00a9d6d0) is
+  (parent x T) x child^-1, T being the joint's translation and
+  fromAxisAngleFast rotation vector (x, y, CurrentAngle) (00b36fde). Its
+  stepUi (00b3717c) is the one the character uses; a changed link wakes
+  both assemblies recursively too (00b37550). `LooseWorld` keeps both
+  kinds of motor (`MotorKind`).
 - *Offline gate.* MovingAssemblyStage skips motors in network buffer zones
   (FLog StepAnimatedJointsInBufferZone, 00b39200); offline that never
   applies. A motor in an anchored assembly is moved kinematically by

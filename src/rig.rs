@@ -174,6 +174,36 @@ impl Default for MotorLink {
     }
 }
 impl Motor6D {
+    /// A Motor6D with no animation applied; `threshold` is the
+    /// DesiredAngle dead zone (`threshold()` of a loaded rig's motor).
+    #[allow(clippy::too_many_arguments)] // The JointInstance's properties.
+    pub fn new(
+        name: &str,
+        part0: &str,
+        part1: &str,
+        c0: CoordinateFrame,
+        c1: CoordinateFrame,
+        angles: [f32; 2],
+        max_velocity: f32,
+        threshold: f32,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            part0: part0.into(),
+            part1: part1.into(),
+            c0,
+            c1,
+            current_angle: angles[0],
+            desired_angle: angles[1],
+            max_velocity,
+            threshold,
+            link: MotorLink::default(),
+        }
+    }
+    /// The relative DesiredAngle dead zone (01767c14).
+    pub fn threshold(&self) -> f32 {
+        self.threshold
+    }
     /// Motor6DJoint::setAnimatedPose 00b37700.
     pub fn set_animated_pose(
         &mut self,

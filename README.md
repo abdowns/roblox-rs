@@ -21,7 +21,7 @@ Early and incomplete. Working today, with an automated audit for each item:
   - unanchored Parts that fall, stack, get pushed, carry the character and
     fall asleep at rest;
   - welded Parts that move as one, glued Parts that break under load,
-    hinges, motor hinges and Motors.
+    hinges, motor hinges, Motors and Motor6Ds.
 - **Rendering:** the character, the studded Baseplate, the default sky and
   lighting.
 
@@ -29,8 +29,7 @@ Not there yet:
 - the Studio editor UI;
 - a general Lua runtime;
 - place loading and saving;
-- the remaining joint kinds (Motor6D outside the character, VelocityMotor,
-  ManualGlue, surface joints);
+- the remaining joint kinds (VelocityMotor, ManualGlue, surface joints);
 - textures and decals beyond the character, shadows and outlines.
 
 Matching the original is not tested pixel for pixel or step for step. See

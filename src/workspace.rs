@@ -237,6 +237,7 @@ impl Workspace {
         for joint in &self.joints {
             let ported = [
                 joints::MOTOR,
+                joints::MOTOR_6D,
                 joints::GLUE,
                 joints::ROTATE,
                 joints::ROTATE_P,
@@ -244,7 +245,7 @@ impl Workspace {
             ];
             if !joints::is_rigid(joint.kind) && !ported.contains(&joint.kind) {
                 return Err(format!(
-                    "joint {:?}: only rigid joints, Motor, Glue and the hinges are ported",
+                    "joint {:?}: only rigid joints, the motors, Glue and the hinges are ported",
                     joint.name
                 ));
             }

@@ -72,9 +72,9 @@ Left, in order:
    kernel Points, the break connectors, SleepStage joint edges, breakJoints,
    Glue present at load (`audit-part-glue`), Rotate, RotateP and RotateV
    with their RotateConnector and surface inputs (`audit-part-hinge`), and
-   Motor links inside assemblies (`audit-part-motor`). Left: Motor6D outside
-   the character (D6Link), VelocityMotor, and motors in anchored assemblies
-   (MovingAssemblyStage's kinematic moves). ManualGlue moves to item 5: its
+   Motor and Motor6D links inside assemblies (`audit-part-motor`). Left:
+   VelocityMotor, and motors in anchored assemblies (MovingAssemblyStage's
+   kinematic moves). ManualGlue moves to item 5: its
    face is the overlap of the two Parts' surfaces (00b0da3a clips one face
    polygon against the other through Geometry +0x3c/+0x40/+0x78), the same
    face geometry the surface joints need.

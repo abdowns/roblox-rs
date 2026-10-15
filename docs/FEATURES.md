@@ -287,26 +287,29 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   inputs (they give 0), and hinges between two anchored Parts (refused).
   Native parity is **not tested**.
 
-- Motor joints in the physics: a Workspace Motor (`joints::MOTOR`, with
-  `JointInstance::current_angle`, `desired_angle`, `max_velocity`) is a
-  Body link whose offset turns with CurrentAngle. Each frame the angle
-  moves toward DesiredAngle by at most |MaxVelocity|, the child Part
+- Motor joints in the physics: a Workspace Motor or Motor6D
+  (`joints::MOTOR`, `MOTOR_6D`, with `JointInstance::current_angle`,
+  `desired_angle`, `max_velocity`) is a Body link whose offset turns with
+  CurrentAngle (RevoluteLink for Motor, D6Link for Motor6D). Each frame the
+  angle moves toward DesiredAngle by at most |MaxVelocity|, the child Part
   follows, the assembly wakes, and its SimBody's center of mass and inertia
   are rebuilt. Run `sh tools/cargo.sh run --locked -- audit-part-motor`.
   Expect:
-  - `joint_tree_part name=Arm ... tree_joint_kind=Some(4) tree_parent=Tower body_parent=Tower ... offset=motor5`
-    (and the same for Arm2 under Tower2, whose Motor has the arm as Part0);
-  - `part_motor_result reached=[Some(125), Some(125)] arm=[1.9073486e-6, 0.70000005, -2.000002] arm2=[1.9073486e-6, 0.6999999, -2.0] tower=[-19.99919, 0.48368213, 19.998695] tower_up_y=0.9999946 centers=[[-19.999054, 0.57946825, 19.722567], ...]`:
-    both motors reach pi/2 on frame 32, both arms end a quarter turn from
-    +X to -Z in their tower's frame, the towers stay upright, and the
+  - `joint_tree_part name=Arm ... tree_joint_kind=Some(4) tree_parent=Tower body_parent=Tower ... offset=motor7`
+    (Arm2 under Tower2, whose Motor has the arm as Part0, and Arm3 under
+    Tower3 on a Motor6D, are the same);
+  - `part_motor_result reached=[Some(125), Some(125), Some(125)] arm=[1.9073486e-6, 0.70000005, -2.000002] arm2=[1.9073486e-6, 0.6999999, -2.0] arm3=[-3.8146973e-6, 0.6999999, -2.0] tower=[-19.99919, 0.48368213, 19.998695] tower_up_y=0.9999946 ...`:
+    all three motors reach pi/2 on frame 32, every arm ends a quarter turn
+    from +X to -Z in its tower's frame, the towers stay upright, and the
     center of mass follows the arm;
   - `part_motor_sleep ... [Tower final=SleepingDeeply in_kernel=false ...`:
-    the towers wake every frame while their motors turn, then sleep;
-  - `part_motor_pass reached=[Some(125), Some(125)] arms_turned=true asleep=true native_differential=not_tested`.
+    the towers wake every frame while their motors turn, then sleep at
+    step 239;
+  - `part_motor_pass reached=[Some(125), Some(125), Some(125)] arms_turned=true asleep=true native_differential=not_tested`.
 
-  Not ported: Motor6D outside the character, VelocityMotor, animation of a
-  Motor, and a Motor in an anchored assembly (refused). Native parity is
-  **not tested**.
+  Not ported: VelocityMotor, animating a Workspace motor (the Animator
+  drives only the character), and a motor in an anchored assembly
+  (refused). Native parity is **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,

@@ -10,7 +10,7 @@ use crate::{
     bundle::Bundle,
     collision::ContactBodyState,
     humanoid_state::{FloorPart, Hit},
-    joints::{GLUE, Link, MOTOR, ROTATE, ROTATE_P, ROTATE_V},
+    joints::{GLUE, Link, MOTOR, MOTOR_6D, ROTATE, ROTATE_P, ROTATE_V},
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
     kernel_joint::{self, JointBody},
     legacy_contact::{BlockContactProfile, ContactGeometry, ImpulseProfile},
@@ -18,7 +18,7 @@ use crate::{
     material::{MaterialProfile, Shape},
     motor::{self, MotorJoint},
     physics,
-    rig::{R6Rig, compose},
+    rig::{Motor6D, R6Rig, compose},
     scene::{CoordinateFrame, Scene},
     workspace::{Workspace, character_placement},
 };
@@ -782,12 +782,28 @@ impl World {
         // or rigidly joined to an anchored Part) never move: their Parts
         // become static blocks.
         let (tree, ids) = workspace.joint_tree_indexed()?;
-        // A Motor link (`motor.rs`): the joint frames on the parent's and the
-        // child's side (00b38196), and the offset at CurrentAngle.
+        // A Motor or Motor6D link (`motor.rs`): the joint frames on the
+        // parent's and the child's side (00b38196, 00b370ec), and the offset
+        // at CurrentAngle with no animation.
+        let threshold = rig.joints.first().ok_or("rig without motors")?.threshold();
+        let motor_6d = |w: usize| {
+            let joint = &workspace.joints[w];
+            let name = |n: usize| workspace.parts[n].name.as_str();
+            Motor6D::new(
+                &joint.name,
+                name(joint.part0),
+                name(joint.part1),
+                joint.c0.clone(),
+                joint.c1.clone(),
+                [joint.current_angle, joint.desired_angle],
+                joint.max_velocity,
+                threshold,
+            )
+        };
         let motor_link = |j: usize, parent: usize| {
             let w = ids.iter().position(|&id| id == j)?;
             let joint = &workspace.joints[w];
-            if joint.kind != MOTOR {
+            if joint.kind != MOTOR && joint.kind != MOTOR_6D {
                 return None;
             }
             let coords = if joint.part0 == parent {
@@ -799,11 +815,11 @@ impl World {
         };
         let motor_offset = |j: usize, parent: usize, _child: usize| {
             let (w, [p, c]) = motor_link(j, parent)?;
-            Some(motor::revolute_offset(
-                &p,
-                &c,
-                workspace.joints[w].current_angle,
-            ))
+            Some(if workspace.joints[w].kind == MOTOR {
+                motor::revolute_offset(&p, &c, workspace.joints[w].current_angle)
+            } else {
+                motor::d6_offset(&p, &c, &motor_6d(w).transform())
+            })
         };
         let frames = tree.body_frames_with(
             &workspace
@@ -897,20 +913,11 @@ impl World {
                     Some(Link::Rigid(offset)) => offset.clone(),
                     Some(Link::Motor(j)) => {
                         let (w, coords) = motor_link(*j, parent)
-                            .ok_or("only Motor joints are ported as motor links")?;
-                        let joint = &workspace.joints[w];
-                        motors.push((
-                            MotorJoint::new(
-                                &joint.name,
-                                joint.current_angle,
-                                joint.desired_angle,
-                                joint.max_velocity,
-                            ),
-                            prim(parent)?,
-                            prim(m)?,
-                            coords.clone(),
-                        ));
-                        motor::revolute_offset(&coords[0], &coords[1], joint.current_angle)
+                            .ok_or("only Motor and Motor6D are ported as motor links")?;
+                        let offset = motor_offset(*j, parent, m)
+                            .ok_or("only Motor and Motor6D are ported as motor links")?;
+                        motors.push((w, prim(parent)?, prim(m)?, coords));
+                        offset
                     }
                     None => return Err("Body child without a link".into()),
                 };
@@ -919,8 +926,21 @@ impl World {
             world
                 .loose
                 .add_assembly(prim(root)?, &links, &world.kernel)?;
-            for (joint, parent, child, coords) in motors {
-                world.loose.add_motor(joint, parent, child, coords)?;
+            for (w, parent, child, coords) in motors {
+                let joint = &workspace.joints[w];
+                if joint.kind == MOTOR {
+                    let motor = MotorJoint::new(
+                        &joint.name,
+                        joint.current_angle,
+                        joint.desired_angle,
+                        joint.max_velocity,
+                    );
+                    world.loose.add_motor(motor, parent, child, coords)?;
+                } else {
+                    world
+                        .loose
+                        .add_motor_6d(motor_6d(w), parent, child, coords)?;
+                }
             }
         }
         // The kernel joints (Glue and the hinges), in Workspace order. A Part

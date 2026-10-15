@@ -74,6 +74,7 @@ use crate::{
     motor::{self, MotorJoint},
     native_data::NativeImage,
     physics::FreeFallBody,
+    rig::Motor6D,
     scene::CoordinateFrame,
     workspace::PartInstance,
 };
@@ -301,11 +302,50 @@ pub struct KernelJoint {
     rotator: Option<u64>,
 }
 
-/// A MotorJoint linking two Parts of one assembly: the child Part's Body
-/// offset follows its angle (RevoluteLink).
+/// The motor of a Body link.
+#[derive(Clone, Debug)]
+enum MotorKind {
+    /// MotorJoint, RevoluteLink.
+    Revolute(MotorJoint),
+    /// Motor6DJoint, D6Link.
+    D6(Box<Motor6D>),
+}
+
+impl MotorKind {
+    fn name(&self) -> &str {
+        match self {
+            Self::Revolute(m) => &m.name,
+            Self::D6(m) => &m.name,
+        }
+    }
+    /// The child's Body offset for the joint frames on the parent's and the
+    /// child's side.
+    fn offset(&self, coords: &[CoordinateFrame; 2]) -> CoordinateFrame {
+        match self {
+            Self::Revolute(m) => motor::revolute_offset(&coords[0], &coords[1], m.current_angle),
+            Self::D6(m) => motor::d6_offset(&coords[0], &coords[1], &m.transform()),
+        }
+    }
+    /// stepUi: whether the link changed (00b3831c, 00b37550).
+    fn step_ui(&mut self) -> Result<bool, String> {
+        match self {
+            Self::Revolute(m) => Ok(m.step_ui().is_some()),
+            Self::D6(m) => {
+                let before = m.link_state();
+                m.step()?;
+                let after = m.link_state();
+                // NaN counts as a change, as in 00b37550.
+                Ok((0..3).any(|k| before.0[k] != after.0[k] || before.1[k] != after.1[k]))
+            }
+        }
+    }
+}
+
+/// A motor linking two Parts of one assembly: the child Part's Body offset
+/// follows its angle.
 #[derive(Clone, Debug)]
 struct LooseMotor {
-    joint: MotorJoint,
+    joint: MotorKind,
     /// The child Part (`LooseWorld::prims`); its Body link names the parent.
     child: usize,
     /// The joint frames on the parent's and the child's side.
@@ -759,11 +799,31 @@ impl LooseWorld {
         child: usize,
         coords: [CoordinateFrame; 2],
     ) -> Result<usize, String> {
+        self.add_link_motor(MotorKind::Revolute(joint), parent, child, coords)
+    }
+    /// `add_motor` for a Motor6D (D6Link): the link's offset must be
+    /// `motor::d6_offset` of its transform.
+    pub fn add_motor_6d(
+        &mut self,
+        joint: Motor6D,
+        parent: usize,
+        child: usize,
+        coords: [CoordinateFrame; 2],
+    ) -> Result<usize, String> {
+        self.add_link_motor(MotorKind::D6(Box::new(joint)), parent, child, coords)
+    }
+    fn add_link_motor(
+        &mut self,
+        joint: MotorKind,
+        parent: usize,
+        child: usize,
+        coords: [CoordinateFrame; 2],
+    ) -> Result<usize, String> {
         let link = self.prims.get(child).and_then(|p| p.parent.as_ref());
-        let offset = motor::revolute_offset(&coords[0], &coords[1], joint.current_angle);
+        let offset = joint.offset(&coords);
         match link {
             Some((p, o)) if *p == parent && *o == offset => {}
-            _ => return Err(format!("motor {:?}: no matching Body link", joint.name)),
+            _ => return Err(format!("motor {:?}: no matching Body link", joint.name())),
         }
         self.motors.push(LooseMotor {
             joint,
@@ -773,10 +833,11 @@ impl LooseWorld {
         self.original_motors = self.motors.clone();
         Ok(self.motors.len() - 1)
     }
-    /// MovingAssemblyStage::stepUi for the MotorJoints (00b381f6), once per
-    /// frame after breakJoints: a motor whose angle changed re-poses its
-    /// child Body (RevoluteLink, 00b38100) and wakes its assembly
-    /// recursively (00b3831c, once for each Part). Each assembly with a
+    /// MovingAssemblyStage::stepUi for the motors (MotorJoint 00b381f6,
+    /// Motor6DJoint 00b3717c), once per frame after breakJoints: a motor
+    /// whose link changed re-poses its child Body (00b38100, 00b36fde) and
+    /// wakes its assembly recursively (00b3831c, 00b37550: once for each
+    /// Part). Each assembly with a
     /// moved link then rebuilds its SimBody from the Body tree at the root's
     /// frame, keeping its state and accumulators (the dirty SimBody update
     /// 00ab16aa, which natively waits for the next SimBody access).
@@ -785,12 +846,12 @@ impl LooseWorld {
         let mut moved = Vec::new();
         let mut count = 0;
         for m in 0..self.motors.len() {
-            let Some(angle) = self.motors[m].joint.step_ui() else {
+            if !self.motors[m].joint.step_ui()? {
                 continue;
-            };
+            }
             count += 1;
             let motor = &self.motors[m];
-            let offset = motor::revolute_offset(&motor.coords[0], &motor.coords[1], angle);
+            let offset = motor.joint.offset(&motor.coords);
             let child = motor.child;
             self.prims[child]
                 .parent
@@ -822,9 +883,19 @@ impl LooseWorld {
         }
         Ok(count)
     }
-    /// A MotorJoint's state.
+    /// A MotorJoint's state (None for a Motor6D).
     pub fn motor(&self, m: usize) -> Option<&MotorJoint> {
-        self.motors.get(m).map(|l| &l.joint)
+        match &self.motors.get(m)?.joint {
+            MotorKind::Revolute(j) => Some(j),
+            MotorKind::D6(_) => None,
+        }
+    }
+    /// A Motor6D's state (None for a MotorJoint).
+    pub fn motor_6d(&self, m: usize) -> Option<&Motor6D> {
+        match &self.motors.get(m)?.joint {
+            MotorKind::D6(j) => Some(j),
+            MotorKind::Revolute(_) => None,
+        }
     }
     /// A Part's Body PV: the root's from its SimBody (00ab13e8), a child's
     /// from its parent's (Body::updatePV 00a8eabe): parent x offset, and the
@@ -1383,7 +1454,7 @@ impl LooseWorld {
         // The motors at their loaded angles, their links with them.
         self.motors = self.original_motors.clone();
         for m in &self.motors {
-            let offset = motor::revolute_offset(&m.coords[0], &m.coords[1], m.joint.current_angle);
+            let offset = m.joint.offset(&m.coords);
             if let Some(link) = self.prims[m.child].parent.as_mut() {
                 link.1 = offset;
             }

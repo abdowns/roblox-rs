@@ -17,6 +17,11 @@
 //!   then turns the other way.
 //! - RevoluteLink::computeJointCoord 00a9d5b0: parent x Rz(angle) x child^-1,
 //!   with Rz from (float)sin and cos of the angle in double (006b130e).
+//! - Motor6DJoint builds its D6Link the same way (00b370ec, parent side
+//!   from 00b36f5a); D6Link::computeJointCoord 00a9d6d0 is
+//!   (parent x T) x child^-1 with T the joint's translation and
+//!   fromAxisAngleFast rotation vector (00b36fde). A changed link wakes
+//!   both assemblies recursively (00b37550), as MotorJoint's does.
 use crate::{g3d, scene::CoordinateFrame};
 
 /// A MotorJoint's stepped state.
@@ -101,6 +106,20 @@ pub fn revolute_offset(
         rotation: g3d::matrix_multiply(&parent.rotation, &rz),
     };
     g3d::frame_multiply(&turned, &g3d::frame_inverse(child))
+}
+
+/// D6Link::computeJointCoord 00a9d6d0 (Motor6DJoint's link): the child
+/// Body's offset, (`parent` x `transform`) x `child`^-1, where `transform` is
+/// the Motor6D's link frame (`rig::Motor6D::transform`, set by 00b36fde).
+pub fn d6_offset(
+    parent: &CoordinateFrame,
+    child: &CoordinateFrame,
+    transform: &CoordinateFrame,
+) -> CoordinateFrame {
+    g3d::frame_multiply(
+        &g3d::frame_multiply(parent, transform),
+        &g3d::frame_inverse(child),
+    )
 }
 
 #[cfg(test)]

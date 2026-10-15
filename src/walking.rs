@@ -1801,9 +1801,10 @@ pub fn audit_part_hinge(bundle: &Bundle) -> Result<String, String> {
 /// through the base's top face; DesiredAngle pi/2, MaxVelocity 0.05 per
 /// frame. In "Tower" Part0 is the base; in "Tower2" Part0 is the arm, so
 /// the Body tree makes Part1 the parent and the link turns the base-side
-/// frame (00b38196), the same way in the world.
+/// frame (00b38196), the same way in the world. "Tower3" is "Tower" on a
+/// Motor6D (D6Link) instead.
 pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
-    use crate::joints::MOTOR;
+    use crate::joints::{MOTOR, MOTOR_6D};
     use crate::workspace::{JointInstance, PartInstance};
     let bytes = bundle.read(
         "Contents/Resources/content/fonts/character3.rbxm",
@@ -1837,10 +1838,10 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
         rotation: up,
     };
     let desired = std::f32::consts::FRAC_PI_2;
-    let motor = |workspace: &mut Workspace, name: &str, part0, part1, c0, c1| {
+    let motor = |workspace: &mut Workspace, kind, name: &str, part0, part1, c0, c1| {
         workspace.joints.push(JointInstance {
             name: name.into(),
-            kind: MOTOR,
+            kind,
             part0,
             part1,
             c0,
@@ -1856,6 +1857,7 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
     let arm = add(&mut workspace, "Arm", [4.0, 0.4, 0.4], [-18.0, 1.2, 20.0]);
     motor(
         &mut workspace,
+        MOTOR,
         "Motor",
         base,
         arm,
@@ -1869,7 +1871,31 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
         [-30.0, 0.5, 20.0],
     );
     let arm2 = add(&mut workspace, "Arm2", [4.0, 0.4, 0.4], [-28.0, 1.2, 20.0]);
-    motor(&mut workspace, "Motor2", arm2, base2, arm_side, base_side);
+    motor(
+        &mut workspace,
+        MOTOR,
+        "Motor2",
+        arm2,
+        base2,
+        arm_side.clone(),
+        base_side.clone(),
+    );
+    let base3 = add(
+        &mut workspace,
+        "Tower3",
+        [2.0, 1.0, 2.0],
+        [-40.0, 0.5, 20.0],
+    );
+    let arm3 = add(&mut workspace, "Arm3", [4.0, 0.4, 0.4], [-38.0, 1.2, 20.0]);
+    motor(
+        &mut workspace,
+        MOTOR_6D,
+        "Motor6D",
+        base3,
+        arm3,
+        base_side,
+        arm_side,
+    );
     let names: Vec<&str> = workspace.parts.iter().map(|p| p.name.as_str()).collect();
     let mut report = workspace.joint_tree()?.describe(&names);
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
@@ -1891,7 +1917,7 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
         loose.report()
     )
     .unwrap();
-    let loaded = loose.parts.len() == 2 && loose.motor(1).is_some();
+    let loaded = loose.parts.len() == 3 && loose.motor(1).is_some() && loose.motor_6d(2).is_some();
     let prim = |fixture: &WalkingFixture, name: &str| {
         fixture
             .world
@@ -1908,12 +1934,19 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
         let a = loose.prim_frame(prim(fixture, arm)?)?;
         Ok(crate::g3d::frame_multiply(&crate::g3d::frame_inverse(&b), &a).position)
     };
-    let mut reached = [None; 2];
+    let angle = |loose: &crate::loose::LooseWorld, m: usize| -> Result<f32, String> {
+        match (loose.motor(m), loose.motor_6d(m)) {
+            (Some(j), _) => Ok(j.current_angle),
+            (_, Some(j)) => Ok(j.current_angle),
+            _ => Err("missing motor".into()),
+        }
+    };
+    let mut reached = [None; 3];
     for step in 0..960u32 {
         fixture.step_animated(&mut rig, [0.0; 3])?;
         let loose = &fixture.world.loose;
         for (m, at) in reached.iter_mut().enumerate() {
-            let angle = loose.motor(m).ok_or("missing motor")?.current_angle;
+            let angle = angle(loose, m)?;
             if at.is_none() && angle == desired {
                 *at = Some(step + 1);
             }
@@ -1921,12 +1954,14 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
         if step < 4 || (step + 1) % 32 == 0 && step < 160 || (step + 1) % 240 == 0 {
             writeln!(
                 report,
-                "part_motor_state step={} angles=[{}, {}] arm={:?} arm2={:?} centers={:?} {}",
+                "part_motor_state step={} angles=[{}, {}, {}] arm={:?} arm2={:?} arm3={:?} centers={:?} {}",
                 step + 1,
-                loose.motor(0).ok_or("missing motor")?.current_angle,
-                loose.motor(1).ok_or("missing motor")?.current_angle,
+                angle(loose, 0)?,
+                angle(loose, 1)?,
+                angle(loose, 2)?,
                 relative(&fixture, "Tower", "Arm")?,
                 relative(&fixture, "Tower2", "Arm2")?,
+                relative(&fixture, "Tower3", "Arm3")?,
                 centers(&fixture),
                 loose.report()
             )
@@ -1936,11 +1971,12 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
     let loose = &fixture.world.loose;
     let arm_at = relative(&fixture, "Tower", "Arm")?;
     let arm2_at = relative(&fixture, "Tower2", "Arm2")?;
+    let arm3_at = relative(&fixture, "Tower3", "Arm3")?;
     let tower = loose.prim_frame(prim(&fixture, "Tower")?)?;
     let end_centers = centers(&fixture);
     writeln!(
         report,
-        "part_motor_result reached={reached:?} arm={arm_at:?} arm2={arm2_at:?} tower={:?} tower_up_y={} centers={end_centers:?}",
+        "part_motor_result reached={reached:?} arm={arm_at:?} arm2={arm2_at:?} arm3={arm3_at:?} tower={:?} tower_up_y={} centers={end_centers:?}",
         tower.position, tower.rotation[1][1],
     )
     .unwrap();
@@ -1957,6 +1993,10 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
         // A quarter turn about +Y takes +X to -Z.
         ("arm_turned", near(arm_at, [0.0, 0.7, -2.0])),
         ("arm2_turned_the_same_way", near(arm2_at, [0.0, 0.7, -2.0])),
+        (
+            "arm3_turned_on_the_motor_6d",
+            near(arm3_at, [0.0, 0.7, -2.0]),
+        ),
         (
             "tower_standing",
             (tower.position[1] - 0.5).abs() < 0.05 && 0.999 < tower.rotation[1][1],
@@ -1978,7 +2018,7 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
     if !failed.is_empty() {
         return Err(format!("part motor failed {failed:?}\n{report}"));
     }
-    let _ = (arm, base2);
+    let _ = (arm, base2, arm3);
     writeln!(
         report,
         "part_motor_pass reached={reached:?} arms_turned=true asleep=true native_differential=not_tested"
