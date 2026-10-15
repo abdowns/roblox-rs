@@ -683,6 +683,15 @@ impl JointTree {
     /// down the rigid links): an assembly root keeps its own CFrame from
     /// `frames`, a child is its parent's CFrame times the link offset.
     pub fn body_frames(&self, frames: &[CoordinateFrame]) -> Result<Vec<CoordinateFrame>, String> {
+        self.body_frames_with(frames, |_, _, _| None)
+    }
+    /// `body_frames` with motor links: `motor(joint, parent, child)` gives
+    /// a motor link's offset at its angle (None refuses it).
+    pub fn body_frames_with(
+        &self,
+        frames: &[CoordinateFrame],
+        motor: impl Fn(usize, usize, usize) -> Option<CoordinateFrame>,
+    ) -> Result<Vec<CoordinateFrame>, String> {
         if frames.len() != self.nodes.len() {
             return Err("one CFrame per Part expected".into());
         }
@@ -695,7 +704,12 @@ impl JointTree {
                         let parent = out[parent].as_ref().ok_or("Body child before its parent")?;
                         g3d::frame_multiply(parent, offset)
                     }
-                    _ => return Err("motor links need the motor angle".into()),
+                    (Some(p), Some(Link::Motor(j))) => {
+                        let offset = motor(*j, p, n).ok_or("motor links need the motor angle")?;
+                        let parent = out[p].as_ref().ok_or("Body child before its parent")?;
+                        g3d::frame_multiply(parent, &offset)
+                    }
+                    _ => return Err("Body child without a link".into()),
                 };
                 out[n] = Some(frame);
             }

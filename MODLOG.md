@@ -1,5 +1,48 @@
 # MODLOG
 
+## 2026-10-15 Motor joints inside assemblies
+
+**Changed:**
+- New `motor.rs`: `MotorJoint` (CurrentAngle, DesiredAngle, MaxVelocity;
+  stepUi 00b381f6 with the setter 00b3831c) and `revolute_offset`
+  (RevoluteLink::computeJointCoord 00a9d5b0 with 006b130e).
+- `LooseWorld`: `add_motor`, `step_motors` (the angle step, the child's new
+  link offset, a recursive wake, then the SimBody rebuilt from the Body
+  tree), `motor`. `reset` restores the motors and their links.
+  `add_assembly`'s mass sum moved into `tree_properties` (same arithmetic).
+- `JointTree::body_frames_with` (motor links), `Workspace::joint_tree_indexed`
+  (ground joints share the tree's numbering), and `Workspace::joint_tree`
+  accepts Motor. `JointInstance` has `current_angle`, `desired_angle`,
+  `max_velocity`.
+- `World::in_workspace` builds Motor links (parent-side and child-side
+  frames from 00b38196) and refuses a Motor in an anchored assembly.
+  `World::step_ui` steps the motors after the hinges.
+- ROADMAP: ManualGlue moves to item 5. Its face is the overlap of the two
+  Parts' surfaces (00b0da3a), the same face geometry JointsService needs.
+- New `audit-part-motor`.
+
+**Why:** Roadmap physics item 2. Motors join Parts in many 2016 models
+(older rigs, vehicles, scripted doors).
+
+**Tested how:** `sh tools/cargo.sh test --locked` (99 pass; new motor tests
+for the angle step and the link offset), clippy clean, `audit-part-motor`
+twice (identical apart from the evidence log path), and the other 21 audits
+against the outputs of the previous commit.
+
+**Result:**
+- audit-part-motor passes:
+  - both motors reach pi/2 at world step 125 (frame 32 at 0.05 a frame);
+  - both arms end at (0, 0.7, -2) in their tower's frame (a quarter turn
+    from +X to -Z), including the Motor whose Part0 is the arm: the link
+    turns the parent-side frame, so the turn is the same in the world;
+  - the towers stay upright (they sink 0.016 into the Baseplate as resting
+    blocks do), the center of mass moves with the arm, and both towers
+    sleep at step 239.
+- Every other audit is unchanged (audit-runtime differs only in timing).
+- Not ported: Motor6D outside the character (D6Link), VelocityMotor, motor
+  animation, and motors in anchored assemblies. Native parity is **not
+  tested**.
+
 ## 2026-10-15 Hinges and motor hinges in the kernel
 
 **Changed:**

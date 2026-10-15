@@ -70,17 +70,21 @@ Left, in order:
    (hinge and motor surfaces), Motor, DynamicRotate, VelocityMotor, and their
    connectors (JointConnector, RotateConnector, the break connectors). Done:
    kernel Points, the break connectors, SleepStage joint edges, breakJoints,
-   Glue present at load (`audit-part-glue`), and Rotate, RotateP and RotateV
-   with their RotateConnector and surface inputs (`audit-part-hinge`).
-   Left: ManualGlue (its face comes from 00b0da3a), Motor and VelocityMotor
-   (Motor joints in Body links, MotorJoint 00b3858a).
+   Glue present at load (`audit-part-glue`), Rotate, RotateP and RotateV
+   with their RotateConnector and surface inputs (`audit-part-hinge`), and
+   Motor links inside assemblies (`audit-part-motor`). Left: Motor6D outside
+   the character (D6Link), VelocityMotor, and motors in anchored assemblies
+   (MovingAssemblyStage's kinematic moves). ManualGlue moves to item 5: its
+   face is the overlap of the two Parts' surfaces (00b0da3a clips one face
+   polygon against the other through Geometry +0x3c/+0x40/+0x78), the same
+   face geometry the surface joints need.
 3. **Shapes.** Ball (BallBall/BallBlock contacts), Cylinder, Wedge and
    CornerWedge (PolyContact), TrussPart, and the legacy ramp/prism/pyramid
    Parts.
 4. **Body movers.** BodyPosition, BodyGyro, BodyVelocity,
    BodyAngularVelocity, BodyForce, BodyThrust, RocketPropulsion.
 5. **Automatic joints.** JointsService and the surface pairs (studs/inlets,
-   weld, glue, hinge, motor) that join touching Parts.
+   weld, glue, hinge, motor) that join touching Parts, and ManualGlue.
 6. **Humanoid states.** Climbing, Seated, Swimming, PlatformStanding,
    FallingDown, Ragdoll, GettingUp, Physics, Dead.
 7. **Explosions and touch events.** Explosion, Touched/TouchEnded.

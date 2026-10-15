@@ -71,6 +71,7 @@ use crate::{
     },
     legacy_contact::{AwakeContact, ContactGeometry, ImpulseInput, ImpulseProfile},
     material::{MaterialProfile, PhysicalProperties, Shape},
+    motor::{self, MotorJoint},
     native_data::NativeImage,
     physics::FreeFallBody,
     scene::CoordinateFrame,
@@ -300,6 +301,17 @@ pub struct KernelJoint {
     rotator: Option<u64>,
 }
 
+/// A MotorJoint linking two Parts of one assembly: the child Part's Body
+/// offset follows its angle (RevoluteLink).
+#[derive(Clone, Debug)]
+struct LooseMotor {
+    joint: MotorJoint,
+    /// The child Part (`LooseWorld::prims`); its Body link names the parent.
+    child: usize,
+    /// The joint frames on the parent's and the child's side.
+    coords: [CoordinateFrame; 2],
+}
+
 /// An anchored or grounded Part a kernel joint holds (it never moves).
 #[derive(Clone, Debug)]
 struct FixedBody {
@@ -438,6 +450,9 @@ pub struct LooseWorld {
     /// SleepStage +0x16c: set by a recursive wake from stepUi (00b737c4);
     /// the next recursive pass then walks through awake assemblies as well.
     wake_through_awake: bool,
+    /// The MotorJoints inside assemblies, in creation order, and as added.
+    motors: Vec<LooseMotor>,
+    original_motors: Vec<LooseMotor>,
     original_joints: JointSnapshot,
     /// Joints that broke: (step, joint).
     pub broken: Vec<(u32, usize)>,
@@ -564,6 +579,8 @@ impl LooseWorld {
             breakers: BTreeMap::new(),
             rotators: BTreeMap::new(),
             wake_through_awake: false,
+            motors: Vec::new(),
+            original_motors: Vec::new(),
             original_joints: JointSnapshot::default(),
             broken: Vec::new(),
         })
@@ -659,6 +676,45 @@ impl LooseWorld {
             self.prims[m].assembly = index;
         }
         let root_frame = self.prims[root].frame.clone();
+        let (assembly, frames) = self.tree_properties(root, links, &root_frame)?;
+        let state = FreeFallBody::new(root_frame.clone(), [0.0; 3], [0.0; 3])?;
+        let radius = members
+            .iter()
+            .map(|m| {
+                sleep::primitive_radius(
+                    frames[m].position,
+                    root_frame.position,
+                    self.prims[*m].size,
+                )
+            })
+            .fold(0.0f32, f32::max);
+        self.parts.push(LoosePart {
+            name: self.prims[root].name.clone(),
+            body: KernelBody::new(&assembly, &state, kernel)?,
+            list: BodyList::FreeFall,
+            prims: members,
+            total: 0,
+            real_time: 0,
+            joint: 0,
+            contact: 0,
+            in_kernel: false,
+            sleep: AssemblyState::WakePending,
+            history: MotionHistory::new(sleep::sample(&root_frame, radius)),
+            radius,
+            pass: 0,
+            depth: -1,
+        });
+        self.original = self.parts.clone();
+        Ok(index)
+    }
+    /// The Body tree's mass properties (Cofm 00a90502), each child at parent
+    /// x offset from `root_frame`, and those frames.
+    fn tree_properties(
+        &self,
+        root: usize,
+        links: &[(usize, usize, CoordinateFrame)],
+        root_frame: &CoordinateFrame,
+    ) -> Result<(AssemblyProperties, BTreeMap<usize, CoordinateFrame>), String> {
         let mut frames = BTreeMap::new();
         frames.insert(root, root_frame.clone());
         for (child, parent, offset) in links {
@@ -689,36 +745,86 @@ impl LooseWorld {
                 &children,
             )
         }
-        let assembly = branch(self, root, links, &frames)?;
-        let state = FreeFallBody::new(root_frame.clone(), [0.0; 3], [0.0; 3])?;
-        let radius = members
-            .iter()
-            .map(|m| {
-                sleep::primitive_radius(
-                    frames[m].position,
-                    root_frame.position,
-                    self.prims[*m].size,
-                )
-            })
-            .fold(0.0f32, f32::max);
-        self.parts.push(LoosePart {
-            name: self.prims[root].name.clone(),
-            body: KernelBody::new(&assembly, &state, kernel)?,
-            list: BodyList::FreeFall,
-            prims: members,
-            total: 0,
-            real_time: 0,
-            joint: 0,
-            contact: 0,
-            in_kernel: false,
-            sleep: AssemblyState::WakePending,
-            history: MotionHistory::new(sleep::sample(&root_frame, radius)),
-            radius,
-            pass: 0,
-            depth: -1,
+        Ok((branch(self, root, links, &frames)?, frames))
+    }
+    /// A MotorJoint (`motor.rs`) on a Body link `add_assembly` made: `parent`
+    /// and `child` are the link's Parts and `coords` the joint frames on
+    /// their sides (C0 and C1 when Part0 is the parent, else C1 and C0). The
+    /// link's offset must be `motor::revolute_offset` at the motor's
+    /// CurrentAngle. Returns its index.
+    pub fn add_motor(
+        &mut self,
+        joint: MotorJoint,
+        parent: usize,
+        child: usize,
+        coords: [CoordinateFrame; 2],
+    ) -> Result<usize, String> {
+        let link = self.prims.get(child).and_then(|p| p.parent.as_ref());
+        let offset = motor::revolute_offset(&coords[0], &coords[1], joint.current_angle);
+        match link {
+            Some((p, o)) if *p == parent && *o == offset => {}
+            _ => return Err(format!("motor {:?}: no matching Body link", joint.name)),
+        }
+        self.motors.push(LooseMotor {
+            joint,
+            child,
+            coords,
         });
-        self.original = self.parts.clone();
-        Ok(index)
+        self.original_motors = self.motors.clone();
+        Ok(self.motors.len() - 1)
+    }
+    /// MovingAssemblyStage::stepUi for the MotorJoints (00b381f6), once per
+    /// frame after breakJoints: a motor whose angle changed re-poses its
+    /// child Body (RevoluteLink, 00b38100) and wakes its assembly
+    /// recursively (00b3831c, once for each Part). Each assembly with a
+    /// moved link then rebuilds its SimBody from the Body tree at the root's
+    /// frame, keeping its state and accumulators (the dirty SimBody update
+    /// 00ab16aa, which natively waits for the next SimBody access).
+    /// Returns how many motors moved.
+    pub fn step_motors(&mut self, kernel: &KernelProfile) -> Result<usize, String> {
+        let mut moved = Vec::new();
+        let mut count = 0;
+        for m in 0..self.motors.len() {
+            let Some(angle) = self.motors[m].joint.step_ui() else {
+                continue;
+            };
+            count += 1;
+            let motor = &self.motors[m];
+            let offset = motor::revolute_offset(&motor.coords[0], &motor.coords[1], angle);
+            let child = motor.child;
+            self.prims[child]
+                .parent
+                .as_mut()
+                .ok_or("motor child without a parent Body")?
+                .1 = offset;
+            let a = self.prims[child].assembly;
+            self.wake_assembly_recursive(a)?;
+            self.wake_assembly_recursive(a)?;
+            if !moved.contains(&a) {
+                moved.push(a);
+            }
+        }
+        for a in moved {
+            let members = self.parts[a].prims.clone();
+            let links = members[1..]
+                .iter()
+                .map(|&m| {
+                    let (parent, offset) = self.prims[m]
+                        .parent
+                        .clone()
+                        .ok_or("assembly Part without a Body link")?;
+                    Ok((m, parent, offset))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let root_frame = self.parts[a].body.frame.clone();
+            let (properties, _) = self.tree_properties(members[0], &links, &root_frame)?;
+            self.parts[a].body.refresh_assembly(&properties, kernel)?;
+        }
+        Ok(count)
+    }
+    /// A MotorJoint's state.
+    pub fn motor(&self, m: usize) -> Option<&MotorJoint> {
+        self.motors.get(m).map(|l| &l.joint)
     }
     /// A Part's Body PV: the root's from its SimBody (00ab13e8), a child's
     /// from its parent's (Body::updatePV 00a8eabe): parent x offset, and the
@@ -1274,6 +1380,14 @@ impl LooseWorld {
         self.rotators = joints.rotators;
         self.joint_connectors = joints.joint_connectors;
         self.wake_through_awake = false;
+        // The motors at their loaded angles, their links with them.
+        self.motors = self.original_motors.clone();
+        for m in &self.motors {
+            let offset = motor::revolute_offset(&m.coords[0], &m.coords[1], m.joint.current_angle);
+            if let Some(link) = self.prims[m.child].parent.as_mut() {
+                link.1 = offset;
+            }
+        }
         self.broken.clear();
         self.owners.clear();
         self.stats = StepStats::default();

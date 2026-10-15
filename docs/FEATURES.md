@@ -283,9 +283,30 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   - `part_hinge_pass arm=swung flap=asleep wheel_rate=2.999 paddle=follows native_differential=not_tested`.
 
   Only hinges present at load, and surface inputs as loaded (no changes
-  while running). Not ported: Motor and VelocityMotor, hinges to the
-  character, the controller inputs (they give 0), and hinges between two
-  anchored Parts (refused). Native parity is **not tested**.
+  while running). Not ported: hinges to the character, the controller
+  inputs (they give 0), and hinges between two anchored Parts (refused).
+  Native parity is **not tested**.
+
+- Motor joints in the physics: a Workspace Motor (`joints::MOTOR`, with
+  `JointInstance::current_angle`, `desired_angle`, `max_velocity`) is a
+  Body link whose offset turns with CurrentAngle. Each frame the angle
+  moves toward DesiredAngle by at most |MaxVelocity|, the child Part
+  follows, the assembly wakes, and its SimBody's center of mass and inertia
+  are rebuilt. Run `sh tools/cargo.sh run --locked -- audit-part-motor`.
+  Expect:
+  - `joint_tree_part name=Arm ... tree_joint_kind=Some(4) tree_parent=Tower body_parent=Tower ... offset=motor5`
+    (and the same for Arm2 under Tower2, whose Motor has the arm as Part0);
+  - `part_motor_result reached=[Some(125), Some(125)] arm=[1.9073486e-6, 0.70000005, -2.000002] arm2=[1.9073486e-6, 0.6999999, -2.0] tower=[-19.99919, 0.48368213, 19.998695] tower_up_y=0.9999946 centers=[[-19.999054, 0.57946825, 19.722567], ...]`:
+    both motors reach pi/2 on frame 32, both arms end a quarter turn from
+    +X to -Z in their tower's frame, the towers stay upright, and the
+    center of mass follows the arm;
+  - `part_motor_sleep ... [Tower final=SleepingDeeply in_kernel=false ...`:
+    the towers wake every frame while their motors turn, then sleep;
+  - `part_motor_pass reached=[Some(125), Some(125)] arms_turned=true asleep=true native_differential=not_tested`.
+
+  Not ported: Motor6D outside the character, VelocityMotor, animation of a
+  Motor, and a Motor in an anchored assembly (refused). Native parity is
+  **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,

@@ -143,6 +143,11 @@ pub struct JointInstance {
     /// RotateP / RotateV BaseAngle (DynamicRotateJoint +0xd8, getter
     /// 0092b260); 0 for the others.
     pub base_angle: f32,
+    /// Motor CurrentAngle, DesiredAngle and MaxVelocity (MotorJoint +0x9c,
+    /// +0xb0, +0xac); 0 for the others.
+    pub current_angle: f32,
+    pub desired_angle: f32,
+    pub max_velocity: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -215,7 +220,13 @@ impl Workspace {
     /// them in DataModel order; the spanning tree does not depend on it,
     /// the Body children order can (not recovered).
     pub fn joint_tree(&self) -> Result<JointTree, String> {
+        Ok(self.joint_tree_indexed()?.0)
+    }
+    /// `joint_tree` and each Workspace joint's index in the tree (ground
+    /// joints share the tree's numbering).
+    pub fn joint_tree_indexed(&self) -> Result<(JointTree, Vec<usize>), String> {
         let mut tree = JointTree::new();
+        let mut ids = Vec::with_capacity(self.joints.len());
         for part in &self.parts {
             tree.add_part(TreePart {
                 size: part.size,
@@ -224,27 +235,28 @@ impl Workspace {
             });
         }
         for joint in &self.joints {
-            let kernel = [
+            let ported = [
+                joints::MOTOR,
                 joints::GLUE,
                 joints::ROTATE,
                 joints::ROTATE_P,
                 joints::ROTATE_V,
             ];
-            if !joints::is_rigid(joint.kind) && !kernel.contains(&joint.kind) {
+            if !joints::is_rigid(joint.kind) && !ported.contains(&joint.kind) {
                 return Err(format!(
-                    "joint {:?}: only rigid joints, Glue and the hinges are ported",
+                    "joint {:?}: only rigid joints, Motor, Glue and the hinges are ported",
                     joint.name
                 ));
             }
-            tree.add_joint(
+            ids.push(tree.add_joint(
                 joint.kind,
                 joint.part0,
                 joint.part1,
                 joint.c0.clone(),
                 joint.c1.clone(),
-            )?;
+            )?);
         }
-        Ok(tree)
+        Ok((tree, ids))
     }
     /// Model extents (009708e0) over the workspace parts.
     pub fn extents(&self) -> Option<([f32; 3], [f32; 3])> {

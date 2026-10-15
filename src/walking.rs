@@ -985,6 +985,9 @@ pub fn audit_part_weld(bundle: &Bundle) -> Result<String, String> {
             c1: at([0.0; 3]),
             face: [[0.0; 3]; 4],
             base_angle: 0.0,
+            current_angle: 0.0,
+            desired_angle: 0.0,
+            max_velocity: 0.0,
         });
     };
     let base = add(
@@ -1258,6 +1261,9 @@ pub fn audit_part_glue(bundle: &Bundle) -> Result<String, String> {
             },
             face: [[-a, -b, 0.0], [a, -b, 0.0], [a, b, 0.0], [-a, b, 0.0]],
             base_angle: 0.0,
+            current_angle: 0.0,
+            desired_angle: 0.0,
+            max_velocity: 0.0,
         });
     };
     // z along -Y (columns x, z, -y), and z along +X (columns -z, y, x).
@@ -1541,6 +1547,9 @@ pub fn audit_part_hinge(bundle: &Bundle) -> Result<String, String> {
             },
             face: [[0.0; 3]; 4],
             base_angle: 0.0,
+            current_angle: 0.0,
+            desired_angle: 0.0,
+            max_velocity: 0.0,
         });
     };
     let block = [1.0, 1.0, 1.0];
@@ -1781,6 +1790,198 @@ pub fn audit_part_hinge(bundle: &Bundle) -> Result<String, String> {
     writeln!(
         report,
         "part_hinge_pass arm=swung flap=asleep wheel_rate={wheel_rate:.3} paddle=follows native_differential=not_tested"
+    )
+    .unwrap();
+    Ok(report)
+}
+
+/// Motors (MotorJoint) in a Workspace, with the character idling at the
+/// origin. Each "tower" is a 2 x 1 x 2 base resting on the Baseplate with a
+/// 4 x 0.4 x 0.4 arm lying on top, on a Motor about the vertical axis
+/// through the base's top face; DesiredAngle pi/2, MaxVelocity 0.05 per
+/// frame. In "Tower" Part0 is the base; in "Tower2" Part0 is the arm, so
+/// the Body tree makes Part1 the parent and the link turns the base-side
+/// frame (00b38196), the same way in the world.
+pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
+    use crate::joints::MOTOR;
+    use crate::workspace::{JointInstance, PartInstance};
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    // z along +Y (columns x, -z, y).
+    let up = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+    let add = |workspace: &mut Workspace, name: &str, size: [f32; 3], position| {
+        let mut part = PartInstance {
+            name: name.into(),
+            frame: CoordinateFrame {
+                position,
+                rotation: IDENTITY,
+            },
+            ..Default::default()
+        };
+        part.set_size(size);
+        workspace.parts.push(part);
+        workspace.parts.len() - 1
+    };
+    let base_side = CoordinateFrame {
+        position: [0.0, 0.5, 0.0],
+        rotation: up,
+    };
+    let arm_side = CoordinateFrame {
+        position: [-2.0, -0.2, 0.0],
+        rotation: up,
+    };
+    let desired = std::f32::consts::FRAC_PI_2;
+    let motor = |workspace: &mut Workspace, name: &str, part0, part1, c0, c1| {
+        workspace.joints.push(JointInstance {
+            name: name.into(),
+            kind: MOTOR,
+            part0,
+            part1,
+            c0,
+            c1,
+            face: [[0.0; 3]; 4],
+            base_angle: 0.0,
+            current_angle: 0.0,
+            desired_angle: desired,
+            max_velocity: 0.05,
+        });
+    };
+    let base = add(&mut workspace, "Tower", [2.0, 1.0, 2.0], [-20.0, 0.5, 20.0]);
+    let arm = add(&mut workspace, "Arm", [4.0, 0.4, 0.4], [-18.0, 1.2, 20.0]);
+    motor(
+        &mut workspace,
+        "Motor",
+        base,
+        arm,
+        base_side.clone(),
+        arm_side.clone(),
+    );
+    let base2 = add(
+        &mut workspace,
+        "Tower2",
+        [2.0, 1.0, 2.0],
+        [-30.0, 0.5, 20.0],
+    );
+    let arm2 = add(&mut workspace, "Arm2", [4.0, 0.4, 0.4], [-28.0, 1.2, 20.0]);
+    motor(&mut workspace, "Motor2", arm2, base2, arm_side, base_side);
+    let names: Vec<&str> = workspace.parts.iter().map(|p| p.name.as_str()).collect();
+    let mut report = workspace.joint_tree()?.describe(&names);
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let centers = |fixture: &WalkingFixture| -> Vec<[f32; 3]> {
+        fixture
+            .world
+            .loose
+            .parts
+            .iter()
+            .map(|p| p.body.center)
+            .collect()
+    };
+    let loose = &fixture.world.loose;
+    let start_centers = centers(&fixture);
+    writeln!(
+        report,
+        "part_motor_load assemblies={} centers={start_centers:?} {}",
+        loose.parts.len(),
+        loose.report()
+    )
+    .unwrap();
+    let loaded = loose.parts.len() == 2 && loose.motor(1).is_some();
+    let prim = |fixture: &WalkingFixture, name: &str| {
+        fixture
+            .world
+            .loose
+            .prims
+            .iter()
+            .position(|p| p.name == name)
+            .ok_or(format!("{name} is not a loose Part"))
+    };
+    // The arm's center in its base's frame.
+    let relative = |fixture: &WalkingFixture, base: &str, arm: &str| -> Result<[f32; 3], String> {
+        let loose = &fixture.world.loose;
+        let b = loose.prim_frame(prim(fixture, base)?)?;
+        let a = loose.prim_frame(prim(fixture, arm)?)?;
+        Ok(crate::g3d::frame_multiply(&crate::g3d::frame_inverse(&b), &a).position)
+    };
+    let mut reached = [None; 2];
+    for step in 0..960u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        let loose = &fixture.world.loose;
+        for (m, at) in reached.iter_mut().enumerate() {
+            let angle = loose.motor(m).ok_or("missing motor")?.current_angle;
+            if at.is_none() && angle == desired {
+                *at = Some(step + 1);
+            }
+        }
+        if step < 4 || (step + 1) % 32 == 0 && step < 160 || (step + 1) % 240 == 0 {
+            writeln!(
+                report,
+                "part_motor_state step={} angles=[{}, {}] arm={:?} arm2={:?} centers={:?} {}",
+                step + 1,
+                loose.motor(0).ok_or("missing motor")?.current_angle,
+                loose.motor(1).ok_or("missing motor")?.current_angle,
+                relative(&fixture, "Tower", "Arm")?,
+                relative(&fixture, "Tower2", "Arm2")?,
+                centers(&fixture),
+                loose.report()
+            )
+            .unwrap();
+        }
+    }
+    let loose = &fixture.world.loose;
+    let arm_at = relative(&fixture, "Tower", "Arm")?;
+    let arm2_at = relative(&fixture, "Tower2", "Arm2")?;
+    let tower = loose.prim_frame(prim(&fixture, "Tower")?)?;
+    let end_centers = centers(&fixture);
+    writeln!(
+        report,
+        "part_motor_result reached={reached:?} arm={arm_at:?} arm2={arm2_at:?} tower={:?} tower_up_y={} centers={end_centers:?}",
+        tower.position, tower.rotation[1][1],
+    )
+    .unwrap();
+    writeln!(report, "{}", sleep_summary("part_motor_sleep", loose)).unwrap();
+    let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 0.01);
+    let checks = [
+        ("loaded", loaded),
+        // pi/2 at 0.05 a frame: 31 frames of 0.05, then the rest; four
+        // world steps a frame.
+        (
+            "reached_in_32_frames",
+            reached.iter().all(|r| r.is_some_and(|s| s <= 32 * 4)),
+        ),
+        // A quarter turn about +Y takes +X to -Z.
+        ("arm_turned", near(arm_at, [0.0, 0.7, -2.0])),
+        ("arm2_turned_the_same_way", near(arm2_at, [0.0, 0.7, -2.0])),
+        (
+            "tower_standing",
+            (tower.position[1] - 0.5).abs() < 0.05 && 0.999 < tower.rotation[1][1],
+        ),
+        (
+            "center_moved",
+            end_centers[0][2] < start_centers[0][2] - 0.2
+                && end_centers[0][0] < start_centers[0][0] - 0.2,
+        ),
+        (
+            "asleep",
+            loose
+                .parts
+                .iter()
+                .all(|p| p.sleep.sleeping() && !p.in_kernel),
+        ),
+    ];
+    let failed: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
+    if !failed.is_empty() {
+        return Err(format!("part motor failed {failed:?}\n{report}"));
+    }
+    let _ = (arm, base2);
+    writeln!(
+        report,
+        "part_motor_pass reached={reached:?} arms_turned=true asleep=true native_differential=not_tested"
     )
     .unwrap();
     Ok(report)

@@ -1421,6 +1421,30 @@ stepUi is not recovered either: the port steps every motor hinge still in
 SleepStage, asleep or not. A surface input is read from the Part's
 properties as loaded (no property changes while running yet).
 
+**Motors (motor.rs, MotorJoint).** A Motor (Joint type 4) is a Body link
+inside one assembly, like a weld, but its offset follows an angle:
+- *The link (00b38196 -> 00a9d39a, RevoluteLink).* It keeps the joint frame
+  on the parent Body's side and the child's (with its inverse): C0 and C1
+  when Part0's Body is the parent (00b3807c), C1 and C0 otherwise. The
+  offset (computeJointCoord 00a9d5b0) is parent x Rz(angle) x child^-1, Rz
+  from (float)sin and cos of the angle in double (006b130e). The parent-side
+  frame is always the one turned, so when the Body tree makes Part1 the
+  parent the angle turns the other way relative to C0/C1.
+- *stepUi (00b381f6), once per frame in MovingAssemblyStage.* The angle
+  moves toward DesiredAngle by at most |MaxVelocity| (per frame, not per
+  second), then the animation offset and motor weight decay as in Motor6D
+  (the offset is one scalar here). A new CurrentAngle (00b3831c) re-poses
+  the link (00b38100) and wakes both Parts' assemblies recursively. The
+  link marks the Body tree dirty (00a9d2c0 -> 00a8e1da); the SimBody
+  rebuilds its center of mass and inertia from the Body tree on its next
+  access (00ab16aa), keeping the root's state and the accumulators. The
+  port rebuilds right after stepUi (`LooseWorld::step_motors`), which reads
+  the same state.
+- *Offline gate.* MovingAssemblyStage skips motors in network buffer zones
+  (FLog StepAnimatedJointsInBufferZone, 00b39200); offline that never
+  applies. A motor in an anchored assembly is moved kinematically by
+  MovingAssemblyStage (not ported; `World::in_workspace` refuses it).
+
 `audit-joints` checks the tree on the shipped R6 rig: HumanoidRootPart is the
 root and the Body child order matches the order `AssemblyProperties::from_rig`
 uses. Not modelled: real addresses. GUIDs follow Part creation order, address

@@ -25,6 +25,7 @@ pub mod loose;
 pub mod material;
 pub mod mesh;
 mod motion;
+pub mod motor;
 pub mod native_data;
 pub mod physics;
 pub mod player;

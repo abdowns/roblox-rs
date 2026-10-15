@@ -10,12 +10,13 @@ use crate::{
     bundle::Bundle,
     collision::ContactBodyState,
     humanoid_state::{FloorPart, Hit},
-    joints::{GLUE, Link, ROTATE, ROTATE_P, ROTATE_V},
+    joints::{GLUE, Link, MOTOR, ROTATE, ROTATE_P, ROTATE_V},
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
     kernel_joint::{self, JointBody},
     legacy_contact::{BlockContactProfile, ContactGeometry, ImpulseProfile},
     loose::{CharacterMotion, LoosePrim, LooseWorld, Prim},
     material::{MaterialProfile, Shape},
+    motor::{self, MotorJoint},
     physics,
     rig::{R6Rig, compose},
     scene::{CoordinateFrame, Scene},
@@ -780,13 +781,37 @@ impl World {
         // takes the CFrame its Body gives it. Grounded assemblies (anchored,
         // or rigidly joined to an anchored Part) never move: their Parts
         // become static blocks.
-        let tree = workspace.joint_tree()?;
-        let frames = tree.body_frames(
+        let (tree, ids) = workspace.joint_tree_indexed()?;
+        // A Motor link (`motor.rs`): the joint frames on the parent's and the
+        // child's side (00b38196), and the offset at CurrentAngle.
+        let motor_link = |j: usize, parent: usize| {
+            let w = ids.iter().position(|&id| id == j)?;
+            let joint = &workspace.joints[w];
+            if joint.kind != MOTOR {
+                return None;
+            }
+            let coords = if joint.part0 == parent {
+                [joint.c0.clone(), joint.c1.clone()]
+            } else {
+                [joint.c1.clone(), joint.c0.clone()]
+            };
+            Some((w, coords))
+        };
+        let motor_offset = |j: usize, parent: usize, _child: usize| {
+            let (w, [p, c]) = motor_link(j, parent)?;
+            Some(motor::revolute_offset(
+                &p,
+                &c,
+                workspace.joints[w].current_angle,
+            ))
+        };
+        let frames = tree.body_frames_with(
             &workspace
                 .parts
                 .iter()
                 .map(|p| p.frame.clone())
                 .collect::<Vec<_>>(),
+            motor_offset,
         )?;
         // World::insertPrimitive 00bab52a -> onPrimitiveAdded 00ae97aa: each
         // Part enters the hash without contacts, in Workspace order.
@@ -796,7 +821,16 @@ impl World {
         let mut prim_of = vec![None; workspace.parts.len()];
         for (n, part) in workspace.parts.iter().enumerate() {
             let extents = block_extents(&frames[n], part.size);
-            if !part.anchored && !tree.grounded(n) {
+            let grounded = part.anchored || tree.grounded(n);
+            if grounded && matches!(tree.link(n), Some(Link::Motor(_))) {
+                // MovingAssemblyStage moves an anchored assembly's motor
+                // links kinematically (not ported).
+                return Err(format!(
+                    "{:?}: a Motor in an anchored assembly is not ported",
+                    part.name
+                ));
+            }
+            if !grounded {
                 let mut placed = part.clone();
                 placed.frame = frames[n].clone();
                 let index = world.loose.add_prim(&placed, &world.materials)?;
@@ -856,16 +890,38 @@ impl World {
             built.push(root);
             let prim = |m: usize| prim_of[m].ok_or("assembly Part is not loose");
             let mut links = Vec::new();
+            let mut motors = Vec::new();
             for m in tree.assembly_parts(root).into_iter().skip(1) {
                 let parent = tree.body_parent(m).ok_or("Body child without a parent")?;
-                let Some(Link::Rigid(offset)) = tree.link(m) else {
-                    return Err("motor links need the motor angle".into());
+                let offset = match tree.link(m) {
+                    Some(Link::Rigid(offset)) => offset.clone(),
+                    Some(Link::Motor(j)) => {
+                        let (w, coords) = motor_link(*j, parent)
+                            .ok_or("only Motor joints are ported as motor links")?;
+                        let joint = &workspace.joints[w];
+                        motors.push((
+                            MotorJoint::new(
+                                &joint.name,
+                                joint.current_angle,
+                                joint.desired_angle,
+                                joint.max_velocity,
+                            ),
+                            prim(parent)?,
+                            prim(m)?,
+                            coords.clone(),
+                        ));
+                        motor::revolute_offset(&coords[0], &coords[1], joint.current_angle)
+                    }
+                    None => return Err("Body child without a link".into()),
                 };
-                links.push((prim(m)?, prim(parent)?, offset.clone()));
+                links.push((prim(m)?, prim(parent)?, offset));
             }
             world
                 .loose
                 .add_assembly(prim(root)?, &links, &world.kernel)?;
+            for (joint, parent, child, coords) in motors {
+                world.loose.add_motor(joint, parent, child, coords)?;
+            }
         }
         // The kernel joints (Glue and the hinges), in Workspace order. A Part
         // that does not move (anchored or grounded) holds its Points at its
@@ -967,10 +1023,13 @@ impl World {
         self.loose.break_joints()
     }
     /// World::uiStep's MovingAssemblyStage::stepUi (00b39318) for the motor
-    /// hinges, after breakJoints: `time` is Workspace.DistributedGameTime
-    /// (RunService's game time, copied in by physicsStep 00a7c4e2).
+    /// hinges and the Motors, after breakJoints: `time` is
+    /// Workspace.DistributedGameTime (RunService's game time, copied in by
+    /// physicsStep 00a7c4e2).
     pub fn step_ui(&mut self, time: f64) -> Result<(), String> {
-        self.loose.step_ui(time)
+        self.loose.step_ui(time)?;
+        self.loose.step_motors(&self.kernel)?;
+        Ok(())
     }
     /// The broadphase's new contact events become contact pairs: character
     /// against a static block in `static_contacts`, everything else in

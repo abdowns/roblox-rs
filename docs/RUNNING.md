@@ -32,9 +32,10 @@ Unanchored Parts fall, land, stack and come to rest in the simulation
 (`audit-part-drop`), the character pushes them (`audit-part-push`) and stands
 on them (`audit-part-stand`), and still Parts fall asleep (SleepStage).
 Welded Parts move as one assembly (`audit-part-weld`), glued Parts hang,
-fall together and break off under load (`audit-part-glue`), and hinged
-Parts swing, spin and follow their motors (`audit-part-hinge`). The demo
-place has no joints.
+fall together and break off under load (`audit-part-glue`), hinged
+Parts swing, spin and follow their motors (`audit-part-hinge`), and Motors
+turn the Parts they link (`audit-part-motor`). The demo place has no
+joints.
 Contacts come from the native broadphase (`audit-broadphase`). Not ported
 yet: outlines and the Studio camera.
 Manual keys are **not tested**.
