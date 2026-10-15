@@ -190,6 +190,12 @@ impl KernelBody {
         self.torque = std::array::from_fn(|a| torque[a] + self.torque[a]);
         self.validate()
     }
+    /// 00b7439e, when SleepStage makes the assembly AWAKE: the force back to
+    /// gravity alone and no torque. The impulses are left alone.
+    pub fn reset_force(&mut self) {
+        self.force = [0.0, self.gravity_force, 0.0];
+        self.torque = [0.0; 3];
+    }
     pub fn inverse_inertia_world(&self) -> Tensor {
         rotate_tensor(diagonal(self.inverse_diagonal), self.frame.rotation)
     }

@@ -153,10 +153,10 @@ output to expect. Anything not covered by an audit is marked **not tested**.
     the force uses min(character, Pad) mass, and the Pad is pushed down with
     force - existing;
   - `part_jump_baseplate_push index=0 floor=Some(Static(0)) ... mass=9.9 force=247542.61`;
-  - `part_jump_compare pad_pushes=304 baseplate_pushes=228 pad_rise=9.4151535 baseplate_rise=8.657764`.
-    The push drives the jump speed to JumpPower, so the lighter Pad only
-    takes more substeps to get there. The higher rise from the Pad comes from
-    the Pad springing back up (it reaches vy -118);
+  - `part_jump_pad_result pushes=228 rise=8.590376 pad_lowest_vy=-65.589676 ...`:
+    the Pad is asleep when the jump starts, so the first pushes gather on its
+    SimBody outside the kernel. They are dropped when it wakes (00b7439e);
+  - `part_jump_compare pad_pushes=228 baseplate_pushes=228 pad_rise=8.590376 baseplate_rise=8.657764`;
   - `part_jump_pass`.
 
   Each push is checked against the native arithmetic bit for bit. Native jump

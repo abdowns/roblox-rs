@@ -1,5 +1,34 @@
 # MODLOG
 
+## 2026-10-15 Waking drops the force gathered while asleep
+
+**Changed:**
+- `KernelBody::reset_force` (00b7439e): the force goes back to gravity alone
+  and the torque to zero.
+- SleepStage calls it when an assembly becomes AWAKE and enters the kernel
+  (setAssemblyState 00b727c0, guarded by downstreamOfStage 00b2a8d0).
+- `audit-part-jump` drops its "the Pad takes more pushes" check. It now
+  checks that the Pad is asleep when the jump starts, wakes, and sinks.
+
+**Why:** Kernel joints push on SimBodies that are outside the kernel. The
+reset decides whether those forces survive a wake. The old docs said the
+force was kept, which was wrong.
+
+**Tested how:** `sh tools/cargo.sh test --locked` (89 pass), clippy clean,
+the 17 baseline audits plus audit-part-weld and audit-joints.
+
+**Result:**
+- The baseline audits other than audit-part-jump are unchanged (timings
+  aside). audit-part-weld and audit-joints pass; there was no saved output
+  to compare them with.
+- audit-part-jump: the Jumping pushes made while the Pad slept (steps
+  481-483) used to land all at once when it woke at step 484. That sent the
+  Pad to vy -118 and gave the character 76 extra pushes (304 against the
+  Baseplate's 228).
+- Now the Pad reaches vy -65.6. Both jumps take 228 pushes; the rise is
+  8.59 from the Pad and 8.66 from the Baseplate.
+- Native parity is **not tested**.
+
 ## 2026-10-15 Fast-impact tumble traced
 
 **Changed:** `docs/ROADMAP.md`, open findings: the trace of the fast-impact

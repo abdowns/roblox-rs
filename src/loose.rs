@@ -1823,6 +1823,9 @@ impl LooseWorld {
             }
             if new == AssemblyState::Awake {
                 if !self.parts[i].in_kernel {
+                    // 00b7439e: forces gathered outside the kernel (a
+                    // Humanoid's floor pushes, joints) are dropped.
+                    self.parts[i].body.reset_force();
                     // b6ee0a -> Kernel insertBody 00a957ce: classify 00a9be30.
                     self.drop_part_connectors(i)?;
                     self.parts[i].in_kernel = true;

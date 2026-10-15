@@ -1538,6 +1538,8 @@ pub fn audit_part_stand(bundle: &Bundle) -> Result<String, String> {
 /// arithmetic: force = (JumpPower - v . d) * 500 * min(root mass, floor
 /// assembly mass), applied only while it exceeds the root's existing y force,
 /// with force - existing pushed down on the floor at the touch point.
+/// The Pad is asleep when the jump starts: the first pushes gather on its
+/// SimBody outside the kernel and are dropped when it wakes (00b7439e).
 pub fn audit_part_jump(bundle: &Bundle) -> Result<String, String> {
     use crate::humanoid_state::FloorPart;
     let bytes = bundle.read(
@@ -1603,6 +1605,7 @@ pub fn audit_part_jump(bundle: &Bundle) -> Result<String, String> {
         fixture.set_jump(true);
         let mut apex = rest_y;
         let mut pad_lowest_vy = 0.0f32;
+        let woke_from = fixture.world.loose.transitions.len();
         for frame in 0..120u32 {
             if frame == 4 {
                 fixture.set_jump(false);
@@ -1643,6 +1646,15 @@ pub fn audit_part_jump(bundle: &Bundle) -> Result<String, String> {
                 sleep_summary("part_jump_pad_sleep", &fixture.world.loose)
             )
             .unwrap();
+            let asleep = pad_before.is_some_and(|(s, _)| s.sleeping());
+            let woke = fixture.world.loose.transitions[woke_from..]
+                .iter()
+                .any(|t| t.2 == crate::sleep::AssemblyState::Awake);
+            if !asleep || !woke || pad_lowest_vy >= 0.0 {
+                return Err(format!(
+                    "part jump: the Pad does not sleep, wake and sink under the jump\n{report}"
+                ));
+            }
         }
         // The native arithmetic, bit for bit.
         let expected_floor = if pad {
@@ -1671,19 +1683,14 @@ pub fn audit_part_jump(bundle: &Bundle) -> Result<String, String> {
         }
         results.push((pushes.len(), apex - rest_y));
     }
-    // The push drives v . d toward JumpPower, so a lighter floor's smaller
-    // push mass takes more substeps to get there; it does not cap the jump.
+    // Logged only: both jumps take 228 pushes. (Before the wake reset
+    // the Pad took more, from a stale kick when it woke.)
     writeln!(
         report,
         "part_jump_compare pad_pushes={} baseplate_pushes={} pad_rise={} baseplate_rise={}",
         results[0].0, results[1].0, results[0].1, results[1].1
     )
     .unwrap();
-    if results[0].0 <= results[1].0 {
-        return Err(format!(
-            "part jump: the Pad jump does not take more pushes\n{report}"
-        ));
-    }
     writeln!(report, "part_jump_pass floor_mass=min(root,floor) reaction=force_minus_existing native_differential=not_tested").unwrap();
     Ok(report)
 }

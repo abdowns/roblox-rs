@@ -664,9 +664,9 @@ as `FloorQuery::part`).
   - the mass is MINSS(floor, root);
   - the push runs only when force > existing (UCOMISS/JBE);
   - the torque is r × (0, -f, 0) about the floor body's +0x38.
-  The force targets JumpPower, so a lighter floor needs more pushes but does
-  not lower the jump. `Humanoid::jump_pushes` logs every push for
-  audit-part-jump.
+  A sleeping floor still takes the pushes on its SimBody, outside the
+  kernel; they are dropped when it wakes (00b7439e, see setAssemblyState).
+  `Humanoid::jump_pushes` logs every push for audit-part-jump.
 - The kernel pre-step (00a96eb0) only moves contact bodies into
   realTimeBodies (on any force, torque or impulse). A loose floor under a
   standing Humanoid therefore stays a realtime body while it is pushed.
@@ -1106,8 +1106,10 @@ the others.
 - *setAssemblyState (b727c0).*
   - Falling asleep zeroes the velocity and leaves the kernel.
   - Waking zeroes the velocity and impulses and restarts the countdown.
-  - AWAKE enters the kernel through 00a9be30.
-  - Force accumulated while asleep is kept.
+  - AWAKE enters the kernel through 00a9be30. Just before, 00b7439e resets
+    the SimBody force to gravity alone and the torque to zero (only when the
+    assembly is not already downstream, 00b2a8d0). Forces gathered while it
+    slept, such as a Humanoid's floor pushes, are dropped.
   - The port deletes the live connectors of a Part entering or leaving the
     kernel; the next Contact::step regenerates them. The native re-insertion
     is not recovered.
