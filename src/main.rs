@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-part-wall|audit-part-drop|audit-part-push|audit-part-stand|audit-part-jump|audit-humanoid-slope|audit-broadphase|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
+            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-part-wall|audit-part-drop|audit-part-push|audit-part-stand|audit-part-jump|audit-humanoid-slope|audit-broadphase|audit-joints|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
         );
         return ExitCode::SUCCESS;
     }
@@ -32,6 +32,7 @@ fn main() -> ExitCode {
                     | "audit-part-jump"
                     | "audit-humanoid-slope"
                     | "audit-broadphase"
+                    | "audit-joints"
                     | "audit-scheduler"
                     | "audit-camera"
                     | "audit-lighting"
@@ -66,7 +67,7 @@ fn main() -> ExitCode {
         || args.len() > 2
     {
         eprintln!(
-            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-part-wall|audit-part-drop|audit-part-push|audit-part-stand|audit-part-jump|audit-humanoid-slope|audit-broadphase|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
+            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-baseplate|audit-part-wall|audit-part-drop|audit-part-push|audit-part-stand|audit-part-jump|audit-humanoid-slope|audit-broadphase|audit-joints|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
         );
         return ExitCode::from(2);
     }
@@ -106,6 +107,7 @@ fn main() -> ExitCode {
             "audit-part-jump" => walking::audit_part_jump(&bundle),
             "audit-humanoid-slope" => walking::audit_humanoid_slope(&bundle),
             "audit-broadphase" => walking::audit_broadphase(&bundle),
+            "audit-joints" => studio_2016::joints::audit(&bundle),
             "audit-baseplate-render" => render::audit_baseplate(&bundle),
             "audit-walking" => walking::audit(&bundle),
             "audit-walking-render" => render::audit_walking(&bundle),

@@ -196,6 +196,26 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   body 0; `Broadphase::static_first` counts the contacts native would create
   the other way round (0 in the audits). Native parity is **not tested**.
 
+- Joint spanning tree (`joints.rs`): which Part is an assembly's root and
+  how welded, snapped and motor-jointed Parts hang from it. Not yet connected
+  to the physics (the next step). Run
+  `sh tools/cargo.sh run --locked -- audit-joints`. Expect:
+  - the R6 character from the shipped rig: `HumanoidRootPart priority=2001`
+    hangs from the ground (`tree_joint_kind=Some(20)`, a FreeJoint), the
+    Torso under it, and the Torso's Body children
+    `["Right Arm", "Left Arm", "Right Leg", "Left Leg", "Head"]`, then
+    `joint_tree_r6 root=HumanoidRootPart parts=7 checks=[]` (the same tree
+    and child order the character mass code uses);
+  - a 1-stud block welded to a 4x1x4 one: `root=Large`, offset
+    `[0.0, -1.0, 0.0]`;
+  - a block welded to an anchored base and a block snapped on top: both
+    `grounded=true` (the welded block's FreeJoint became an AnchorJoint);
+  - a chain A-B-C that re-roots at C, then
+    `joint_tree_pass r6_root=HumanoidRootPart pair_root=Large stack_grounded=true chain_root=C`.
+
+  Assumed: GUID order is Part creation order and address ties follow joint
+  creation order. Native parity is **not tested**.
+
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,
   inertia, angular momentum, restitution and friction. Run

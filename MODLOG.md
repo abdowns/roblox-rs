@@ -1,5 +1,35 @@
 # MODLOG
 
+## 2026-10-15 Joint spanning tree (GroundStage and TreeStage)
+
+**Changed:**
+- New `joints.rs`, ported from the binary:
+  - joint types (Anchor 0, Weld 1, ManualWeld 2, Snap 3, Motor 4, Motor6D 5,
+    Rotate 6, Glue 9, Free 20) from each joint class's getJointType;
+  - Part root priority 00b63fbe and the name multipliers of 00983a3e;
+  - the joint ranking 00b216e2 with the GUID compare 006721c8;
+  - GroundStage's ground joints (00b0f1a8, 00b0f208, 00b0f7ac, 00b0f4e8);
+  - SpanningTree insert/remove with re-rooting (006cc3d6, 006ccc72, 006cc70a,
+    006cc9ca, 006ccb3e, 006cc580, 006cc624);
+  - TreeStage's Body links and the rigid offset (00ba2e24, 00ba36a6, 00b69dd6).
+- `g3d.rs`: Matrix3 multiply (0125581a), CoordinateFrame multiply (00972080),
+  the rigid inverse of 00b69dd6, isOrthonormal (01255004) and orthonormalize
+  (01255ca6).
+- New `audit-joints`.
+
+**Why:** First step of rigid assemblies (roadmap physics item 1). The tree
+decides each assembly's root Part and Body layout.
+
+**Tested how:** 6 unit tests in joints.rs and one in g3d.rs; audit-joints on
+the shipped R6 rig and three weld scenes. 88 tests pass; clippy and fmt are
+clean. No existing audit is affected (nothing calls the module yet).
+
+**Result:** On the R6 rig the tree roots at HumanoidRootPart and the Torso's
+Body children come out as Right Arm, Left Arm, Right Leg, Left Leg, Head,
+the order the character mass code already uses. Assumed: GUID order is Part
+creation order, address ties follow joint creation order. Native parity is
+**not tested**.
+
 ## 2026-10-15 Roadmap: physics, places, Lua
 
 **Changed:** New `docs/ROADMAP.md`: the order of the remaining work, the

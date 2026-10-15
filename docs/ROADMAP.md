@@ -36,10 +36,10 @@ constructor creates the next one:
 |---|---|---|
 | CleanStage | 00ae11e6 | not ported |
 | JointStage | 00b29a8c | not ported |
-| GroundStage | 00b0ebc8 | not ported |
+| GroundStage | 00b0ebc8 | joints.rs (ground joints) |
 | EdgeStage | 00af7aa2 | not ported |
 | ContactStage | 00af33f6 | not ported |
-| TreeStage (SpanningTree) | 00ba2880 | not ported |
+| TreeStage (SpanningTree) | 00ba2880 | joints.rs (not yet driving the physics) |
 | MovingStage | 00b39e70 | not ported |
 | SpatialFilter | 00b78fa8 | part of the broadphase wiring |
 | MechToAssemblyStage | 00b2f0a2 | not ported |

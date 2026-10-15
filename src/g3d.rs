@@ -1,5 +1,6 @@
 //! Exact ports of the G3D helpers the animation and joint code use, with the
 //! binary's operation order and float/double conversions.
+use crate::scene::CoordinateFrame;
 
 /// G3D::fuzzyEq(x, 0): eps 1e-5 (as float) scaled by |x|+1, in double.
 pub fn fuzzy_zero(x: f32) -> bool {
@@ -93,9 +94,116 @@ pub fn rotation_vector_matrix(rotation: [f32; 3]) -> [[f32; 3]; 3] {
     from_axis_angle_fast(axis, angle)
 }
 
+/// G3D::Matrix3::operator* 0125581a: (x + y) + z per element.
+pub fn matrix_multiply(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    std::array::from_fn(|r| {
+        std::array::from_fn(|c| (a[r][0] * b[0][c] + a[r][1] * b[1][c]) + a[r][2] * b[2][c])
+    })
+}
+
+/// CoordinateFrame multiply 00972080: the rotation product, and
+/// ((x + y) + z) + translation for the point.
+pub fn frame_multiply(a: &CoordinateFrame, b: &CoordinateFrame) -> CoordinateFrame {
+    let p = b.position;
+    CoordinateFrame {
+        position: std::array::from_fn(|r| {
+            ((a.rotation[r][0] * p[0] + a.rotation[r][1] * p[1]) + a.rotation[r][2] * p[2])
+                + a.position[r]
+        }),
+        rotation: matrix_multiply(&a.rotation, &b.rotation),
+    }
+}
+
+/// The rigid inverse built inline in 00b69dd6: the transposed rotation, and
+/// the negated transpose times the translation, ((x + y) + z).
+pub fn frame_inverse(a: &CoordinateFrame) -> CoordinateFrame {
+    let rotation: [[f32; 3]; 3] =
+        std::array::from_fn(|r| std::array::from_fn(|c| a.rotation[c][r]));
+    let p = a.position;
+    CoordinateFrame {
+        position: std::array::from_fn(|r| {
+            (-rotation[r][0] * p[0] + -rotation[r][1] * p[1]) + -rotation[r][2] * p[2]
+        }),
+        rotation,
+    }
+}
+
+/// G3D::fuzzyEq as Matrix3::isOrthonormal 01255004 compiles it: equal floats
+/// pass, otherwise |a - b| <= eps(|a| + 1) in double, with eps 1e-5 as float
+/// (01834cf8) and the plain eps when |a| + 1 is infinite.
+fn fuzzy_eq(a: f32, b: f32) -> bool {
+    if a == b {
+        return true;
+    }
+    let epsilon = f64::from(1e-5f32);
+    let base = f64::from(a.abs()) + 1.0;
+    let tolerance = if base == f64::INFINITY {
+        epsilon
+    } else {
+        base * epsilon
+    };
+    (f64::from(a) - f64::from(b)).abs() <= tolerance
+}
+
+/// G3D::Matrix3::isOrthonormal 01255004: the column dot products are fuzzy
+/// zero and the column lengths squared fuzzy one.
+pub fn is_orthonormal(m: &[[f32; 3]; 3]) -> bool {
+    let column = |c: usize| [m[0][c], m[1][c], m[2][c]];
+    let dot = |a: [f32; 3], b: [f32; 3]| (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2];
+    let (x, y, z) = (column(0), column(1), column(2));
+    fuzzy_eq(dot(x, y), 0.0)
+        && fuzzy_eq(dot(y, z), 0.0)
+        && fuzzy_eq(dot(x, z), 0.0)
+        && fuzzy_eq(dot(x, x), 1.0)
+        && fuzzy_eq(dot(y, y), 1.0)
+        && fuzzy_eq(dot(z, z), 1.0)
+}
+
+/// G3D::Matrix3::orthonormalize 01255ca6: Gram-Schmidt on the columns, each
+/// scale (float)(1 / sqrt((double)length²)).
+pub fn orthonormalize(m: &mut [[f32; 3]; 3]) {
+    let scale = |a: f32, b: f32, c: f32| (1.0 / f64::from((a * a + b * b) + c * c).sqrt()) as f32;
+    let s = scale(m[0][0], m[1][0], m[2][0]);
+    for row in m.iter_mut() {
+        row[0] *= s;
+    }
+    let dot0 = (m[0][0] * m[0][1] + m[1][0] * m[1][1]) + m[2][0] * m[2][1];
+    for row in m.iter_mut() {
+        row[1] -= row[0] * dot0;
+    }
+    let s = scale(m[0][1], m[1][1], m[2][1]);
+    for row in m.iter_mut() {
+        row[1] *= s;
+    }
+    let dot1 = (m[0][1] * m[0][2] + m[1][1] * m[1][2]) + m[2][1] * m[2][2];
+    let dot0 = (m[0][2] * m[0][0] + m[1][2] * m[1][0]) + m[2][2] * m[2][0];
+    for row in m.iter_mut() {
+        row[2] -= row[1] * dot1 + row[0] * dot0;
+    }
+    let s = scale(m[0][2], m[1][2], m[2][2]);
+    for row in m.iter_mut() {
+        row[2] *= s;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn orthonormal_checks() {
+        let mut m = from_axis_angle_fast([0.0, 0.6, 0.8], 1.2);
+        assert!(is_orthonormal(&m));
+        m[0][0] += 0.01;
+        assert!(!is_orthonormal(&m));
+        orthonormalize(&mut m);
+        assert!(is_orthonormal(&m));
+        let frame = CoordinateFrame {
+            position: [1.0, 2.0, 3.0],
+            rotation: from_axis_angle_fast([1.0, 0.0, 0.0], 0.5),
+        };
+        let back = frame_multiply(&frame, &frame_inverse(&frame));
+        assert!(back.position.iter().all(|v| v.abs() < 1e-6));
+    }
     #[test]
     fn axis_angle_round_trip() {
         let m = from_axis_angle_fast([0.0, 0.6, 0.8], 1.2);

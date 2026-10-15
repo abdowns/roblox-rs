@@ -15,6 +15,7 @@ pub mod g3d;
 pub mod geometry;
 pub mod humanoid;
 pub mod humanoid_state;
+pub mod joints;
 pub mod kernel;
 pub mod legacy_contact;
 pub mod lighting;

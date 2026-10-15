@@ -1248,3 +1248,53 @@ overlapping collidable pair has a contact, and every contact's cells
 overlap. Not verified against the native order: the order in which
 assemblies run findAllContacts at the start (assumed Workspace order, then
 the character).
+
+
+## Joints and the spanning tree (joints.rs)
+
+Every Part is a primitive in the World's pipeline (the chain in
+[ROADMAP.md](ROADMAP.md)). GroundStage gives each one a ground joint with no
+second Part: an AnchorJoint (type 0) when the Part is anchored or dragged, or
+when a rigid joint ties it directly to such a Part (00b0f7ac), otherwise a
+FreeJoint (type 20). Adding a rigid joint between a fixed and a free Part
+re-evaluates the free one (00b0f4e8), which can swap its FreeJoint for an
+AnchorJoint.
+
+TreeStage keeps one spanning tree over every joint of type 0 to 20
+(009241f4). The tree hangs from a null "ground" node.
+- **Ranking (00b216e2):** a lower joint type ranks first. Between equal types
+  the higher root priority wins: the larger of the two Parts' priorities
+  (00b216ad), where a Part's priority is multiplier x floor(planar x 50) + 1
+  (00b63fbe), planar is the product of its two largest axes, and the
+  multiplier is 10 for HumanoidRootPart, 5 for Torso, 1 otherwise
+  (PartInstance::setName 00983a3e, table 017a87e0). Then the Parts' GUIDs
+  (006721c8; the later Part wins), then the joints' addresses.
+- **Insert (006cc3d6):** find the worst edge on the path between the joint's
+  two ends (006ccc72). If the new joint ranks better, the piece between them
+  is re-rooted: the edges from the new joint's end up to the worst edge are
+  unlinked, the worst edge removed, the new joint linked, and the unlinked
+  edges re-linked the other way round (006cc70a, 006cc9ca, 006ccb3e).
+- **Remove (006cc580):** the cut-off subtree reconnects through its best
+  outside edge (006cc624, 006cd18c).
+
+So a free group of welded Parts keeps exactly one FreeJoint, on its
+highest-priority Part, which becomes the assembly root. Since an AnchorJoint
+ranks above a weld, a Part welded to an anchored Part gets its own ground
+edge instead of hanging from the anchored Part's Body.
+
+**Bodies.** TreeStage's link callback (00ba2e24) makes the child Part's Body
+a child of its parent's Body for rigid joints (Weld 1, ManualWeld 2, Snap 3)
+and motors (Motor 4, Motor6D 5). A rigid child's offset is the parent's joint
+coordinate times the inverse of the child's (00b69dd6), orthonormalized when
+G3D::Matrix3::isOrthonormal fails (01255004, 01255ca6). Unlinking (00ba36a6)
+detaches the Body. Body children are an IndexArray: appended, with the last
+child moved into a removed child's slot (IndexedTree::setParent 00675752).
+Kernel joints (6 to 19) and ground joints start a new assembly.
+
+`audit-joints` checks the tree on the shipped R6 rig: HumanoidRootPart is the
+root and the Body child order matches the order `AssemblyProperties::from_rig`
+uses. Not modelled: real addresses. GUIDs follow Part creation order, address
+ties follow joint creation order, and the subtree walk of 006cc624 (a set of
+node pointers) follows Part creation order. Joint removal is ported but has no
+caller yet. Native parity is **not tested**.
+
