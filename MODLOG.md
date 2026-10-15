@@ -1,5 +1,23 @@
 # MODLOG
 
+## 2026-10-15 Roadmap: physics, places, Lua
+
+**Changed:** New `docs/ROADMAP.md`: the order of the remaining work, the
+native World stage chain and the list of physics items left.
+
+**Why:** The user asked for the rest of the physics, then place loading, then
+a Lua runtime that runs scripts as the original does.
+
+**Tested how:** Ghidra only, no code change.
+- The World constructor (00ba6a0e) and each stage constructor were followed
+  from CleanStage to the Kernel. Each stage was named from its vtable's
+  typeinfo.
+- `PGSSolverDefaultOnNewPlaces` is registered with default 0 at 001423f7, so
+  new places use the legacy solver offline.
+
+**Result:** The ported solver is the one new places use. Terrain and mesh
+collisions are moved after the place loader.
+
 ## 2026-10-13 The broadphase decides the contacts
 
 **Changed:**
