@@ -10,8 +10,9 @@ use crate::{
     bundle::Bundle,
     collision::ContactBodyState,
     humanoid_state::{FloorPart, Hit},
-    joints::Link,
+    joints::{GLUE, Link},
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
+    kernel_joint::JointBody,
     legacy_contact::{BlockContactProfile, ContactGeometry, ImpulseProfile},
     loose::{CharacterMotion, LoosePrim, LooseWorld, Prim},
     material::{MaterialProfile, Shape},
@@ -866,6 +867,31 @@ impl World {
                 .loose
                 .add_assembly(prim(root)?, &links, &world.kernel)?;
         }
+        // The kernel joints (Glue), in Workspace order. A Part that does not
+        // move (anchored or grounded) holds its Points at its CFrame.
+        let mut fixed = BTreeMap::new();
+        for joint in workspace.joints.iter().filter(|j| j.kind == GLUE) {
+            let mut bodies = [JointBody::Fixed(0); 2];
+            for (side, n) in [joint.part0, joint.part1].into_iter().enumerate() {
+                let part = workspace.parts.get(n).ok_or("joint Part missing")?;
+                bodies[side] = match prim_of[n] {
+                    Some(prim) => JointBody::Loose(prim),
+                    None => {
+                        let stiffness = world.materials.stiffness(part.size, Shape::Block)?;
+                        let k = *fixed.entry(n).or_insert_with(|| {
+                            world.loose.add_fixed_body(frames[n].clone(), stiffness)
+                        });
+                        JointBody::Fixed(k)
+                    }
+                };
+            }
+            world.loose.add_glue(
+                &joint.name,
+                bodies,
+                [joint.c0.clone(), joint.c1.clone()],
+                joint.face,
+            )?;
+        }
         let spawn = CoordinateFrame {
             position: workspace.next_spawn_location()?,
             rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -904,6 +930,11 @@ impl World {
         world.original_broadphase = world.broadphase.clone();
         world.apply_broadphase()?;
         Ok(world)
+    }
+    /// World::uiStep's breakJoints (00ba9032), once per frame before the
+    /// world steps: broken kernel joints are removed. Returns how many broke.
+    pub fn break_joints(&mut self) -> Result<usize, String> {
+        self.loose.break_joints()
     }
     /// The broadphase's new contact events become contact pairs: character
     /// against a static block in `static_contacts`, everything else in
@@ -1429,6 +1460,8 @@ impl World {
                 .sum::<usize>()
             + self.loose.character_connector_count();
         for _ in 0..self.kernel.physics.kernel_substeps {
+            // 00a9768c: the kernel Points step first.
+            self.loose.step_points()?;
             let frames = rig.pose(&self.body.frame)?;
             for (name, size) in self
                 .colliders
@@ -1486,10 +1519,12 @@ impl World {
                 .real_time_springs(&blocks, &mut self.body, &self.kernel)?;
             self.max_penetration = self.max_penetration.max(deepest);
             self.loose.joint_springs(&self.kernel)?;
-            // 00a9768c substep order: realTimeConnectors (the character's
-            // contact springs), jointConnectors, then humanoidConnectors
-            // (Humanoid +0xdc, type 2, computeForce 00bddb7a -> 00bddaae),
-            // then realTimeBodies and jointBodies integrate.
+            self.loose.points_to_bodies()?;
+            // 00a9768c substep order: Points, realTimeConnectors (the
+            // character's contact springs), jointConnectors, the Points'
+            // forces into their bodies, then humanoidConnectors (Humanoid
+            // +0xdc, type 2, computeForce 00bddb7a -> 00bddaae), then
+            // realTimeBodies and jointBodies integrate.
             let torso = frames.get("Torso").ok_or("missing state torso")?.clone();
             let mut surroundings = Surroundings {
                 statics: &self.statics,

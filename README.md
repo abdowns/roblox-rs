@@ -19,7 +19,8 @@ Early and incomplete. Working today, with an automated audit for each item:
   - the original Humanoid state machine and forces;
   - collisions with anchored Parts;
   - unanchored Parts that fall, stack, get pushed, carry the character and
-    fall asleep at rest.
+    fall asleep at rest;
+  - welded Parts that move as one, and glued Parts that break under load.
 - **Rendering:** the character, the studded Baseplate, the default sky and
   lighting.
 
@@ -27,7 +28,7 @@ Not there yet:
 - the Studio editor UI;
 - a general Lua runtime;
 - place loading and saving;
-- the physics broadphase;
+- hinges, motors and the other joint kinds;
 - textures and decals beyond the character, shadows and outlines.
 
 Matching the original is not tested pixel for pixel or step for step. See

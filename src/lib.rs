@@ -17,6 +17,7 @@ pub mod humanoid;
 pub mod humanoid_state;
 pub mod joints;
 pub mod kernel;
+pub mod kernel_joint;
 pub mod legacy_contact;
 pub mod lighting;
 pub mod locomotion;

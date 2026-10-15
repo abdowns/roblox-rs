@@ -1,5 +1,56 @@
 # MODLOG
 
+## 2026-10-15 Glue joints in the kernel
+
+**Changed:**
+- New `kernel_joint.rs`:
+  - kernel Points: `KernelPoint`, `new_point` with the (Body, offset)
+    dedupe, `release_point`;
+  - the two break connectors: `BreakConnector`, `BreakTest`;
+  - Glue's geometry: `normal_id`, `joint_strength` (Constants 00a92056,
+    table 0179fc80 bit for bit), `face_size`, `glue_threshold`,
+    `face_through`.
+- `LooseWorld`:
+  - joints: `add_fixed_body`, `add_glue`, `joints`, `break_joints`,
+    `broken`;
+  - the substep: `step_points`, `points_to_bodies`;
+  - logs: `joint_report`, `point_count`.
+  Glue connectors share jointConnectors with the contact springs, and
+  joints are SleepStage edges (AWAKE = in the kernel).
+- `World::in_workspace` loads Glue joints, with anchored or grounded Parts
+  as fixed Bodies. The substep now runs, in 00a9768c's order: Points, the
+  realtime springs, jointConnectors, the Points' forces into the bodies,
+  the Humanoid, integrate. `World::break_joints` runs once per frame in
+  uiStep, before the Motor6D stepUi.
+- `JointInstance::face` (F0..F3). `Workspace::joint_tree` accepts Glue.
+- `JointTree::grounded` now asks whether the assembly root's tree edge is an
+  AnchorJoint. Before, it walked up through kernel joints, so a Part glued
+  under an anchored Part counted as grounded.
+- New `audit-part-glue`.
+
+**Why:** Roadmap physics item 2 (kernel joints), starting with Glue. The
+Points, the break connectors, the joint edges and breakJoints are shared by
+the hinge and motor joints that come next.
+
+**Tested how:** `sh tools/cargo.sh test --locked` (93 pass; new
+`glued_under_anchored_still_moves`, and the kernel_joint tests), clippy
+clean, `audit-part-glue`, and the other 19 audits against the outputs of the
+previous commit.
+
+**Result:**
+- audit-part-glue passes:
+  - the Part glued under an anchored Part holds within 0.00013 studs and
+    sleeps at step 119, then its Glue goes SLEEPING;
+  - the glued pair falls with no stretch and rests 2 studs apart;
+  - the 14-stud cube's 1 x 1 Glue breaks at step 9 and the cube lands.
+- Every other audit is unchanged (audit-runtime differs only in timing).
+- The pair bounces on its Baseplate contacts for about 180 steps (repeated
+  recursive wakes) before it rests 0.0104 into the Baseplate. Its contacts
+  are springs, because a glued body is a kernel joint body. Whether native
+  bounces the same way is **not tested**.
+- README: the status lists the joints, and the broadphase is no longer
+  under "not there yet" (it landed earlier).
+
 ## 2026-10-15 Waking drops the force gathered while asleep
 
 **Changed:**

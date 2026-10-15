@@ -116,18 +116,24 @@ impl PartInstance {
     }
 }
 
-/// A rigid JointInstance (Weld, ManualWeld or Snap): Part0, Part1, C0, C1.
-/// The joint holds Part0.CFrame * C0 = Part1.CFrame * C1.
+/// A JointInstance: Part0, Part1, C0, C1. A rigid joint (Weld, ManualWeld,
+/// Snap) holds Part0.CFrame * C0 = Part1.CFrame * C1; a Glue pulls the
+/// corners of its face in C0 toward the same corners in C1.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JointInstance {
     pub name: String,
-    /// `joints::WELD`, `joints::MANUAL_WELD` or `joints::SNAP`.
+    /// `joints::WELD`, `joints::MANUAL_WELD`, `joints::SNAP` or
+    /// `joints::GLUE`.
     pub kind: u32,
     /// Indexes into `Workspace::parts`.
     pub part0: usize,
     pub part1: usize,
     pub c0: CoordinateFrame,
     pub c1: CoordinateFrame,
+    /// Glue F0..F3 (GlueJoint +0xd0, setters such as 009208cc), in C0's
+    /// frame; zero for the other kinds (the GlueJoint ctor 00b0ce2c zeroes
+    /// it).
+    pub face: [[f32; 3]; 4],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -209,9 +215,9 @@ impl Workspace {
             });
         }
         for joint in &self.joints {
-            if !joints::is_rigid(joint.kind) {
+            if !joints::is_rigid(joint.kind) && joint.kind != joints::GLUE {
                 return Err(format!(
-                    "joint {:?}: only rigid joints are ported",
+                    "joint {:?}: only rigid joints and Glue are ported",
                     joint.name
                 ));
             }

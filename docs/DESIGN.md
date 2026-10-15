@@ -1291,7 +1291,10 @@ coordinate times the inverse of the child's (00b69dd6), orthonormalized when
 G3D::Matrix3::isOrthonormal fails (01255004, 01255ca6). Unlinking (00ba36a6)
 detaches the Body. Body children are an IndexArray: appended, with the last
 child moved into a removed child's slot (IndexedTree::setParent 00675752).
-Kernel joints (6 to 19) and ground joints start a new assembly.
+Kernel joints (6 to 19) and ground joints start a new assembly. An assembly
+is grounded when its root Part's tree edge is an AnchorJoint. A Glue beats a
+FreeJoint in the tree, so a Part glued under an anchored one hangs from it in
+the tree but roots its own, moving assembly.
 
 **Assemblies in the physics.** `World::in_workspace` builds the tree from
 `Workspace::joints` (every Part, then every joint, in Workspace order) and
@@ -1317,6 +1320,59 @@ for a fixed one (a92dd6). Forces and impulses go to the SimBody at the
 contact point. For a single block, the Body origin and the center of mass are
 bit-identical, so single-Part worlds run exactly as before. The broadphase
 refuses pairs inside one assembly (00ae9612) through a per-primitive group.
+
+**Kernel joints (kernel_joint.rs, Glue).** A kernel joint does not join
+Bodies. It puts Points and connectors in the kernel:
+- *Points (Kernel::newPoint 00a96432).* A Point is a Body plus a local
+  offset, kept in one IndexArray (KernelData +0x50). Asking for an existing
+  (Body, offset) pair returns the old Point with one more use (00a96270);
+  releasing the last use removes it, the last Point moving into its slot
+  (00a964ec, 00a95fa8). Each substep starts with Point::step (00aa3156): the
+  world position from the Body's PV, and the force cleared. After the
+  jointConnectors, Point::forceToBody (00aa3244) adds the force, and its
+  moment about the center of mass, to the root SimBody, whether or not that
+  SimBody is in the kernel. A Point on an anchored Part (`JointBody::Fixed`)
+  has no SimBody to push.
+- *Break connectors.* PointToPointBreakConnector::computeForce (00a91948)
+  is a pure spring with no damping: f = -k (p1 - p0), point 0 gets -f and
+  point 1 gets +f. It breaks when |f|1 exceeds the threshold.
+  NormalBreakConnector (00a91a12) breaks when the pull along one of point 0's
+  Body axes exceeds it. The flag is recomputed on every call. Both are
+  connector type 1, which 00a99514 files under jointConnectors even when no
+  body is in the kernel. The joint and total counts go up on each side's
+  SimBody, sleeping or not, so a glued assembly enters the kernel as a joint
+  body and its contacts become springs.
+- *Glue (GlueJoint, type 9).* putInKernel (00b0d632) runs over the four
+  corners F0..F3 of its face. For each corner it adds a Point on Part0 (the
+  face through C0) and one on Part1 (the face through C1), then a
+  NormalBreakConnector between them:
+  - k is the smaller Part stiffness (00b3ed8a);
+  - the threshold is 20 x the face strength (00b0d5ea, Constants 00a92056:
+    sides rounded to whole studs, at least 1; a table below 7 studs, then
+    long/7 x 4.681);
+  - the normal is C0's z axis as a NormalId (006b79ae).
+  removeFromKernel (00b3ee8e) removes each connector, then releases its two
+  Points.
+- *SleepStage.* A joint is a SleepStage edge that starts AWAKE (onEdgeAdded
+  00b73cfe), and AWAKE means in the kernel (00b7339e). Waking an assembly
+  wakes its SLEEPING joints (00b72b82). A joint always counts as touching for
+  the sleep decision and the wake pass (00b72d00). The last thing
+  SleepStage::step does (00b713bc) is put to SLEEPING every AWAKE joint whose
+  two assemblies are neither awake nor waking; an anchored side counts as
+  asleep. When an assembly enters the kernel, its force is reset (00b7439e),
+  so pushes gathered while it slept are dropped.
+- *Breaking.* World::uiStep runs breakJoints (00ba9032) once per frame,
+  before the Motor6D stepUi and the world steps. Every joint in the kernel
+  whose first four connectors include a broken one is removed
+  (World::onJointBroken 00baa94e). The port assumes the JointInstance leaves
+  at once. SleepStage's onEdgeRemoving (00b73f08) takes an AWAKE joint out of
+  the kernel and wakes both sides of a SLEEPING one.
+- *Contacts.* Glued Parts still collide: ContactManager::createContact
+  (00ae9612, 00ae714a) has no joint test.
+
+Not recovered: the order of an assembly's edge list. The port wakes the
+joints after the contacts, and the awake-joint set (+0x150, ordered by
+address) follows creation order.
 
 `audit-joints` checks the tree on the shipped R6 rig: HumanoidRootPart is the
 root and the Body child order matches the order `AssemblyProperties::from_rig`

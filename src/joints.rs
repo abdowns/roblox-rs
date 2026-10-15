@@ -657,17 +657,14 @@ impl JointTree {
         }
         at
     }
-    /// True when the assembly hangs from an AnchorJoint (it never moves).
+    /// True when the assembly's root Part hangs from an AnchorJoint (it
+    /// never moves). A kernel joint (Glue, hinges) above the root starts a
+    /// new assembly, so a Part glued under an anchored one still moves.
     pub fn grounded(&self, n: usize) -> bool {
-        let mut at = n;
-        loop {
-            match self.nodes[at].edge.map(|j| self.joint(j)) {
-                Some(j) if j.kind == ANCHOR => return true,
-                Some(j) if j.kind == FREE => return false,
-                Some(_) => at = self.nodes[at].parent.expect("tree parent"),
-                None => return false,
-            }
-        }
+        let root = self.assembly_root(n);
+        self.nodes[root]
+            .edge
+            .is_some_and(|j| self.joint(j).kind == ANCHOR)
     }
     /// The assembly's Parts, breadth first through the Body children (each
     /// Body's children in IndexArray order).
@@ -940,6 +937,29 @@ mod tests {
         assert!(tree.find(top, FREE).is_some());
         assert!(tree.grounded(top) && tree.grounded(block));
         assert_eq!(tree.joint_kind(tree.tree_joint(top).unwrap()), Some(SNAP));
+    }
+
+    #[test]
+    fn glued_under_anchored_still_moves() {
+        let mut tree = JointTree::new();
+        let base = tree.add_part(TreePart {
+            fixed: true,
+            ..part([10.0, 1.0, 10.0])
+        });
+        let hung = tree.add_part(part([2.0, 1.0, 2.0]));
+        let tail = tree.add_part(part([1.0, 1.0, 1.0]));
+        tree.add_joint(GLUE, base, hung, IDENTITY, at(0.0, 1.0, 0.0))
+            .unwrap();
+        tree.add_joint(WELD, hung, tail, IDENTITY, at(0.0, 1.0, 0.0))
+            .unwrap();
+        // The Glue beats the FreeJoint in the tree but makes no Body link:
+        // the hung Part roots its own assembly, which is not grounded.
+        assert_eq!(tree.joint_kind(tree.tree_joint(hung).unwrap()), Some(GLUE));
+        assert!(tree.find(hung, FREE).is_some());
+        assert_eq!(tree.body_parent(hung), None);
+        assert_eq!(tree.assembly_root(tail), hung);
+        assert!(!tree.grounded(hung) && !tree.grounded(tail));
+        assert!(tree.grounded(base));
     }
 
     #[test]

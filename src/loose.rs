@@ -33,6 +33,16 @@
 //!   leaves the kernel; waking zeroes velocity and impulses and restarts
 //!   the history countdown; AWAKE enters the kernel.
 //!
+//! Kernel joints (`kernel_joint.rs`, Glue for now) are SleepStage joint
+//! edges: onEdgeAdded 00b73cfe makes them AWAKE at once, which puts them in
+//! the kernel (00b7339e -> downstream onEdgeAdded); waking an assembly wakes
+//! its SLEEPING joints (00b72b82); a joint always counts as touching
+//! (00b72d00); at the end of each step a joint whose two assemblies are
+//! neither awake nor waking goes to SLEEPING and leaves the kernel
+//! (00b713bc); removing a SLEEPING joint wakes both sides (00b73f08).
+//! World::uiStep's breakJoints (00ba9032) removes an in-kernel joint whose
+//! connectors broke (World::onJointBroken 00baa94e).
+//!
 //! The contact pairs follow the broadphase (`broadphase.rs`,
 //! SpatialHashMultiRes, kept by `World`): `contact_created` and
 //! `contact_destroyed` mirror World::insertContact 00bab0f0 / destroyContact
@@ -48,6 +58,7 @@ use crate::{
     collision::{ContactBodyState, point_velocity},
     g3d,
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile},
+    kernel_joint::{self, BreakConnector, BreakTest, JointBody, KernelPoint},
     legacy_contact::{AwakeContact, ContactGeometry, ImpulseInput, ImpulseProfile},
     material::{MaterialProfile, PhysicalProperties, Shape},
     native_data::NativeImage,
@@ -243,6 +254,39 @@ pub enum EdgeState {
     ContactingSleeping = 4,
 }
 
+/// SleepStage joint edge states (Edge +8): AWAKE puts the joint in the
+/// kernel, SLEEPING takes it out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JointEdge {
+    Awake = 1,
+    Sleeping = 2,
+}
+
+/// A kernel joint (a GlueJoint) between two Bodies.
+#[derive(Clone, Debug)]
+pub struct KernelJoint {
+    pub name: String,
+    /// Part0's and Part1's Bodies.
+    pub bodies: [JointBody; 2],
+    /// C0 and C1.
+    coords: [CoordinateFrame; 2],
+    /// F0..F3 (GlueJoint +0xd0).
+    face: [[f32; 3]; 4],
+    /// None once the joint has left SleepStage (it broke).
+    pub edge: Option<JointEdge>,
+    /// Its break connectors while it is in the kernel (MultiJoint +0xc0).
+    connectors: Vec<u64>,
+}
+
+/// What `reset` restores of the kernel joints.
+#[derive(Clone, Debug, Default)]
+struct JointSnapshot {
+    joints: Vec<KernelJoint>,
+    points: Vec<KernelPoint>,
+    connectors: BTreeMap<u64, BreakConnector>,
+    joint_connectors: Vec<u64>,
+}
+
 #[derive(Clone, Debug)]
 struct Pair {
     contact: BlockBlockContact<Link>,
@@ -346,6 +390,19 @@ pub struct LooseWorld {
     /// the kernel, in the order they entered (00b6ee0a pushes at the back;
     /// leaving unlinks).
     simulating: Vec<usize>,
+    /// The anchored (or grounded) Parts kernel joints hold: CFrame and
+    /// joint stiffness (Primitive +0xb8).
+    fixed: Vec<(CoordinateFrame, f32)>,
+    /// The kernel joints, in creation order (the native awake-joint set
+    /// +0x150 is ordered by address; creation order stands in).
+    pub joints: Vec<KernelJoint>,
+    /// KernelData +0x50: the kernel Points.
+    points: Vec<KernelPoint>,
+    /// The break connectors in the kernel, by connector id.
+    breakers: BTreeMap<u64, BreakConnector>,
+    original_joints: JointSnapshot,
+    /// Joints that broke: (step, joint).
+    pub broken: Vec<(u32, usize)>,
 }
 
 /// IndexArray::remove: the last element moves into the hole.
@@ -463,6 +520,12 @@ impl LooseWorld {
             step_id: 0,
             simulating: Vec::new(),
             created: Vec::new(),
+            fixed: Vec::new(),
+            joints: Vec::new(),
+            points: Vec::new(),
+            breakers: BTreeMap::new(),
+            original_joints: JointSnapshot::default(),
+            broken: Vec::new(),
         })
     }
     /// A static (anchored, colliding) block, in Statics order.
@@ -661,6 +724,298 @@ impl LooseWorld {
             Some((parent, offset)) => Ok(g3d::frame_multiply(&self.prim_frame(*parent)?, offset)),
         }
     }
+    /// An anchored or grounded Part a kernel joint holds (it never moves):
+    /// its CFrame and joint stiffness (Primitive +0xb8, 00b63194). Returns
+    /// its index for `JointBody::Fixed`.
+    pub fn add_fixed_body(&mut self, frame: CoordinateFrame, stiffness: f32) -> usize {
+        self.fixed.push((frame, stiffness));
+        self.fixed.len() - 1
+    }
+    /// World::insertJoint for a Glue whose Parts are already in their
+    /// assemblies (or fixed): SleepStage::onEdgeAdded 00b73cfe files the
+    /// joint SLEEPING, then makes it AWAKE (00b7339e), which puts it in the
+    /// kernel at once. Returns its index in `joints`.
+    pub fn add_glue(
+        &mut self,
+        name: &str,
+        bodies: [JointBody; 2],
+        coords: [CoordinateFrame; 2],
+        face: [[f32; 3]; 4],
+    ) -> Result<usize, String> {
+        for body in bodies {
+            let ok = match body {
+                JointBody::Loose(i) => self.prims.get(i).is_some_and(|p| p.assembly != usize::MAX),
+                JointBody::Fixed(k) => k < self.fixed.len(),
+            };
+            if !ok {
+                return Err(format!("Glue {name:?}: Part outside the kernel bodies"));
+            }
+        }
+        if matches!(bodies, [JointBody::Fixed(_), JointBody::Fixed(_)]) {
+            return Err(format!("Glue {name:?}: two anchored Parts is not ported"));
+        }
+        let j = self.joints.len();
+        self.joints.push(KernelJoint {
+            name: name.into(),
+            bodies,
+            coords,
+            face,
+            edge: Some(JointEdge::Sleeping),
+            connectors: Vec::new(),
+        });
+        self.set_joint_edge(j, JointEdge::Awake)?;
+        self.original = self.parts.clone();
+        self.original_joints = JointSnapshot {
+            joints: self.joints.clone(),
+            points: self.points.clone(),
+            connectors: self.breakers.clone(),
+            joint_connectors: self.joint_connectors.clone(),
+        };
+        Ok(j)
+    }
+    /// A kernel joint Body's PV frame.
+    fn body_frame(&self, body: JointBody) -> Result<CoordinateFrame, String> {
+        match body {
+            JointBody::Loose(i) => self.prim_frame(i),
+            JointBody::Fixed(k) => Ok(self.fixed.get(k).ok_or("missing fixed Body")?.0.clone()),
+        }
+    }
+    /// The Body's joint stiffness (Primitive::getJointK 00b63194).
+    fn joint_k(&self, body: JointBody) -> f32 {
+        match body {
+            JointBody::Loose(i) => self.prims[i].stiffness,
+            JointBody::Fixed(k) => self.fixed[k].1,
+        }
+    }
+    /// The Body's assembly in SleepStage (none for a fixed one).
+    fn joint_node(&self, body: JointBody) -> Option<Node> {
+        match body {
+            JointBody::Loose(i) => Some(Node::Loose(self.prims[i].assembly)),
+            JointBody::Fixed(_) => None,
+        }
+    }
+    /// GlueJoint::putInKernel 00b0d632 (legacy solver): per face corner, a
+    /// Point on Part0's Body (the face through C0) and one on Part1's (the
+    /// face through C1), and a NormalBreakConnector between them with the
+    /// smaller joint stiffness (00b3ed8a), 20 x the face strength
+    /// (00b0d5ea) and C0's z axis as the normal (006b79ae).
+    fn put_in_kernel(&mut self, j: usize) -> Result<(), String> {
+        let joint = &self.joints[j];
+        let bodies = joint.bodies;
+        let [c0, c1] = &joint.coords;
+        let normal =
+            kernel_joint::normal_id([c0.rotation[0][2], c0.rotation[1][2], c0.rotation[2][2]]);
+        let face0 = kernel_joint::face_through(&joint.face, c0);
+        let face1 = kernel_joint::face_through(&joint.face, c1);
+        let threshold = kernel_joint::glue_threshold(&joint.face);
+        let (k0, k1) = (self.joint_k(bodies[0]), self.joint_k(bodies[1]));
+        let k = if k0 <= k1 { k0 } else { k1 };
+        let mut ids = Vec::with_capacity(4);
+        for i in 0..4 {
+            let p0 = kernel_joint::new_point(&mut self.points, bodies[0], face0[i]);
+            let p1 = kernel_joint::new_point(&mut self.points, bodies[1], face1[i]);
+            self.next_id += 1;
+            let id = self.next_id;
+            self.breakers.insert(
+                id,
+                BreakConnector {
+                    points: [p0, p1],
+                    k,
+                    threshold,
+                    test: BreakTest::Normal(normal),
+                    broken: false,
+                },
+            );
+            self.insert_joint_connector(id, bodies)?;
+            ids.push(id);
+        }
+        self.joints[j].connectors = ids;
+        Ok(())
+    }
+    /// MultiJoint::removeFromKernel 00b3ee8e: each connector leaves the
+    /// kernel, then its two Points are released.
+    fn remove_from_kernel(&mut self, j: usize) -> Result<(), String> {
+        let ids = std::mem::take(&mut self.joints[j].connectors);
+        let bodies = self.joints[j].bodies;
+        for id in ids {
+            self.remove_joint_connector(id, bodies)?;
+            let c = self.breakers.remove(&id).ok_or("missing break connector")?;
+            let [p0, mut p1] = c.points;
+            if let Some((from, to)) = self.release_point(p0)
+                && p1 == from
+            {
+                p1 = to;
+            }
+            self.release_point(p1);
+        }
+        Ok(())
+    }
+    /// releasePoint, keeping the connectors on the Point that moved.
+    fn release_point(&mut self, index: usize) -> Option<(usize, usize)> {
+        let moved = kernel_joint::release_point(&mut self.points, index);
+        if let Some((from, to)) = moved {
+            for c in self.breakers.values_mut() {
+                for p in c.points.iter_mut().filter(|p| **p == from) {
+                    *p = to;
+                }
+            }
+        }
+        moved
+    }
+    /// Connector insert 00a99514 for a break connector (type 1, Kernel +0x28
+    /// off): jointConnectors whether or not a body is in the kernel; the
+    /// joint and total counts go up on each side's SimBody (a sleeping one
+    /// too), and the bodies in the kernel are reclassified.
+    fn insert_joint_connector(&mut self, id: u64, bodies: [JointBody; 2]) -> Result<(), String> {
+        self.joint_connectors.push(id);
+        let loose: Vec<usize> = bodies
+            .iter()
+            .filter_map(|b| match b {
+                JointBody::Loose(i) => Some(self.prims[*i].assembly),
+                JointBody::Fixed(_) => None,
+            })
+            .collect();
+        for &a in &loose {
+            let p = &mut self.parts[a];
+            p.joint += 1;
+            p.total += 1;
+        }
+        for a in loose {
+            self.classify(a)?;
+        }
+        Ok(())
+    }
+    /// Connector removal 00a99ff2 from jointConnectors.
+    fn remove_joint_connector(&mut self, id: u64, bodies: [JointBody; 2]) -> Result<(), String> {
+        remove_item(&mut self.joint_connectors, &id)?;
+        let loose: Vec<usize> = bodies
+            .iter()
+            .filter_map(|b| match b {
+                JointBody::Loose(i) => Some(self.prims[*i].assembly),
+                JointBody::Fixed(_) => None,
+            })
+            .collect();
+        for &a in &loose {
+            let p = &mut self.parts[a];
+            p.joint -= 1;
+            p.total -= 1;
+        }
+        for a in loose {
+            self.classify(a)?;
+        }
+        Ok(())
+    }
+    /// SleepStage joint edge change 00b7339e: becoming AWAKE puts the joint
+    /// in the kernel, leaving AWAKE takes it out.
+    fn set_joint_edge(&mut self, j: usize, new: JointEdge) -> Result<(), String> {
+        let current = self.joints[j].edge.ok_or("joint outside SleepStage")?;
+        if current == new {
+            return Err("joint edge state unchanged".into());
+        }
+        match new {
+            JointEdge::Awake => self.put_in_kernel(j)?,
+            JointEdge::Sleeping => self.remove_from_kernel(j)?,
+        }
+        self.joints[j].edge = Some(new);
+        Ok(())
+    }
+    /// World::uiStep's breakJoints 00ba9032: every joint in the kernel whose
+    /// connectors broke (GlueJoint::isBroken 00b0d9ae -> MultiJoint 00b3f0a4:
+    /// any of its 4 breaking connectors) is removed (World::onJointBroken
+    /// 00baa94e; the JointInstance leaves the DataModel, assumed at once).
+    /// Returns how many broke.
+    pub fn break_joints(&mut self) -> Result<usize, String> {
+        let mut count = 0;
+        for j in 0..self.joints.len() {
+            if self.joints[j].edge != Some(JointEdge::Awake) {
+                continue;
+            }
+            let broken = self.joints[j]
+                .connectors
+                .iter()
+                .take(4)
+                .any(|id| self.breakers.get(id).is_some_and(|c| c.broken));
+            if broken {
+                self.remove_joint(j)?;
+                self.broken.push((self.step_id, j));
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+    /// World::removeJoint as SleepStage::onEdgeRemoving 00b73f08 sees it: an
+    /// AWAKE joint leaves the kernel, a SLEEPING one wakes both assemblies.
+    fn remove_joint(&mut self, j: usize) -> Result<(), String> {
+        match self.joints[j].edge {
+            Some(JointEdge::Awake) => self.set_joint_edge(j, JointEdge::Sleeping)?,
+            Some(JointEdge::Sleeping) => {
+                for body in self.joints[j].bodies {
+                    if let Some(node) = self.joint_node(body) {
+                        self.wake(node)?;
+                    }
+                }
+            }
+            None => return Err("joint already removed".into()),
+        }
+        self.joints[j].edge = None;
+        Ok(())
+    }
+    /// Point::step 00aa3156 for every kernel Point (the first thing in each
+    /// stepWorld substep).
+    pub fn step_points(&mut self) -> Result<(), String> {
+        for at in 0..self.points.len() {
+            let frame = self.body_frame(self.points[at].body)?;
+            self.points[at].step(&frame);
+        }
+        Ok(())
+    }
+    /// Point::forceToBody 00aa3244 for every kernel Point, after the
+    /// jointConnectors: the force and its moment about the center of mass
+    /// go to the assembly's SimBody, in the kernel or not.
+    pub fn points_to_bodies(&mut self) -> Result<(), String> {
+        for at in 0..self.points.len() {
+            let JointBody::Loose(prim) = self.points[at].body else {
+                continue;
+            };
+            let (force, world) = (self.points[at].force, self.points[at].world);
+            let assembly = self.prims[prim].assembly;
+            self.parts[assembly].body.apply_force(force, world)?;
+        }
+        Ok(())
+    }
+    /// The kernel Points (KernelData +0x50).
+    pub fn point_count(&self) -> usize {
+        self.points.len()
+    }
+    /// One line per kernel joint for logs: SleepStage edge, broken flags of
+    /// its connectors and the largest Point gap.
+    pub fn joint_report(&self) -> String {
+        let mut out = String::new();
+        for joint in &self.joints {
+            let connectors: Vec<&BreakConnector> = joint
+                .connectors
+                .iter()
+                .filter_map(|id| self.breakers.get(id))
+                .collect();
+            let gap = connectors
+                .iter()
+                .map(|c| {
+                    let [a, b] = c.points.map(|p| self.points[p].world);
+                    let d: [f32; 3] = std::array::from_fn(|i| b[i] - a[i]);
+                    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+                })
+                .fold(0.0f32, f32::max);
+            out.push_str(&format!(
+                "[{} edge={:?} connectors={} broken={:?} gap={}]",
+                joint.name,
+                joint.edge,
+                connectors.len(),
+                connectors.iter().map(|c| c.broken).collect::<Vec<_>>(),
+                gap
+            ));
+        }
+        out
+    }
     /// Back to the parts as added, with no contacts.
     pub fn reset(&mut self) {
         self.parts = self.original.clone();
@@ -675,7 +1030,13 @@ impl LooseWorld {
         self.pairs.clear();
         self.real_time_connectors.clear();
         self.contact_connectors.clear();
-        self.joint_connectors.clear();
+        // The kernel joints as built (their connectors are in the kernel).
+        let joints = self.original_joints.clone();
+        self.joints = joints.joints;
+        self.points = joints.points;
+        self.breakers = joints.connectors;
+        self.joint_connectors = joints.joint_connectors;
+        self.broken.clear();
         self.owners.clear();
         self.stats = StepStats::default();
         self.stepping = [Vec::new(), Vec::new()];
@@ -1432,11 +1793,22 @@ impl LooseWorld {
         }
         Ok(deepest)
     }
-    /// jointConnectors springs (a93074) between loose Parts and static
-    /// blocks, in list order.
+    /// jointConnectors in list order: contact springs (a93074) between
+    /// loose Parts and static blocks, and the kernel joints' break
+    /// connectors (computeForce 00a91a12 on the Points).
     pub fn joint_springs(&mut self, kernel: &KernelProfile) -> Result<(), String> {
         for at in 0..self.joint_connectors.len() {
             let id = self.joint_connectors[at];
+            if let Some(c) = self.breakers.get(&id) {
+                // The normal test reads point 0's Body rotation (+0xb4).
+                let axes = self.body_frame(self.points[c.points[0]].body)?.rotation;
+                let c = self
+                    .breakers
+                    .get_mut(&id)
+                    .ok_or("missing break connector")?;
+                c.compute_force(&mut self.points, &axes);
+                continue;
+            }
             let prims = self.prims_of(id)?;
             let Some((a, b, flip)) = self.bodies(prims.0, prims.1) else {
                 return Err("unexpected joint connector".into());
@@ -1496,10 +1868,13 @@ impl LooseWorld {
         }
         Ok(())
     }
-    /// The substep half of stepWorld without the character: jointConnectors
-    /// springs, then realTimeBodies and jointBodies integrate.
+    /// The substep half of stepWorld without the character: the Points,
+    /// jointConnectors, the Points' forces into their bodies, then
+    /// realTimeBodies and jointBodies integrate.
     pub fn substep(&mut self, kernel: &KernelProfile) -> Result<(), String> {
+        self.step_points()?;
         self.joint_springs(kernel)?;
+        self.points_to_bodies()?;
         self.integrate(kernel)
     }
     /// World::insertContact 00bab0f0 for a broadphase contact: the pair, and
@@ -1876,6 +2251,18 @@ impl LooseWorld {
                 neighbour = true;
             }
         }
+        // 00b72d00: a joint always touches.
+        for j in self.joint_edges_of(node) {
+            let Some(other) = self.joint_other(j, node) else {
+                continue;
+            };
+            if self.state(Some(other)) == AssemblyState::Awake && self.in_stage(other) {
+                if self.moving(other) {
+                    return AssemblyState::Awake;
+                }
+                neighbour = true;
+            }
+        }
         if neighbour {
             AssemblyState::SleepingChecking
         } else {
@@ -2025,6 +2412,72 @@ impl LooseWorld {
                 self.set_state(other, AssemblyState::SleepingChecking)?;
             }
         }
+        // The joints after the contacts (the native edge list order is not
+        // recovered). 00b72b82: a SLEEPING joint becomes AWAKE (back in the
+        // kernel); a joint always touches.
+        for j in self.joint_edges_of(node) {
+            if self.joints[j].edge == Some(JointEdge::Sleeping) {
+                self.set_joint_edge(j, JointEdge::Awake)?;
+            }
+            let Some(other) = self.joint_other(j, node) else {
+                continue;
+            };
+            if depth < max_depth {
+                let pass = self.pass;
+                let state = self.state(Some(other));
+                let (p, d) = self.pass_depth(other);
+                if *p != pass && state != AssemblyState::Awake {
+                    *p = pass;
+                    *d = depth + 1;
+                    queue.push_back(other);
+                }
+            } else if self.state(Some(other)) == AssemblyState::SleepingDeeply {
+                self.set_state(other, AssemblyState::SleepingChecking)?;
+            }
+        }
+        Ok(())
+    }
+    /// The assembly's kernel joints in SleepStage, in creation order.
+    fn joint_edges_of(&self, node: Node) -> Vec<usize> {
+        (0..self.joints.len())
+            .filter(|&j| {
+                self.joints[j].edge.is_some()
+                    && self.joints[j]
+                        .bodies
+                        .iter()
+                        .any(|b| self.joint_node(*b) == Some(node))
+            })
+            .collect()
+    }
+    /// The assembly on the joint's other side (none for a fixed Body).
+    fn joint_other(&self, j: usize, node: Node) -> Option<Node> {
+        let [a, b] = self.joints[j].bodies.map(|b| self.joint_node(b));
+        if a == Some(node) { b } else { a }
+    }
+    /// The joint pass at the end of SleepStage::step (00b713bc): an AWAKE
+    /// joint whose two assemblies are neither waking nor awake (a fixed side
+    /// is ANCHORED) goes to SLEEPING and leaves the kernel.
+    fn sleep_joints(&mut self) -> Result<(), String> {
+        let waking = |s: AssemblyState| {
+            matches!(
+                s,
+                AssemblyState::RecursiveWakePending
+                    | AssemblyState::WakePending
+                    | AssemblyState::Awake
+            )
+        };
+        let asleep: Vec<usize> = (0..self.joints.len())
+            .filter(|&j| {
+                self.joints[j].edge == Some(JointEdge::Awake)
+                    && self.joints[j]
+                        .bodies
+                        .iter()
+                        .all(|b| !waking(self.state(self.joint_node(*b))))
+            })
+            .collect();
+        for j in asleep {
+            self.set_joint_edge(j, JointEdge::Sleeping)?;
+        }
         Ok(())
     }
     /// The block of a contact primitive for Contact::step.
@@ -2169,7 +2622,8 @@ impl LooseWorld {
             self.step_contacts(true, t, colliders, statics, tables, materials)?;
         }
         self.wake_pending(true)?;
-        self.wake_pending(false)
+        self.wake_pending(false)?;
+        self.sleep_joints()
     }
     pub fn sleep_profile(&self) -> &SleepProfile {
         &self.sleep_profile

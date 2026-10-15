@@ -159,8 +159,8 @@ impl WalkingFixture {
         // Each call is one native world step. A new ideal 60 Hz frame runs the
         // Heartbeat and WaitingScripts jobs, then PhysicsJob: gameStepped
         // (Stepped -> Humanoid::onStepped, Animation -> Animator::onStepped),
-        // World::uiStep (Motor6D stepUi once, 00ba8c68/00b39318) and its
-        // world steps (00ba9892).
+        // World::uiStep (breakJoints, then Motor6D stepUi once,
+        // 00ba8c68/00b39318) and its world steps (00ba9892).
         while self.schedule.world_steps_remaining == 0 {
             let frame = self.schedule.begin_frame()?;
             if let Some(time) = frame.resumed_time {
@@ -176,6 +176,7 @@ impl WalkingFixture {
             let dt = self.stepped_dt(&frame);
             self.humanoid_stepped(rig, input, dt)?;
             self.animator_stepped(rig, dt)?;
+            self.world.break_joints()?;
             let before: Vec<_> = rig.joints.iter().map(|j| j.link_state()).collect();
             for joint in &mut rig.joints {
                 joint.step()?;
@@ -230,6 +231,7 @@ impl WalkingFixture {
                 continue;
             }
             self.humanoid_stepped(rig, input, self.stepped_dt(&frame))?;
+            self.world.break_joints()?;
         }
         self.world_step(rig)?;
         self.schedule.finish_world_step()
@@ -978,6 +980,7 @@ pub fn audit_part_weld(bundle: &Bundle) -> Result<String, String> {
             part1,
             c0: at(c0),
             c1: at([0.0; 3]),
+            face: [[0.0; 3]; 4],
         });
     };
     let base = add(
@@ -1189,6 +1192,287 @@ pub fn audit_part_weld(bundle: &Bundle) -> Result<String, String> {
     }
     let _ = (weight, chain, arm);
     writeln!(report, "part_weld_pass assemblies=2 snapped=true landed=true grounded_static=2 rested=true asleep=true native_differential=not_tested").unwrap();
+    Ok(report)
+}
+
+/// Kernel joints (Glue) in a Workspace, with the character idling at the
+/// origin:
+/// - "Hung" (4 x 1 x 2) glued under the anchored "Holder" on their whole
+///   4 x 2 face: it hangs on the four corner springs;
+/// - "Left" and "Right" (2 x 1 x 2) glued side by side on a 2 x 1 face and
+///   dropped onto the Baseplate: they land as one;
+/// - "Heavy" (14 x 14 x 14) glued under the anchored "Beam" on a 1 x 1 face:
+///   its weight is over the face's break force, so breakJoints removes the
+///   Glue and it drops.
+pub fn audit_part_glue(bundle: &Bundle) -> Result<String, String> {
+    use crate::joints::GLUE;
+    use crate::loose::JointEdge;
+    use crate::workspace::{JointInstance, PartInstance};
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    let at = |position: [f32; 3]| CoordinateFrame {
+        position,
+        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    };
+    let add = |workspace: &mut Workspace, name: &str, size: [f32; 3], position, anchored| {
+        let mut part = PartInstance {
+            name: name.into(),
+            anchored,
+            frame: at(position),
+            ..Default::default()
+        };
+        part.set_size(size);
+        workspace.parts.push(part);
+        workspace.parts.len() - 1
+    };
+    // C0 and C1 put the face's z axis along the Part0 face normal.
+    let glue = |workspace: &mut Workspace,
+                part0: usize,
+                part1: usize,
+                c0: [f32; 3],
+                c1: [f32; 3],
+                rotation: [[f32; 3]; 3],
+                half: [f32; 2]| {
+        let [a, b] = half;
+        workspace.joints.push(JointInstance {
+            name: format!("Glue{}", workspace.joints.len()),
+            kind: GLUE,
+            part0,
+            part1,
+            c0: CoordinateFrame {
+                position: c0,
+                rotation,
+            },
+            c1: CoordinateFrame {
+                position: c1,
+                rotation,
+            },
+            face: [[-a, -b, 0.0], [a, -b, 0.0], [a, b, 0.0], [-a, b, 0.0]],
+        });
+    };
+    // z along -Y (columns x, z, -y), and z along +X (columns -z, y, x).
+    let down = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
+    let side = [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]];
+    let holder = add(
+        &mut workspace,
+        "Holder",
+        [4.0, 1.0, 2.0],
+        [-20.0, 10.0, 0.0],
+        true,
+    );
+    let hung = add(
+        &mut workspace,
+        "Hung",
+        [4.0, 1.0, 2.0],
+        [-20.0, 9.0, 0.0],
+        false,
+    );
+    glue(
+        &mut workspace,
+        holder,
+        hung,
+        [0.0, -0.5, 0.0],
+        [0.0, 0.5, 0.0],
+        down,
+        [2.0, 1.0],
+    );
+    let left = add(
+        &mut workspace,
+        "Left",
+        [2.0, 1.0, 2.0],
+        [10.0, 2.0, 0.0],
+        false,
+    );
+    let right = add(
+        &mut workspace,
+        "Right",
+        [2.0, 1.0, 2.0],
+        [12.0, 2.0, 0.0],
+        false,
+    );
+    glue(
+        &mut workspace,
+        left,
+        right,
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        side,
+        [1.0, 0.5],
+    );
+    let beam = add(
+        &mut workspace,
+        "Beam",
+        [2.0, 1.0, 2.0],
+        [30.0, 15.5, 0.0],
+        true,
+    );
+    let heavy = add(
+        &mut workspace,
+        "Heavy",
+        [14.0, 14.0, 14.0],
+        [30.0, 8.0, 0.0],
+        false,
+    );
+    glue(
+        &mut workspace,
+        beam,
+        heavy,
+        [0.0, -0.5, 0.0],
+        [0.0, 7.0, 0.0],
+        down,
+        [0.5, 0.5],
+    );
+    let names: Vec<&str> = workspace.parts.iter().map(|p| p.name.as_str()).collect();
+    let mut report = workspace.joint_tree()?.describe(&names);
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let thresholds: Vec<f32> = workspace
+        .joints
+        .iter()
+        .map(|j| crate::kernel_joint::glue_threshold(&j.face))
+        .collect();
+    let loose = &fixture.world.loose;
+    writeln!(
+        report,
+        "part_glue_load assemblies={} points={} thresholds={thresholds:?} {} {}",
+        loose.parts.len(),
+        loose.point_count(),
+        loose.joint_report(),
+        loose.report()
+    )
+    .unwrap();
+    let loaded = loose.joints.len() == 3
+        && loose
+            .joints
+            .iter()
+            .all(|j| j.edge == Some(JointEdge::Awake))
+        && loose.point_count() == 24;
+    let prim = |fixture: &WalkingFixture, name: &str| {
+        fixture
+            .world
+            .loose
+            .prims
+            .iter()
+            .position(|p| p.name == name)
+            .ok_or(format!("{name} is not a loose Part"))
+    };
+    let frame_of = |fixture: &WalkingFixture, name: &str| -> Result<CoordinateFrame, String> {
+        fixture.world.loose.prim_frame(prim(fixture, name)?)
+    };
+    let frames = |fixture: &WalkingFixture| -> String {
+        fixture
+            .world
+            .loose
+            .frames()
+            .iter()
+            .map(|(n, f)| format!("{n}={:?}", f.position))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut hung_range = (f32::INFINITY, f32::NEG_INFINITY);
+    let mut broke_at = None;
+    for step in 0..1440u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        let y = frame_of(&fixture, "Hung")?.position[1];
+        hung_range = (hung_range.0.min(y), hung_range.1.max(y));
+        let loose = &fixture.world.loose;
+        if broke_at.is_none() && !loose.broken.is_empty() {
+            broke_at = Some(step + 1);
+            writeln!(
+                report,
+                "part_glue_broke step={} broken={:?} {} {} {}",
+                step + 1,
+                loose.broken,
+                frames(&fixture),
+                loose.joint_report(),
+                loose.report()
+            )
+            .unwrap();
+        }
+        if step < 8 || (step + 1) % 240 == 0 {
+            writeln!(
+                report,
+                "part_glue_state step={} {} {} {}",
+                step + 1,
+                frames(&fixture),
+                loose.joint_report(),
+                loose.report()
+            )
+            .unwrap();
+        }
+    }
+    let loose = &fixture.world.loose;
+    let lowest = |name: &str| -> Result<f32, String> {
+        let i = prim(&fixture, name)?;
+        let f = loose.prim_frame(i)?;
+        let h = loose.prims[i].size.map(|v| v * 0.5);
+        Ok(f.position[1] - (0..3).map(|k| (f.rotation[1][k] * h[k]).abs()).sum::<f32>())
+    };
+    let hung_frame = frame_of(&fixture, "Hung")?;
+    let (l, r) = (frame_of(&fixture, "Left")?, frame_of(&fixture, "Right")?);
+    let gap: f32 = (0..3)
+        .map(|k| (r.position[k] - l.position[k]).powi(2))
+        .sum::<f32>()
+        .sqrt();
+    let assembly = |name: &str| -> Result<&crate::loose::LoosePart, String> {
+        Ok(&loose.parts[loose.prims[prim(&fixture, name)?].assembly])
+    };
+    writeln!(
+        report,
+        "part_glue_result hung_y={} hung_range={hung_range:?} pair_gap={gap} lowest_left={} lowest_heavy={} broke_at={broke_at:?} edges={:?}",
+        hung_frame.position[1],
+        lowest("Left")?,
+        lowest("Heavy")?,
+        loose.joints.iter().map(|j| j.edge).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    writeln!(report, "{}", sleep_summary("part_glue_sleep", loose)).unwrap();
+    let checks = [
+        ("loaded_in_kernel", loaded),
+        (
+            "hung_held",
+            (hung_frame.position[1] - 9.0).abs() < 0.05 && loose.joints[0].edge.is_some(),
+        ),
+        (
+            "pair_kept",
+            (gap - 2.0).abs() < 0.01 && loose.joints[1].edge.is_some(),
+        ),
+        ("pair_landed", lowest("Left")?.abs() < 0.15),
+        (
+            "heavy_broke",
+            broke_at.is_some_and(|s| s < 60) && loose.joints[2].edge.is_none(),
+        ),
+        ("heavy_dropped", lowest("Heavy")?.abs() < 0.15),
+        (
+            "asleep",
+            ["Hung", "Left", "Heavy"]
+                .iter()
+                .map(|n| assembly(n))
+                .collect::<Result<Vec<_>, _>>()?
+                .iter()
+                .all(|p| p.sleep.sleeping() && !p.in_kernel),
+        ),
+        (
+            "joints_sleeping",
+            loose.joints[..2]
+                .iter()
+                .all(|j| j.edge == Some(JointEdge::Sleeping)),
+        ),
+    ];
+    let failed: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
+    if !failed.is_empty() {
+        return Err(format!("part glue failed {failed:?}\n{report}"));
+    }
+    let _ = (right, heavy);
+    writeln!(
+        report,
+        "part_glue_pass hung=held pair=kept heavy=broke asleep=true native_differential=not_tested"
+    )
+    .unwrap();
     Ok(report)
 }
 

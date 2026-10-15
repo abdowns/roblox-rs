@@ -47,9 +47,9 @@ constructor creates the next one:
 | MovingAssemblyStage | 00b38a4a | not ported |
 | StepJointsStage | 00b89fa0 | Motor6D only |
 | HumanoidStage | 00b0ff5c | character only |
-| SleepStage | 00b6f814 | ported (sleep.rs, loose.rs) |
+| SleepStage | 00b6f814 | ported (sleep.rs, loose.rs; contact and joint edges) |
 | SimulateStage | 00b6eb12 | lists ported |
-| Kernel | 00a95592 | ported (kernel.rs, loose.rs) |
+| Kernel | 00a95592 | ported (kernel.rs, loose.rs, kernel_joint.rs Points and break connectors) |
 
 The World also owns the ContactManager (+0x150, the broadphase), the ground
 primitive (+0x5c) and the head of the chain (+0x158).
@@ -68,7 +68,10 @@ Left, in order:
    made or broken while running are not.
 2. **Kernel joints.** Glue/ManualGlue (breakable), Rotate, RotateP, RotateV
    (hinge and motor surfaces), Motor, DynamicRotate, VelocityMotor, and their
-   connectors (JointConnector, RotateConnector, the break connectors).
+   connectors (JointConnector, RotateConnector, the break connectors). Done:
+   kernel Points, the break connectors, SleepStage joint edges, breakJoints,
+   and Glue present at load (`audit-part-glue`). Left: ManualGlue (its face
+   comes from 00b0da3a), the Rotate family and the motors.
 3. **Shapes.** Ball (BallBall/BallBlock contacts), Cylinder, Wedge and
    CornerWedge (PolyContact), TrussPart, and the legacy ramp/prism/pyramid
    Parts.

@@ -232,11 +232,33 @@ output to expect. Anything not covered by an audit is marked **not tested**.
     with every Part's lowest corner above -0.02 and zero speeds;
   - `part_weld_pass assemblies=2 snapped=true landed=true grounded_static=2 rested=true asleep=true native_differential=not_tested`.
 
-  Not ported: motors and kernel joints in the Body tree, breaking joints, and
-  joints made or removed while running. A fast impact on a Part whose center
+  Not ported: motors in the Body tree, and rigid joints made, broken or
+  removed while running. A fast impact on a Part whose center
   of mass sits high above the contact gives it a large sideways kick; this
   also happens to a single tall block (see the roadmap). Native parity is
   **not tested**.
+
+- Glue joints in the physics: a Workspace Glue (`joints::GLUE`, face F0..F3
+  in `JointInstance::face`) puts four corner Points per side and four
+  NormalBreakConnectors in the kernel. It holds two Parts together with
+  springs, sleeps with them, and breaks when the pull on a corner passes
+  20 x the face strength. Run
+  `sh tools/cargo.sh run --locked -- audit-part-glue`. Expect:
+  - `joint_tree_part name=Hung priority=401 tree_joint_kind=Some(9) tree_parent=Holder ... grounded=false`
+    (glued under an anchored Part, but not grounded);
+  - `part_glue_load assemblies=4 points=24 thresholds=[478650.0, 160050.0, 82350.0] [Glue0 edge=Some(Awake) connectors=4 ...`:
+    the joints are in the kernel before the first step;
+  - `part_glue_broke step=9 broken=[(7, 2)] ...`: the 14-stud cube's 1 x 1
+    Glue breaks at the third frame's breakJoints;
+  - `part_glue_result hung_y=9.000007 hung_range=(8.99987, 9.000012) pair_gap=2 lowest_left=-0.010354698 lowest_heavy=-0.021046638 broke_at=Some(9) edges=[Some(Sleeping), Some(Sleeping), None]`:
+    the hung Part holds within 0.00013 studs, the glued pair lands 2 studs
+    apart, the cube lands, and the two intact Glues sleep with their Parts;
+  - `part_glue_pass hung=held pair=kept heavy=broke asleep=true native_differential=not_tested`.
+
+  Only Glues present at load. Not ported: ManualGlue, the hinge and motor
+  joints, joints to the character, and Glue between two anchored Parts
+  (refused). The JointInstance removal after a break is assumed to happen
+  at once. Native parity is **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,
