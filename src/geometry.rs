@@ -415,8 +415,9 @@ pub fn workspace_sphere(
     let t = part.frame.position;
     for face in 0..6 {
         let mut start = corner(faces[face][0]);
-        let row_step = ROW_STEP[face].map(|v| fraction * v);
-        let column_step = COLUMN_STEP[face].map(|v| fraction * v);
+        // The half steps are doubled once and added once per vertex or row.
+        let row_step = ROW_STEP[face].map(|v| fraction * v).map(|v| v + v);
+        let column_step = COLUMN_STEP[face].map(|v| fraction * v).map(|v| v + v);
         let surface = part.surfaces[face] as usize;
         let (row, extent, u_step) = if (1..=5).contains(&surface) {
             (rows[surface], 0.25f32, clamped * fraction * 0.5)
@@ -431,36 +432,31 @@ pub fn workspace_sphere(
                 let mut d = start;
                 let mut u = rows_f * u_step;
                 for _ in 0..across {
-                    let inverse = 1.0 / (d[2] * d[2] + d[1] * d[1] + d[0] * d[0]).sqrt();
-                    let local = [
-                        size[0] * half * d[0] * inverse + 0.0,
-                        size[1] * half * d[1] * inverse + 0.0,
-                        half * size[2] * inverse * d[2] + 0.0,
-                    ];
-                    let n = [
-                        (d[0] * inverse) / (size[0] * half),
-                        (d[1] * inverse) / (size[1] * half),
-                        (inverse * d[2]) / (half * size[2]),
-                    ];
+                    // Sums run x, y, z as the disassembly shows (010cc130..).
+                    let inverse = 1.0 / ((d[0] * d[0] + d[1] * d[1]) + d[2] * d[2]).sqrt();
+                    let unit = d.map(|v| v * inverse);
+                    let scale = size.map(|v| v * half);
+                    let local: [f32; 3] = std::array::from_fn(|i| scale[i] * unit[i] + 0.0);
+                    let n: [f32; 3] = std::array::from_fn(|i| unit[i] / scale[i]);
                     let position: [f32; 3] = std::array::from_fn(|i| {
-                        local[2] * r[i][2] + local[1] * r[i][1] + local[0] * r[i][0] + t[i]
+                        ((local[0] * r[i][0] + local[1] * r[i][1]) + local[2] * r[i][2]) + t[i]
                     });
                     let w: [f32; 3] =
-                        std::array::from_fn(|i| r[i][2] * n[2] + r[i][1] * n[1] + r[i][0] * n[0]);
-                    let length = 1.0 / (w[2] * w[2] + w[1] * w[1] + w[0] * w[0]).sqrt();
+                        std::array::from_fn(|i| (r[i][0] * n[0] + r[i][1] * n[1]) + r[i][2] * n[2]);
+                    let length = 1.0 / ((w[0] * w[0] + w[1] * w[1]) + w[2] * w[2]).sqrt();
                     draw.vertices.push(RenderVertex {
                         position,
-                        normal: [w[0] * length, w[1] * length, length * w[2]],
+                        normal: w.map(|v| v * length),
                         uv: [0.0; 2],
                         color,
                         specular,
                     });
                     studs.push([u, v]);
-                    d = std::array::from_fn(|i| d[i] + column_step[i] + column_step[i]);
+                    d = std::array::from_fn(|i| d[i] + column_step[i]);
                     u -= u_step;
                 }
                 if row_index < strip_rows {
-                    start = std::array::from_fn(|i| start[i] + row_step[i] + row_step[i]);
+                    start = std::array::from_fn(|i| start[i] + row_step[i]);
                 }
                 v += clamped * extent * fraction * 0.125;
             }

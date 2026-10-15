@@ -1,5 +1,27 @@
 # MODLOG
 
+## 2026-10-15 addSphere float order from the disassembly
+
+**Changed:** `geometry::workspace_sphere` now follows the disassembly
+(010cc130..010cc4f0) instead of the decompiler's printed expressions:
+- |d|^2, the rotated position and normal, and the normal's length sum
+  ((x + y) + z);
+- a local position is (size x 0.5) x (d x 1/|d|);
+- the column and row steps are doubled once (fraction x step + itself) and
+  added once.
+
+**Why:** Ghidra prints a chain of ADDSS results reversed and without
+parentheses. Read as C, that suggested ((z + y) + x), which rounds
+differently from the native ((x + y) + z). I caught it while comparing the
+PolyPolyContact decompile against its assembly.
+
+**Tested how:** `sh tools/cargo.sh run --locked -- audit-ball-render`; tests
+and clippy.
+
+**Result:** every count and check is unchanged. The Smooth and Big balls'
+largest radius error drops from 2.4e-7 to 1.2e-7. The GPU pixel counts are
+identical. Native parity is **not tested**.
+
 ## 2026-10-15 Ball rendering
 
 **Changed:**

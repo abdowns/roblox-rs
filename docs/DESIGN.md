@@ -935,6 +935,12 @@ builds a cube sphere:
   strip at frac(strip x side / tiles) / 8 x 0.25 + row and grows by
   side x 0.25 / (8 tiles rows) per row. side here is the clamped one.
 - **Indices.** Quads use the block's order (a, a+1, a+W, a+W, a+1, a+W+1).
+- **Float order.** The disassembly (010cc130..010cc4f0) is the reference,
+  not the decompiler:
+  - sums run ((x + y) + z) in G3D order; Ghidra prints such chains reversed
+    and without parentheses;
+  - a position is (size x 0.5) x (d / |d|);
+  - the grid steps are doubled once and then added once per vertex or row.
 - **Not produced.** Material UVs, tangents and outline distances are left
   out, as for blocks. The vertex color is 010ca980, shared with blocks.
 
