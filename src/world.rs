@@ -10,9 +10,10 @@ use crate::{
     bundle::Bundle,
     collision::ContactBodyState,
     humanoid_state::{FloorPart, Hit},
+    joints::Link,
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
     legacy_contact::{BlockContactProfile, ContactGeometry, ImpulseProfile},
-    loose::{CharacterMotion, LoosePart, LooseWorld, Prim},
+    loose::{CharacterMotion, LoosePrim, LooseWorld, Prim},
     material::{MaterialProfile, Shape},
     physics,
     rig::{R6Rig, compose},
@@ -43,6 +44,9 @@ pub struct Broadphase {
     pub prims: Vec<BroadPrim>,
     /// CanCollide (00ae714a makes no contact otherwise).
     collides: Vec<bool>,
+    /// Each primitive's assembly (the static blocks share one, as do the
+    /// character's Parts).
+    groups: Vec<usize>,
     loose_ids: Vec<usize>,
     character_ids: Vec<usize>,
     /// Every contact change: (world step, event).
@@ -55,10 +59,11 @@ pub struct Broadphase {
 }
 
 impl Broadphase {
-    fn add(&mut self, prim: BroadPrim, collides: bool) -> usize {
+    fn add(&mut self, prim: BroadPrim, collides: bool, group: usize) -> usize {
         let id = self.prims.len();
         self.prims.push(prim);
         self.collides.push(collides);
+        self.groups.push(group);
         match prim {
             BroadPrim::Loose(_) => self.loose_ids.push(id),
             BroadPrim::Character(_) => self.character_ids.push(id),
@@ -68,14 +73,12 @@ impl Broadphase {
     }
     /// 00ae9612: not in the same assembly, not both grounded, and both
     /// collide.
-    fn accept(prims: &[BroadPrim], collides: &[bool], a: usize, b: usize) -> bool {
-        let same = match (prims[a], prims[b]) {
-            (BroadPrim::Static(_), BroadPrim::Static(_)) => true,
-            (BroadPrim::Character(_), BroadPrim::Character(_)) => true,
-            (BroadPrim::Loose(i), BroadPrim::Loose(j)) => i == j,
-            _ => false,
-        };
-        !same && collides[a] && collides[b]
+    fn accept(groups: &[usize], collides: &[bool], a: usize, b: usize) -> bool {
+        groups[a] != groups[b] && collides[a] && collides[b]
+    }
+    /// Both primitives are in one assembly, or both are grounded.
+    pub fn same_assembly(&self, a: usize, b: usize) -> bool {
+        self.groups[a] == self.groups[b]
     }
     fn drain(&mut self, step: u32) {
         for event in self.hash.events.drain(..) {
@@ -83,21 +86,21 @@ impl Broadphase {
         }
     }
     fn insert(&mut self, id: usize, extents: Extents, fixed: bool) {
-        let (prims, collides) = (&self.prims, &self.collides);
+        let (groups, collides) = (&self.groups, &self.collides);
         self.hash.insert(id, extents, fixed, false, |a, b| {
-            Self::accept(prims, collides, a, b)
+            Self::accept(groups, collides, a, b)
         });
     }
     fn find_all(&mut self, id: usize, extents: Extents, step: u32) {
-        let (prims, collides) = (&self.prims, &self.collides);
+        let (groups, collides) = (&self.groups, &self.collides);
         self.hash
-            .find_all_contacts(id, extents, |a, b| Self::accept(prims, collides, a, b));
+            .find_all_contacts(id, extents, |a, b| Self::accept(groups, collides, a, b));
         self.drain(step);
     }
     fn update(&mut self, id: usize, extents: Extents, step: u32) {
-        let (prims, collides) = (&self.prims, &self.collides);
+        let (groups, collides) = (&self.groups, &self.collides);
         self.hash
-            .update(id, extents, |a, b| Self::accept(prims, collides, a, b));
+            .update(id, extents, |a, b| Self::accept(groups, collides, a, b));
         self.drain(step);
     }
     /// The primitive pairs with a contact now.
@@ -116,6 +119,10 @@ impl Broadphase {
 
 /// PopperCam.lua PiercingCast: `hitPart.Transparency > 0.95` is pierced.
 const POPPER_PIERCE_TRANSPARENCY: f32 = 0.95;
+/// Broadphase groups of the grounded blocks and the character's Parts (a
+/// loose Part's group is its assembly root's Workspace index).
+const STATIC_GROUP: usize = usize::MAX;
+const CHARACTER_GROUP: usize = usize::MAX - 1;
 
 /// An anchored, colliding block Part in the world.
 #[derive(Clone, Debug)]
@@ -432,7 +439,7 @@ fn raycast_all(
         direction,
         length,
         |_| true,
-        LoosePart::can_collide,
+        LoosePrim::can_collide,
     )
 }
 
@@ -444,17 +451,20 @@ fn raycast_where(
     direction: [f32; 3],
     length: f32,
     accept_static: impl Fn(usize) -> bool,
-    accept_loose: impl Fn(&LoosePart) -> bool,
+    accept_loose: impl Fn(&LoosePrim) -> bool,
 ) -> Option<(Hit, FloorPart)> {
     let mut best = statics.block_hit_where(origin, direction, length, accept_static);
     if let Some(loose) = loose {
         let mut limit = best.as_ref().map_or(length.min(5000.0), |b| b.0);
-        for (index, part) in loose.parts.iter().enumerate() {
+        for (index, part) in loose.prims.iter().enumerate() {
             if !accept_loose(part) {
                 continue;
             }
+            let Ok(frame) = loose.prim_frame(index) else {
+                continue;
+            };
             if let Some((distance, hit)) =
-                slow_hit_candidate(&part.body.frame, part.size, origin, direction, limit)
+                slow_hit_candidate(&frame, part.size, origin, direction, limit)
             {
                 limit = distance;
                 best = Some((distance, hit, FloorPart::Loose(index)));
@@ -507,7 +517,11 @@ impl Surroundings<'_> {
             }
             FloorPart::Loose(index) => {
                 let loose = self.loose.as_deref().ok_or("missing loose floor")?;
-                let part = loose.parts.get(index).ok_or("missing loose floor")?;
+                let prim = loose.prims.get(index).ok_or("missing loose floor")?;
+                let part = loose
+                    .parts
+                    .get(prim.assembly)
+                    .ok_or("missing loose floor")?;
                 Some(1.0 / part.body.inverse_mass())
             }
         })
@@ -525,7 +539,7 @@ impl Surroundings<'_> {
             FloorPart::Loose(index) => {
                 let loose = self.loose.as_deref().ok_or("missing loose floor")?;
                 loose
-                    .parts
+                    .prims
                     .get(index)
                     .ok_or("missing loose floor")?
                     .floor_friction()
@@ -542,7 +556,12 @@ impl Surroundings<'_> {
     ) -> Result<(), String> {
         if let FloorPart::Loose(index) = part {
             let loose = self.loose.as_deref_mut().ok_or("missing loose floor")?;
-            let part = loose.parts.get_mut(index).ok_or("missing loose floor")?;
+            let assembly = loose
+                .prims
+                .get(index)
+                .ok_or("missing loose floor")?
+                .assembly;
+            let part = loose.parts.get_mut(assembly).ok_or("missing loose floor")?;
             part.body.apply_force(force, point)?;
         }
         Ok(())
@@ -756,29 +775,46 @@ impl World {
         let mut world = Self::new(bundle, scene, rig)?;
         world.statics.floor_y = f32::NEG_INFINITY;
         world.statics.wall_x = f32::INFINITY;
+        // The joints group the Parts into assemblies (`joints.rs`); a Part
+        // takes the CFrame its Body gives it. Grounded assemblies (anchored,
+        // or rigidly joined to an anchored Part) never move: their Parts
+        // become static blocks.
+        let tree = workspace.joint_tree()?;
+        let frames = tree.body_frames(
+            &workspace
+                .parts
+                .iter()
+                .map(|p| p.frame.clone())
+                .collect::<Vec<_>>(),
+        )?;
         // World::insertPrimitive 00bab52a -> onPrimitiveAdded 00ae97aa: each
         // Part enters the hash without contacts, in Workspace order.
-        // Anchored CanCollide-off Parts are left out: they never get a
+        // Grounded CanCollide-off Parts are left out: they never get a
         // contact (00ae714a), so they cannot change anyone's contact order.
         let mut entered = Vec::new();
-        for part in &workspace.parts {
-            let extents = block_extents(&part.frame, part.size);
-            if !part.anchored {
-                let index = world.loose.parts.len();
-                world
-                    .loose
-                    .add_part(part, &world.materials, &world.kernel)?;
-                let id = world
-                    .broadphase
-                    .add(BroadPrim::Loose(index), part.can_collide);
+        let mut prim_of = vec![None; workspace.parts.len()];
+        for (n, part) in workspace.parts.iter().enumerate() {
+            let extents = block_extents(&frames[n], part.size);
+            if !part.anchored && !tree.grounded(n) {
+                let mut placed = part.clone();
+                placed.frame = frames[n].clone();
+                let index = world.loose.add_prim(&placed, &world.materials)?;
+                prim_of[n] = Some(index);
+                let id = world.broadphase.add(
+                    BroadPrim::Loose(index),
+                    part.can_collide,
+                    tree.assembly_root(n),
+                );
                 world.broadphase.insert(id, extents, false);
                 entered.push((id, extents));
                 continue;
             }
             if part.can_collide {
-                let id = world
-                    .broadphase
-                    .add(BroadPrim::Static(world.statics.blocks.len()), true);
+                let id = world.broadphase.add(
+                    BroadPrim::Static(world.statics.blocks.len()),
+                    true,
+                    STATIC_GROUP,
+                );
                 world.broadphase.insert(id, extents, true);
                 entered.push((id, extents));
                 let properties = world.materials.defaults(part.material)?;
@@ -797,7 +833,7 @@ impl World {
                 }
                 world.statics.blocks.push(StaticBlock {
                     name: part.name.clone(),
-                    frame: part.frame.clone(),
+                    frame: frames[n].clone(),
                     size: part.size,
                 });
                 world
@@ -806,6 +842,29 @@ impl World {
                     .push(world.materials.floor_friction(&properties)?);
                 world.statics.transparency.push(part.transparency);
             }
+        }
+        // The loose assemblies, in the order of their first Part (assumed:
+        // the native kernel order of a loaded place is not recovered). Each
+        // Body links to its parent with the joint's offset.
+        let mut built = Vec::new();
+        for n in 0..workspace.parts.len() {
+            if prim_of[n].is_none() || built.contains(&tree.assembly_root(n)) {
+                continue;
+            }
+            let root = tree.assembly_root(n);
+            built.push(root);
+            let prim = |m: usize| prim_of[m].ok_or("assembly Part is not loose");
+            let mut links = Vec::new();
+            for m in tree.assembly_parts(root).into_iter().skip(1) {
+                let parent = tree.body_parent(m).ok_or("Body child without a parent")?;
+                let Some(Link::Rigid(offset)) = tree.link(m) else {
+                    return Err("motor links need the motor angle".into());
+                };
+                links.push((prim(m)?, prim(parent)?, offset.clone()));
+            }
+            world
+                .loose
+                .add_assembly(prim(root)?, &links, &world.kernel)?;
         }
         let spawn = CoordinateFrame {
             position: workspace.next_spawn_location()?,
@@ -833,7 +892,9 @@ impl World {
             let frame = frames.get(name).ok_or("missing character Part frame")?;
             let extents = block_extents(frame, *size);
             let collides = world.colliders.iter().any(|(n, _)| n == name);
-            let id = world.broadphase.add(BroadPrim::Character(k), collides);
+            let id = world
+                .broadphase
+                .add(BroadPrim::Character(k), collides, CHARACTER_GROUP);
             world.broadphase.insert(id, extents, false);
             entered.push((id, extents));
         }
@@ -900,7 +961,7 @@ impl World {
     pub fn broadphase_name(&self, prim: BroadPrim) -> String {
         match prim {
             BroadPrim::Static(i) => self.statics.blocks[i].name.clone(),
-            BroadPrim::Loose(i) => self.loose.parts[i].name.clone(),
+            BroadPrim::Loose(i) => self.loose.prims[i].name.clone(),
             BroadPrim::Character(k) => self.part_sizes[k].0.clone(),
         }
     }
@@ -912,8 +973,7 @@ impl World {
                 block_extents(&b.frame, b.size)
             }
             BroadPrim::Loose(i) => {
-                let p = &self.loose.parts[i];
-                block_extents(&p.body.frame, p.size)
+                block_extents(&self.loose.prim_frame(i)?, self.loose.prims[i].size)
             }
             BroadPrim::Character(k) => {
                 let (name, size) = &self.part_sizes[k];
@@ -940,17 +1000,20 @@ impl World {
         }
         self.apply_broadphase()
     }
-    /// doWorldStep's updateBroadphase (00ba9096) for the loose Parts in
-    /// SimulateStage, in entry order.
+    /// doWorldStep's updateBroadphase (00ba9096) for the loose assemblies in
+    /// SimulateStage, in entry order, each Part in the assembly's order
+    /// (root first; the native primitive order is not recovered).
     fn broadphase_loose(&mut self) -> Result<(), String> {
         for index in self.loose.simulating().to_vec() {
-            let Some(&id) = self.broadphase.loose_ids.get(index) else {
-                continue;
-            };
-            let part = &self.loose.parts[index];
-            let extents = block_extents(&part.body.frame, part.size);
-            self.broadphase.update(id, extents, self.steps);
-            self.apply_broadphase()?;
+            for prim in self.loose.parts[index].prims.clone() {
+                let Some(&id) = self.broadphase.loose_ids.get(prim) else {
+                    continue;
+                };
+                let frame = self.loose.prim_frame(prim)?;
+                let extents = block_extents(&frame, self.loose.prims[prim].size);
+                self.broadphase.update(id, extents, self.steps);
+                self.apply_broadphase()?;
+            }
         }
         Ok(())
     }
@@ -1166,7 +1229,15 @@ impl World {
     /// World::wakeAssembly 00ba7fb0 (not recursive) for a Humanoid floor.
     pub fn wake_floor(&mut self, part: FloorPart) -> Result<(), String> {
         match part {
-            FloorPart::Loose(index) => self.loose.wake_assembly(index),
+            FloorPart::Loose(index) => {
+                let assembly = self
+                    .loose
+                    .prims
+                    .get(index)
+                    .ok_or("missing loose floor")?
+                    .assembly;
+                self.loose.wake_assembly(assembly)
+            }
             // Anchored assemblies are not in SleepStage.
             FloorPart::Static(_) | FloorPart::Fixture => Ok(()),
         }

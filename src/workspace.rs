@@ -11,6 +11,7 @@
 //!   009703f0, GetPrimaryCFrame 0096e468 and SetPrimaryPartCFrame 0096e582
 //!   (character placement).
 use crate::{
+    joints::{self, JointTree, TreePart},
     rig::{compose, inverse},
     scene::{CoordinateFrame, Part},
 };
@@ -115,9 +116,24 @@ impl PartInstance {
     }
 }
 
+/// A rigid JointInstance (Weld, ManualWeld or Snap): Part0, Part1, C0, C1.
+/// The joint holds Part0.CFrame * C0 = Part1.CFrame * C1.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointInstance {
+    pub name: String,
+    /// `joints::WELD`, `joints::MANUAL_WELD` or `joints::SNAP`.
+    pub kind: u32,
+    /// Indexes into `Workspace::parts`.
+    pub part0: usize,
+    pub part1: usize,
+    pub c0: CoordinateFrame,
+    pub c1: CoordinateFrame,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Workspace {
     pub parts: Vec<PartInstance>,
+    pub joints: Vec<JointInstance>,
 }
 
 impl Workspace {
@@ -137,6 +153,7 @@ impl Workspace {
         baseplate.brick_color = 199;
         Self {
             parts: vec![baseplate],
+            joints: Vec::new(),
         }
     }
     /// Viewport demo place (not a native document): the new-document
@@ -176,6 +193,37 @@ impl Workspace {
             .parts
             .extend([crate_part, rest, stack, drop, tumble]);
         workspace
+    }
+    /// The World's joint spanning tree (`joints.rs`): every Part in
+    /// Workspace order (World::insertPrimitive), then every joint in
+    /// Workspace order (World::insertJoint). The native load interleaves
+    /// them in DataModel order; the spanning tree does not depend on it,
+    /// the Body children order can (not recovered).
+    pub fn joint_tree(&self) -> Result<JointTree, String> {
+        let mut tree = JointTree::new();
+        for part in &self.parts {
+            tree.add_part(TreePart {
+                size: part.size,
+                class: joints::name_class(&part.name),
+                fixed: part.anchored,
+            });
+        }
+        for joint in &self.joints {
+            if !joints::is_rigid(joint.kind) {
+                return Err(format!(
+                    "joint {:?}: only rigid joints are ported",
+                    joint.name
+                ));
+            }
+            tree.add_joint(
+                joint.kind,
+                joint.part0,
+                joint.part1,
+                joint.c0.clone(),
+                joint.c1.clone(),
+            )?;
+        }
+        Ok(tree)
     }
     /// Model extents (009708e0) over the workspace parts.
     pub fn extents(&self) -> Option<([f32; 3], [f32; 3])> {

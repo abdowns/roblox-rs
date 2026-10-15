@@ -39,7 +39,7 @@ constructor creates the next one:
 | GroundStage | 00b0ebc8 | joints.rs (ground joints) |
 | EdgeStage | 00af7aa2 | not ported |
 | ContactStage | 00af33f6 | not ported |
-| TreeStage (SpanningTree) | 00ba2880 | joints.rs (not yet driving the physics) |
+| TreeStage (SpanningTree) | 00ba2880 | joints.rs (rigid assemblies in LooseWorld) |
 | MovingStage | 00b39e70 | not ported |
 | SpatialFilter | 00b78fa8 | part of the broadphase wiring |
 | MechToAssemblyStage | 00b2f0a2 | not ported |
@@ -64,7 +64,8 @@ Left, in order:
 
 1. **Rigid assemblies.** Weld, Snap and ManualWeld joints, the spanning tree
    that turns them into Clumps/Assemblies/Mechanisms, and multi-Part bodies in
-   the kernel.
+   the kernel. Done for joints present at load (`audit-part-weld`); joints
+   made or broken while running are not.
 2. **Kernel joints.** Glue/ManualGlue (breakable), Rotate, RotateP, RotateV
    (hinge and motor surfaces), Motor, DynamicRotate, VelocityMotor, and their
    connectors (JointConnector, RotateConnector, the break connectors).
@@ -79,6 +80,20 @@ Left, in order:
    FallingDown, Ragdoll, GettingUp, Physics, Dead.
 7. **Explosions and touch events.** Explosion, Touched/TouchEnded.
 8. **Throttling.** Environmental throttling and the throttled-step lists.
+
+Open findings:
+
+- **Fast impacts on a high center of mass.** A 4x4x2 block dropped flat at
+  about 46 studs/s, with no welds, leaves its first contact with a sideways
+  velocity of about 12 studs/s and a spin of about 7.7 rad/s, then falls on
+  its side. A 1x4x1 block falling upright from 50 studs is thrown about 10
+  studs sideways. The low 4x1.2x2 blocks of `audit-part-drop` land flat. This
+  looks wrong for a symmetric drop, so the contact impulse path (a936d0 and
+  the corner connectors) has to be re-checked against the binary. Not yet
+  investigated.
+- **Character contact velocity.** The character's springs read its SimBody's
+  center-of-mass state. Natively a929f6 reads the Torso's and Head's Body PV.
+  The results agree up to float rounding, but they are not bit-identical.
 
 After step 2 (places): terrain (smooth terrain voxels, water buoyancy),
 MeshPart and Union collisions (Bullet), the PGS solver and the Constraint

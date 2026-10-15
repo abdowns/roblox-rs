@@ -280,9 +280,9 @@ pub(crate) fn sync_loose(
     mut control: ResMut<MotionControl>,
 ) {
     for (local, index, mut draw) in &mut draws {
-        match control.walking.world.loose.parts.get(index.0) {
-            Some(part) => *draw = pose_draw(&local.0, &part.body.frame),
-            None => control.error = Some("drawn loose Part lost its body".into()),
+        match control.walking.world.loose.prim_frame(index.0) {
+            Ok(frame) => *draw = pose_draw(&local.0, &frame),
+            Err(_) => control.error = Some("drawn loose Part lost its body".into()),
         }
     }
 }

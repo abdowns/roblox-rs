@@ -1,5 +1,47 @@
 # MODLOG
 
+## 2026-10-15 Welded Parts in the physics
+
+**Changed:**
+- `LooseWorld` separates Parts from assemblies:
+  - `prims` (`LoosePrim`): one per Part, with its block, materials and Body
+    link;
+  - `parts` (`LoosePart`): one per assembly, with the SimBody, kernel lists
+    and sleep state;
+  - new `add_prim`, `add_assembly`, `prim_frame` and `prim_pv`.
+  `add_part` keeps its signature and makes a one-Part assembly.
+- A Part's pose and velocity follow its Body (updatePV 00a8eabe). Contact
+  springs read the Body PV (a929f6), as does SleepStage's fast-contact test
+  (00b7361a).
+- `Workspace::joints` (`JointInstance`) and `Workspace::joint_tree`;
+  `JointTree::body_frames`. `World::in_workspace` builds assemblies from the
+  tree, and grounded ones become static blocks.
+- Broadphase pairs are refused inside one assembly (per-primitive group).
+- Humanoid floor rays, floor mass, floor push and floor wake use the Part's
+  assembly.
+- New `audit-part-weld`.
+
+**Why:** Roadmap physics item 1, part B: the joint tree now drives the
+simulation.
+
+**Tested how:**
+- `audit-part-weld` passes. Its three scenes:
+  - an L-shape whose misplaced Arm snaps to the weld, falls, lands flat and
+    sleeps;
+  - a Part welded under an anchored block, plus one welded under it, both of
+    which stay put;
+  - a plank with a weight that tips and rests.
+- The 17 audits used as a baseline give byte-identical output before and
+  after, apart from timings and log paths.
+- 89 unit tests pass; clippy and fmt are clean.
+
+**Result:** Works for joints present at load. **Failure recorded:** dropped
+from 6 studs, the L-shape bounces sideways and lands on its side. A single
+4x4x2 block (no welds) does the same, so the cause is in the existing
+single-Part contact path, not the welds. It is logged as an open finding in
+ROADMAP.md, and the audit drops the L-shape from 2 studs. Native parity is
+**not tested**.
+
 ## 2026-10-15 Joint spanning tree (GroundStage and TreeStage)
 
 **Changed:**

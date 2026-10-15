@@ -123,7 +123,9 @@ pub struct ContactVelocity {
     pub normal_component: [f32; 3],
     pub tangent_component: [f32; 3],
 }
-fn point_velocity(body: &ContactBodyState, point: [f32; 3]) -> [f32; 3] {
+/// The velocity of a point moving with the body: (w x r) + v, as a929f6
+/// and Body::updatePV 00a8eabe compile it.
+pub(crate) fn point_velocity(body: &ContactBodyState, point: [f32; 3]) -> [f32; 3] {
     let r: [f32; 3] = std::array::from_fn(|a| point[a] - body.center[a]);
     let w = body.angular_velocity;
     [

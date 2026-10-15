@@ -31,6 +31,8 @@ immediately. Torso and Head collide with anchored Parts (`audit-part-wall`).
 Unanchored Parts fall, land, stack and come to rest in the simulation
 (`audit-part-drop`), the character pushes them (`audit-part-push`) and stands
 on them (`audit-part-stand`), and still Parts fall asleep (SleepStage).
+Welded Parts move as one assembly (`audit-part-weld`; the demo place has no
+welds).
 Contacts come from the native broadphase (`audit-broadphase`). Not ported
 yet: outlines and the Studio camera.
 Manual keys are **not tested**.

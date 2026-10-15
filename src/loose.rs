@@ -45,7 +45,8 @@ use crate::{
         Block, BlockBlockContact, BlockTables, ContactEvent, ContactPoint, extents_overlap,
     },
     bundle::Bundle,
-    collision::ContactBodyState,
+    collision::{ContactBodyState, point_velocity},
+    g3d,
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile},
     legacy_contact::{AwakeContact, ContactGeometry, ImpulseInput, ImpulseProfile},
     material::{MaterialProfile, PhysicalProperties, Shape},
@@ -116,16 +117,19 @@ impl StepProfile {
     }
 }
 
-/// An unanchored Part: its own single-Part assembly and SimBody.
+/// An unanchored assembly: Parts joined by rigid joints sharing one SimBody
+/// (the root Body's). A Part with no joints is its own assembly.
 #[derive(Clone, Debug)]
 pub struct LoosePart {
+    /// The root Part's name.
     pub name: String,
-    pub size: [f32; 3],
+    /// The root Body's SimBody: frame is the root Part's, center the
+    /// assembly's center of mass.
     pub body: KernelBody,
     pub list: BodyList,
-    can_collide: bool,
-    properties: PhysicalProperties,
-    stiffness: f32,
+    /// The assembly's Parts (`LooseWorld::prims`), root first, then the Body
+    /// tree breadth first.
+    pub prims: Vec<usize>,
     /// SimBody +0x110 total, +0x11c realtime, +0x120 joint, +0x128 contact
     /// connector counts.
     total: u32,
@@ -142,13 +146,30 @@ pub struct LoosePart {
     /// Assembly +0x68 / +0x6c: recursive wake pass id and depth.
     pass: u32,
     depth: i32,
+}
+
+/// An unanchored Part (Primitive) of a loose assembly.
+#[derive(Clone, Debug)]
+pub struct LoosePrim {
+    pub name: String,
+    pub size: [f32; 3],
+    /// Its assembly in `LooseWorld::parts`.
+    pub assembly: usize,
+    /// The parent Body's Part and the rigid offset in it (coordInParent,
+    /// 00a8fdca); None for the assembly's root.
+    pub parent: Option<(usize, CoordinateFrame)>,
+    /// The Part's CFrame when it was added (the root's starts the SimBody).
+    frame: CoordinateFrame,
+    can_collide: bool,
+    properties: PhysicalProperties,
+    stiffness: f32,
     /// RunningBase friction factor when the Part is a Humanoid floor.
     floor_friction: f32,
     /// Part.Transparency.
     transparency: f32,
 }
 
-impl LoosePart {
+impl LoosePrim {
     /// Part.CanCollide (Primitive +0xcc is its negation).
     pub fn can_collide(&self) -> bool {
         self.can_collide
@@ -159,6 +180,27 @@ impl LoosePart {
     }
     pub fn transparency(&self) -> f32 {
         self.transparency
+    }
+}
+
+/// A Body's PV (Body +0xb4 rotation, +0xd8 position, +0xe4 velocity,
+/// +0xf0 angular velocity): the root's is published from the SimBody
+/// (00ab13e8), a child's follows its parent (Body::updatePV 00a8eabe).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BodyPv {
+    pub frame: CoordinateFrame,
+    pub velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+}
+
+impl BodyPv {
+    /// The Body as a contact body (a929f6 reads the PV of each side).
+    pub fn contact_state(&self) -> ContactBodyState {
+        ContactBodyState {
+            center: self.frame.position,
+            velocity: self.velocity,
+            angular_velocity: self.angular_velocity,
+        }
     }
 }
 
@@ -262,7 +304,10 @@ pub struct StepStats {
 }
 
 pub struct LooseWorld {
+    /// The assemblies.
     pub parts: Vec<LoosePart>,
+    /// The Parts, in the order they were added.
+    pub prims: Vec<LoosePrim>,
     original: Vec<LoosePart>,
     /// Material defaults and stiffness of each static block.
     statics: Vec<(PhysicalProperties, f32)>,
@@ -390,6 +435,7 @@ impl LooseWorld {
     pub fn new(bundle: &Bundle) -> Result<Self, String> {
         Ok(Self {
             parts: Vec::new(),
+            prims: Vec::new(),
             original: Vec::new(),
             statics: Vec::new(),
             static_blocks: Vec::new(),
@@ -434,54 +480,186 @@ impl LooseWorld {
     pub fn add_collider(&mut self, properties: PhysicalProperties, stiffness: f32) {
         self.colliders.push((properties, stiffness));
     }
-    /// Add an unanchored Part at rest. SleepStage::onAssemblyAdded 00b73820
-    /// makes it WAKE_PENDING with a fresh history; the first wakePending
-    /// pass enters it into the kernel, where 00a9be30 files it under
-    /// freeFallBodies (no connectors yet).
+    /// Add an unanchored Part at rest as its own assembly (`add_prim`, then
+    /// `add_assembly` with no links).
     pub fn add_part(
         &mut self,
         part: &PartInstance,
         materials: &MaterialProfile,
         kernel: &KernelProfile,
     ) -> Result<(), String> {
+        let prim = self.add_prim(part, materials)?;
+        self.add_assembly(prim, &[], kernel)?;
+        Ok(())
+    }
+    /// Add an unanchored Part, not yet in an assembly. Returns its index in
+    /// `prims`.
+    pub fn add_prim(
+        &mut self,
+        part: &PartInstance,
+        materials: &MaterialProfile,
+    ) -> Result<usize, String> {
         let properties = materials.defaults(part.material)?;
-        let mass = (part.size[0] * part.size[1]) * part.size[2] * properties.density;
-        let inertia = self.mass.block_inertia(part.size, mass)?;
-        let assembly = AssemblyProperties::combine(
-            &MassPart {
-                name: part.name.clone(),
-                frame: part.frame.clone(),
-                mass,
-                inertia,
-            },
-            &[],
-        )?;
-        let state = FreeFallBody::new(part.frame.clone(), [0.0; 3], [0.0; 3])?;
-        // A single-Part assembly: the root primitive is the Part itself.
-        let radius = sleep::primitive_radius(part.frame.position, part.frame.position, part.size);
-        self.parts.push(LoosePart {
+        self.prims.push(LoosePrim {
             name: part.name.clone(),
             size: part.size,
-            body: KernelBody::new(&assembly, &state, kernel)?,
-            list: BodyList::FreeFall,
+            assembly: usize::MAX,
+            parent: None,
+            frame: part.frame.clone(),
             can_collide: part.can_collide,
             properties,
             stiffness: materials.stiffness(part.size, Shape::Block)?,
+            floor_friction: materials.floor_friction(&properties)?,
+            transparency: part.transparency,
+        });
+        Ok(self.prims.len() - 1)
+    }
+    /// Join added Parts into an assembly at rest: `root` keeps its CFrame and
+    /// each link (child, parent, offset) makes the child's Body a child of
+    /// the parent's, parents before children and each Body's children in
+    /// IndexArray order (TreeStage, `joints.rs`). The child Parts move to
+    /// parent x offset (Body::updatePV 00a8eabe). The SimBody takes the
+    /// root Body's branch mass, center and inertia (Cofm 00a90502 over the
+    /// Body tree) and the assembly radius is the largest primitive radius
+    /// about the root (00ad853c). SleepStage::onAssemblyAdded 00b73820 makes
+    /// the assembly WAKE_PENDING with a fresh history; the first wakePending
+    /// pass enters it into the kernel, where 00a9be30 files it under
+    /// freeFallBodies (no connectors yet). Returns its index in `parts`.
+    pub fn add_assembly(
+        &mut self,
+        root: usize,
+        links: &[(usize, usize, CoordinateFrame)],
+        kernel: &KernelProfile,
+    ) -> Result<usize, String> {
+        let index = self.parts.len();
+        let mut members = vec![root];
+        members.extend(links.iter().map(|l| l.0));
+        for &m in &members {
+            let prim = self.prims.get(m).ok_or("missing assembly Part")?;
+            if prim.assembly != usize::MAX {
+                return Err("Part already in an assembly".into());
+            }
+        }
+        if (1..members.len()).any(|i| members[..i].contains(&members[i])) {
+            return Err("Part linked twice".into());
+        }
+        for (child, parent, offset) in links {
+            if !members.contains(parent)
+                || members.iter().position(|m| m == parent)
+                    >= members.iter().position(|m| m == child)
+            {
+                return Err("Body link before its parent".into());
+            }
+            self.prims[*child].parent = Some((*parent, offset.clone()));
+        }
+        for &m in &members {
+            self.prims[m].assembly = index;
+        }
+        let root_frame = self.prims[root].frame.clone();
+        let mut frames = BTreeMap::new();
+        frames.insert(root, root_frame.clone());
+        for (child, parent, offset) in links {
+            let frame = g3d::frame_multiply(&frames[parent], offset);
+            frames.insert(*child, frame);
+        }
+        fn branch(
+            world: &LooseWorld,
+            n: usize,
+            links: &[(usize, usize, CoordinateFrame)],
+            frames: &BTreeMap<usize, CoordinateFrame>,
+        ) -> Result<AssemblyProperties, String> {
+            let prim = &world.prims[n];
+            let size = prim.size;
+            let mass = (size[0] * size[1]) * size[2] * prim.properties.density;
+            let children = links
+                .iter()
+                .filter(|l| l.1 == n)
+                .map(|l| branch(world, l.0, links, frames))
+                .collect::<Result<Vec<_>, _>>()?;
+            AssemblyProperties::combine(
+                &MassPart {
+                    name: prim.name.clone(),
+                    frame: frames[&n].clone(),
+                    mass,
+                    inertia: world.mass.block_inertia(size, mass)?,
+                },
+                &children,
+            )
+        }
+        let assembly = branch(self, root, links, &frames)?;
+        let state = FreeFallBody::new(root_frame.clone(), [0.0; 3], [0.0; 3])?;
+        let radius = members
+            .iter()
+            .map(|m| {
+                sleep::primitive_radius(
+                    frames[m].position,
+                    root_frame.position,
+                    self.prims[*m].size,
+                )
+            })
+            .fold(0.0f32, f32::max);
+        self.parts.push(LoosePart {
+            name: self.prims[root].name.clone(),
+            body: KernelBody::new(&assembly, &state, kernel)?,
+            list: BodyList::FreeFall,
+            prims: members,
             total: 0,
             real_time: 0,
             joint: 0,
             contact: 0,
             in_kernel: false,
             sleep: AssemblyState::WakePending,
-            history: MotionHistory::new(sleep::sample(&part.frame, radius)),
+            history: MotionHistory::new(sleep::sample(&root_frame, radius)),
             radius,
             pass: 0,
             depth: -1,
-            floor_friction: materials.floor_friction(&properties)?,
-            transparency: part.transparency,
         });
         self.original = self.parts.clone();
-        Ok(())
+        Ok(index)
+    }
+    /// A Part's Body PV: the root's from its SimBody (00ab13e8), a child's
+    /// from its parent's (Body::updatePV 00a8eabe): parent x offset, and the
+    /// parent's velocity at the child's origin.
+    pub fn prim_pv(&self, prim: usize) -> Result<BodyPv, String> {
+        let p = self.prims.get(prim).ok_or("missing loose Part")?;
+        let assembly = self
+            .parts
+            .get(p.assembly)
+            .ok_or("Part outside an assembly")?;
+        match &p.parent {
+            None => {
+                let state = assembly.body.body_state();
+                Ok(BodyPv {
+                    frame: state.frame,
+                    velocity: state.velocity,
+                    angular_velocity: state.angular_velocity,
+                })
+            }
+            Some((parent, offset)) => {
+                let parent = self.prim_pv(*parent)?;
+                let frame = g3d::frame_multiply(&parent.frame, offset);
+                let velocity = point_velocity(&parent.contact_state(), frame.position);
+                Ok(BodyPv {
+                    frame,
+                    velocity,
+                    angular_velocity: parent.angular_velocity,
+                })
+            }
+        }
+    }
+    /// A Part's CFrame (its Body's PV position).
+    pub fn prim_frame(&self, prim: usize) -> Result<CoordinateFrame, String> {
+        let p = self.prims.get(prim).ok_or("missing loose Part")?;
+        match &p.parent {
+            None => Ok(self
+                .parts
+                .get(p.assembly)
+                .ok_or("Part outside an assembly")?
+                .body
+                .frame
+                .clone()),
+            Some((parent, offset)) => Ok(g3d::frame_multiply(&self.prim_frame(*parent)?, offset)),
+        }
     }
     /// Back to the parts as added, with no contacts.
     pub fn reset(&mut self) {
@@ -513,10 +691,10 @@ impl LooseWorld {
     pub fn simulating(&self) -> &[usize] {
         &self.simulating
     }
+    /// Every Part's name and CFrame (Parts already in an assembly).
     pub fn frames(&self) -> Vec<(String, CoordinateFrame)> {
-        self.parts
-            .iter()
-            .map(|p| (p.name.clone(), p.body.frame.clone()))
+        (0..self.prims.len())
+            .filter_map(|i| Some((self.prims[i].name.clone(), self.prim_frame(i).ok()?)))
             .collect()
     }
     pub fn connector_count(&self) -> usize {
@@ -591,13 +769,10 @@ impl LooseWorld {
                 .get(i)
                 .ok_or("missing character collider")?
                 .clone(),
-            Prim::Loose(i) => {
-                let p = self.parts.get(i).ok_or("missing loose part")?;
-                Block {
-                    frame: p.body.frame.clone(),
-                    size: p.size,
-                }
-            }
+            Prim::Loose(i) => Block {
+                frame: self.prim_frame(i)?,
+                size: self.prims[i].size,
+            },
             Prim::Static(i) => {
                 let s = statics.get(i).ok_or("missing static block")?;
                 Block {
@@ -609,7 +784,7 @@ impl LooseWorld {
     }
     fn pair_parameters(&self, a: Prim, b: Prim, materials: &MaterialProfile) -> ContactParameters {
         let props = |p: Prim| match p {
-            Prim::Loose(i) => (self.parts[i].properties, self.parts[i].stiffness),
+            Prim::Loose(i) => (self.prims[i].properties, self.prims[i].stiffness),
             Prim::Static(i) => self.statics[i],
             Prim::Character(i) => self.colliders[i],
         };
@@ -617,13 +792,15 @@ impl LooseWorld {
         let (pb, sb) = props(b);
         materials.contact_params(&pa, sa, &pb, sb).parameters()
     }
-    /// The kernel loose bodies of a connector between throttling bodies,
-    /// sleeping Parts and static blocks, as a92c26 picks them: (A, B, flip
-    /// normal); a primitive outside the kernel is fixed. None for a
-    /// connector touching the character or with no kernel body.
+    /// The kernel loose bodies (assemblies) of a connector between
+    /// throttling bodies, sleeping Parts and static blocks, as a92c26 picks
+    /// them: (A, B, flip normal); a primitive outside the kernel is fixed.
+    /// None for a connector touching the character or with no kernel body.
     fn bodies(&self, first: Prim, second: Prim) -> Option<(usize, Option<usize>, bool)> {
         let kernel = |p: Prim| match p {
-            Prim::Loose(i) if self.parts[i].in_kernel => Some(i),
+            Prim::Loose(i) if self.parts[self.prims[i].assembly].in_kernel => {
+                Some(self.prims[i].assembly)
+            }
             _ => None,
         };
         if matches!(first, Prim::Character(_)) || matches!(second, Prim::Character(_)) {
@@ -636,7 +813,8 @@ impl LooseWorld {
             (None, None) => None,
         }
     }
-    /// A primitive outside the kernel as a fixed contact body.
+    /// A primitive outside the kernel as a fixed contact body (a sleeping
+    /// assembly's velocity is zero).
     fn fixed_state(
         &self,
         prim: Prim,
@@ -644,7 +822,7 @@ impl LooseWorld {
     ) -> Result<ContactBodyState, String> {
         let center = match prim {
             Prim::Static(s) => statics.get(s).ok_or("missing static block")?.frame.position,
-            Prim::Loose(i) => self.parts.get(i).ok_or("missing loose part")?.body.center,
+            Prim::Loose(i) => self.prim_frame(i)?.position,
             Prim::Character(_) => return Err("the character is never a fixed body".into()),
         };
         Ok(ContactBodyState {
@@ -653,11 +831,12 @@ impl LooseWorld {
             angular_velocity: [0.0; 3],
         })
     }
-    fn loose_of(prims: (Prim, Prim)) -> Vec<usize> {
+    /// The assemblies of a pair's loose Parts.
+    fn loose_of(&self, prims: (Prim, Prim)) -> Vec<usize> {
         [prims.0, prims.1]
             .iter()
             .filter_map(|p| match p {
-                Prim::Loose(i) => Some(*i),
+                Prim::Loose(i) => Some(self.prims[*i].assembly),
                 _ => None,
             })
             .collect()
@@ -690,7 +869,8 @@ impl LooseWorld {
         id: u64,
         prims: (Prim, Prim),
     ) -> Result<(Option<ConnectorList>, Vec<usize>), String> {
-        let loose: Vec<usize> = Self::loose_of(prims)
+        let loose: Vec<usize> = self
+            .loose_of(prims)
             .into_iter()
             .filter(|i| self.parts[*i].in_kernel)
             .collect();
@@ -773,15 +953,15 @@ impl LooseWorld {
             return Err("static block materials out of step".into());
         }
         let mut keys = Vec::new();
-        for i in 0..self.parts.len() {
-            if !self.parts[i].can_collide {
+        for i in 0..self.prims.len() {
+            if !self.prims[i].can_collide {
                 continue;
             }
             for j in 0..statics.len() {
                 keys.push((Prim::Loose(i), Prim::Static(j)));
             }
-            for k in i + 1..self.parts.len() {
-                if self.parts[k].can_collide {
+            for k in i + 1..self.prims.len() {
+                if self.prims[k].can_collide && self.prims[k].assembly != self.prims[i].assembly {
                     keys.push((Prim::Loose(i), Prim::Loose(k)));
                 }
             }
@@ -817,8 +997,8 @@ impl LooseWorld {
             return Err("character collider materials out of step".into());
         }
         for (c, collider) in colliders.iter().enumerate() {
-            for i in 0..self.parts.len() {
-                if !self.parts[i].can_collide {
+            for i in 0..self.prims.len() {
+                if !self.prims[i].can_collide {
                     continue;
                 }
                 let key = (Prim::Character(c), Prim::Loose(i));
@@ -913,7 +1093,7 @@ impl LooseWorld {
             return Err("missing character collider".into());
         }
         let _ = materials;
-        for i in 0..self.parts.len() {
+        for i in 0..self.prims.len() {
             let forward = (Prim::Character(collider), Prim::Loose(i));
             let backward = (Prim::Loose(i), Prim::Character(collider));
             let (key, flipped) = if self.pairs.contains_key(&forward) {
@@ -1144,13 +1324,10 @@ impl LooseWorld {
     /// The block of a primitive for a substep spring.
     fn substep_block(&self, prim: Prim, characters: &[Block]) -> Result<Block, String> {
         Ok(match prim {
-            Prim::Loose(i) => {
-                let p = self.parts.get(i).ok_or("missing loose part")?;
-                Block {
-                    frame: p.body.frame.clone(),
-                    size: p.size,
-                }
-            }
+            Prim::Loose(i) => Block {
+                frame: self.prim_frame(i)?,
+                size: self.prims[i].size,
+            },
             Prim::Static(i) => self
                 .static_blocks
                 .get(i)
@@ -1222,12 +1399,14 @@ impl LooseWorld {
         for at in 0..self.real_time_connectors.len() {
             let id = self.real_time_connectors[at];
             let prims = self.prims_of(id)?;
-            let (loose, character_first) = match prims {
+            let (prim, character_first) = match prims {
                 (Prim::Character(_), Prim::Loose(i)) => (i, true),
                 (Prim::Loose(i), Prim::Character(_)) => (i, false),
                 _ => return Err("unexpected realtime connector".into()),
             };
-            let part = self.parts[loose].body.contact_state();
+            // a929f6 reads the Part's Body PV.
+            let part = self.prim_pv(prim)?.contact_state();
+            let loose = self.prims[prim].assembly;
             let own = character.contact_state();
             let (a, b) = if character_first {
                 (&own, &part)
@@ -1271,7 +1450,7 @@ impl LooseWorld {
                             .frame
                             .position
                     }
-                    Prim::Loose(i) => self.parts.get(i).ok_or("missing loose part")?.body.center,
+                    Prim::Loose(i) => self.prim_frame(i)?.position,
                     Prim::Character(_) => return Err("unexpected joint connector".into()),
                 };
                 Ok(ContactBodyState {
@@ -1281,10 +1460,20 @@ impl LooseWorld {
                 })
             };
             // A is a kernel body; B is the other loose body or the block.
-            let state_a = self.parts[a].body.contact_state();
+            // a929f6 reads each side's Body PV.
+            let (prim_a, prim_b) = if flip {
+                (prims.1, prims.0)
+            } else {
+                (prims.0, prims.1)
+            };
+            let pv = |p: Prim| match p {
+                Prim::Loose(i) => Ok(self.prim_pv(i)?.contact_state()),
+                _ => Err("joint connector body is not a loose Part".to_string()),
+            };
+            let state_a = pv(prim_a)?;
             let state_b = match b {
-                Some(b) => self.parts[b].body.contact_state(),
-                None => fixed(if flip { prims.0 } else { prims.1 })?,
+                Some(_) => pv(prim_b)?,
+                None => fixed(prim_b)?,
             };
             let (force, g) = self.spring(id, &[], flip, &state_a, &state_b, kernel)?;
             let (pa, pb) = two_mut(&mut self.parts, a, b)?;
@@ -1427,9 +1616,10 @@ impl LooseWorld {
         }
         Ok(())
     }
-    fn node(prim: Prim) -> Option<Node> {
+    /// The primitive's assembly.
+    fn node(&self, prim: Prim) -> Option<Node> {
         match prim {
-            Prim::Loose(i) => Some(Node::Loose(i)),
+            Prim::Loose(i) => Some(Node::Loose(self.prims[i].assembly)),
             Prim::Character(_) => Some(Node::Character),
             Prim::Static(_) => None,
         }
@@ -1463,16 +1653,16 @@ impl LooseWorld {
             .iter()
             .filter(|(key, pair)| {
                 pair.edge.is_some()
-                    && (Self::node(key.0) == Some(node) || Self::node(key.1) == Some(node))
+                    && (self.node(key.0) == Some(node) || self.node(key.1) == Some(node))
             })
             .map(|(key, _)| *key)
             .collect()
     }
-    fn other(key: (Prim, Prim), node: Node) -> Option<Node> {
-        if Self::node(key.0) == Some(node) {
-            Self::node(key.1)
+    fn other(&self, key: (Prim, Prim), node: Node) -> Option<Node> {
+        if self.node(key.0) == Some(node) {
+            self.node(key.1)
         } else {
-            Self::node(key.0)
+            self.node(key.0)
         }
     }
     /// 00b72d00: the contact touches (CONTACTING or CONTACTING_SLEEPING).
@@ -1506,7 +1696,7 @@ impl LooseWorld {
     /// 00b73544 / 00b735ae over both primitives' assemblies.
     fn wake_both(&mut self, key: (Prim, Prim)) -> Result<(), String> {
         for prim in [key.0, key.1] {
-            if let Some(node) = Self::node(prim) {
+            if let Some(node) = self.node(prim) {
                 self.wake(node)?;
             }
         }
@@ -1521,14 +1711,16 @@ impl LooseWorld {
         self.wake(Node::Loose(index))
     }
     /// 00b7361a: either primitive's assembly moves faster than 1 stud/s or
-    /// spins faster than 1 stud/s at its radius.
+    /// spins faster than 1 stud/s at its radius (the root primitive's PV,
+    /// 00ad8aee -> 00b63daa).
     fn fast(&self, key: (Prim, Prim)) -> bool {
         [key.0, key.1].into_iter().any(|prim| {
             let (v, w, r) = match prim {
                 Prim::Static(_) => return false,
                 Prim::Loose(i) => {
-                    let p = &self.parts[i];
-                    (p.body.velocity, p.body.angular_velocity, p.radius)
+                    let p = &self.parts[self.prims[i].assembly];
+                    let pv = p.body.body_state();
+                    (pv.velocity, pv.angular_velocity, p.radius)
                 }
                 Prim::Character(_) => match &self.character.motion {
                     Some(m) => (m.velocity, m.angular_velocity, m.radius),
@@ -1564,7 +1756,7 @@ impl LooseWorld {
         if new == EdgeState::Contacting && current == EdgeState::Stepping {
             if self.fast(key) {
                 for prim in [key.0, key.1] {
-                    if let Some(node) = Self::node(prim) {
+                    if let Some(node) = self.node(prim) {
                         self.wake_recursive(node)?;
                     }
                 }
@@ -1593,16 +1785,17 @@ impl LooseWorld {
         }
         Ok(())
     }
-    /// Re-bind the connectors of every contact of a Part whose SimBody
+    /// Re-bind the connectors of every contact of an assembly whose SimBody
     /// enters or leaves the kernel. The native re-insert of live connectors
     /// is not recovered: they are deleted, and Contact::step regenerates
     /// them for touching contacts.
     fn drop_part_connectors(&mut self, index: usize) -> Result<(), String> {
+        let node = Some(Node::Loose(index));
         let keys: Vec<(Prim, Prim)> = self
             .pairs
             .iter()
             .filter(|(k, p)| {
-                (k.0 == Prim::Loose(index) || k.1 == Prim::Loose(index))
+                (self.node(k.0) == node || self.node(k.1) == node)
                     && !p.contact.connectors().is_empty()
             })
             .map(|(k, _)| *k)
@@ -1670,7 +1863,7 @@ impl LooseWorld {
             if !self.touching_edge(key) {
                 continue;
             }
-            let Some(other) = Self::other(key, node) else {
+            let Some(other) = self.other(key, node) else {
                 continue;
             };
             if self.state(Some(other)) == AssemblyState::Awake && self.in_stage(other) {
@@ -1813,7 +2006,7 @@ impl LooseWorld {
             if !self.touching_edge(key) {
                 continue;
             }
-            let Some(other) = Self::other(key, node) else {
+            let Some(other) = self.other(key, node) else {
                 continue;
             };
             if depth < max_depth {
@@ -1852,7 +2045,7 @@ impl LooseWorld {
     ) -> Result<bool, String> {
         let edge = self.pairs.get(&key).and_then(|p| p.edge);
         let kernel_body = |p: Prim| match p {
-            Prim::Loose(i) => self.parts[i].in_kernel,
+            Prim::Loose(i) => self.parts[self.prims[i].assembly].in_kernel,
             Prim::Character(_) => self.character.in_stage,
             Prim::Static(_) => false,
         };
@@ -1891,7 +2084,7 @@ impl LooseWorld {
                 )
             };
             let awake_side =
-                awake(self.state(Self::node(key.0))) || awake(self.state(Self::node(key.1)));
+                awake(self.state(self.node(key.0))) || awake(self.state(self.node(key.1)));
             let colliding = self.step_contact(key, colliders, statics, tables, materials)?;
             let current = self.pairs[&key].edge.ok_or("contact outside SleepStage")?;
             // Both primitives collide (pairs exist only for CanCollide

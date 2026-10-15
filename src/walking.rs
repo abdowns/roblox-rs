@@ -926,6 +926,272 @@ pub fn audit_part_drop(bundle: &Bundle) -> Result<String, String> {
     Ok(report)
 }
 
+/// Welded Parts in the kernel (`joints.rs` assemblies, one SimBody each):
+/// - "Base" (4 x 1.2 x 2) with "Arm" (1 x 4 x 1) welded upright on its +x
+///   end, the Arm placed 50 studs away: the weld puts it back (the child
+///   Body's pose is parent x C0 x C1^-1), then the pair falls 1.4 studs and
+///   lands flat. (From higher up the impact flips it: the single-Part
+///   solver does the same to a tall block, see docs/ROADMAP.md.)
+/// - "Hung" welded under the anchored "Holder", half a stud off the weld's
+///   pose, and "Chain" welded under Hung: Hung gets its own AnchorJoint
+///   (GroundStage 00b0f7ac) and keeps its CFrame; Chain hangs from Hung's
+///   Body. Both are grounded and never move.
+/// - "Plank" (6 x 1 x 2) with "Weight" (2 x 2 x 2) welded under its -x end,
+///   dropped so the child Part lands first and the plank tips onto its
+///   other end.
+pub fn audit_part_weld(bundle: &Bundle) -> Result<String, String> {
+    use crate::joints::WELD;
+    use crate::workspace::{JointInstance, PartInstance};
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    let at = |position: [f32; 3]| CoordinateFrame {
+        position,
+        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    };
+    fn add(
+        workspace: &mut Workspace,
+        name: &str,
+        size: [f32; 3],
+        frame: CoordinateFrame,
+        anchored: bool,
+    ) -> usize {
+        let mut part = PartInstance {
+            name: name.into(),
+            anchored,
+            frame,
+            ..Default::default()
+        };
+        part.set_size(size);
+        workspace.parts.push(part);
+        workspace.parts.len() - 1
+    }
+    let weld = |workspace: &mut Workspace, part0: usize, part1: usize, c0: [f32; 3]| {
+        workspace.joints.push(JointInstance {
+            name: "Weld".into(),
+            kind: WELD,
+            part0,
+            part1,
+            c0: at(c0),
+            c1: at([0.0; 3]),
+        });
+    };
+    let base = add(
+        &mut workspace,
+        "Base",
+        [4.0, 1.2, 2.0],
+        at([20.0, 2.0, 0.0]),
+        false,
+    );
+    let arm = add(
+        &mut workspace,
+        "Arm",
+        [1.0, 4.0, 1.0],
+        at([50.0, 50.0, 50.0]),
+        false,
+    );
+    weld(&mut workspace, base, arm, [1.5, 2.6, 0.0]);
+    let holder = add(
+        &mut workspace,
+        "Holder",
+        [2.0, 2.0, 2.0],
+        at([-20.0, 10.0, 0.0]),
+        true,
+    );
+    let hung = add(
+        &mut workspace,
+        "Hung",
+        [2.0, 2.0, 2.0],
+        at([-20.0, 7.5, 0.0]),
+        false,
+    );
+    let chain = add(
+        &mut workspace,
+        "Chain",
+        [2.0, 2.0, 2.0],
+        at([0.0; 3]),
+        false,
+    );
+    weld(&mut workspace, holder, hung, [0.0, -2.0, 0.0]);
+    weld(&mut workspace, hung, chain, [0.0, -2.0, 0.0]);
+    // 15 degrees about Z: the -x end (the Weight) is lowest.
+    let (sz, cz) = 15f32.to_radians().sin_cos();
+    let tilted = CoordinateFrame {
+        position: [0.0, 10.0, 20.0],
+        rotation: [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]],
+    };
+    let plank = add(&mut workspace, "Plank", [6.0, 1.0, 2.0], tilted, false);
+    let weight = add(
+        &mut workspace,
+        "Weight",
+        [2.0, 2.0, 2.0],
+        at([0.0; 3]),
+        false,
+    );
+    weld(&mut workspace, plank, weight, [-2.0, -1.5, 0.0]);
+    let names: Vec<&str> = workspace.parts.iter().map(|p| p.name.as_str()).collect();
+    let tree = workspace.joint_tree()?;
+    let mut report = tree.describe(&names);
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let prim = |fixture: &WalkingFixture, name: &str| {
+        fixture
+            .world
+            .loose
+            .prims
+            .iter()
+            .position(|p| p.name == name)
+            .ok_or(format!("{name} is not a loose Part"))
+    };
+    let statics: Vec<&str> = fixture
+        .world
+        .statics
+        .blocks
+        .iter()
+        .map(|b| b.name.as_str())
+        .collect();
+    writeln!(report, "part_weld_statics {statics:?}").unwrap();
+    let loose = &fixture.world.loose;
+    for part in &loose.parts {
+        let names: Vec<&str> = part
+            .prims
+            .iter()
+            .map(|&i| loose.prims[i].name.as_str())
+            .collect();
+        let offset: [f32; 3] =
+            std::array::from_fn(|a| part.body.center[a] - part.body.frame.position[a]);
+        writeln!(
+            report,
+            "part_weld_assembly root={} prims={names:?} mass={} center_offset={offset:?}",
+            part.name,
+            1.0 / part.body.inverse_mass(),
+        )
+        .unwrap();
+    }
+    let frame_of = |fixture: &WalkingFixture, name: &str| -> Result<CoordinateFrame, String> {
+        fixture.world.loose.prim_frame(prim(fixture, name)?)
+    };
+    let snapped = frame_of(&fixture, "Arm")?.position;
+    writeln!(report, "part_weld_snap arm={snapped:?}").unwrap();
+    let frames = |fixture: &WalkingFixture| -> String {
+        fixture
+            .world
+            .loose
+            .frames()
+            .iter()
+            .map(|(n, f)| format!("{n}={:?}", f.position))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut first_contact: Vec<Option<u32>> = vec![None; fixture.world.loose.parts.len()];
+    for step in 0..1440u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        let loose = &fixture.world.loose;
+        for (i, p) in loose.parts.iter().enumerate() {
+            if first_contact[i].is_none() && p.list != crate::loose::BodyList::FreeFall {
+                first_contact[i] = Some(step + 1);
+                writeln!(
+                    report,
+                    "part_weld_first_contact assembly={} step={} {} {}",
+                    p.name,
+                    step + 1,
+                    frames(&fixture),
+                    loose.report()
+                )
+                .unwrap();
+            }
+        }
+        if (step + 1) % 240 == 0 {
+            writeln!(
+                report,
+                "part_weld_state step={} {} {}",
+                step + 1,
+                frames(&fixture),
+                loose.report()
+            )
+            .unwrap();
+        }
+    }
+    let loose = &fixture.world.loose;
+    let speed = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    // The lowest corner of each Part (penetration into the Baseplate top).
+    let lowest = |i: usize| -> Result<f32, String> {
+        let f = loose.prim_frame(i)?;
+        let h = loose.prims[i].size.map(|v| v * 0.5);
+        Ok(f.position[1] - (0..3).map(|k| (f.rotation[1][k] * h[k]).abs()).sum::<f32>())
+    };
+    let lows = (0..loose.prims.len())
+        .map(|i| Ok((loose.prims[i].name.clone(), lowest(i)?)))
+        .collect::<Result<Vec<_>, String>>()?;
+    let base_frame = frame_of(&fixture, "Base")?;
+    let arm_frame = frame_of(&fixture, "Arm")?;
+    let arm_local: [f32; 3] = std::array::from_fn(|c| {
+        (0..3)
+            .map(|r| base_frame.rotation[r][c] * (arm_frame.position[r] - base_frame.position[r]))
+            .sum()
+    });
+    writeln!(
+        report,
+        "part_weld_result first_contact={first_contact:?} lowest={lows:?} arm_in_base={arm_local:?} speeds={:?} spins={:?}",
+        loose.parts.iter().map(|p| speed(p.body.velocity)).collect::<Vec<_>>(),
+        loose.parts.iter().map(|p| speed(p.body.angular_velocity)).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    writeln!(report, "{}", sleep_summary("part_weld_sleep", loose)).unwrap();
+    let hung_block = fixture
+        .world
+        .statics
+        .blocks
+        .iter()
+        .find(|b| b.name == "Hung")
+        .ok_or("Hung is not a static block")?;
+    let chain_block = fixture
+        .world
+        .statics
+        .blocks
+        .iter()
+        .find(|b| b.name == "Chain")
+        .ok_or("Chain is not a static block")?;
+    let near = |a: [f32; 3], b: [f32; 3], e: f32| (0..3).all(|k| (a[k] - b[k]).abs() <= e);
+    let checks = [
+        ("assemblies", loose.parts.len() == 2),
+        ("snapped", near(snapped, [21.5, 4.6, 0.0], 1e-5)),
+        (
+            "base_flat",
+            (base_frame.position[1] - 0.6).abs() < 0.05 && base_frame.rotation[1][1] > 0.999,
+        ),
+        ("arm_kept", near(arm_local, [1.5, 2.6, 0.0], 1e-4)),
+        ("hung_kept", hung_block.frame.position == [-20.0, 7.5, 0.0]),
+        (
+            "chain_hangs",
+            chain_block.frame.position == [-20.0, 5.5, 0.0],
+        ),
+        ("above_floor", lows.iter().all(|(_, y)| *y > -0.15)),
+        (
+            "rested",
+            loose.parts.iter().all(|p| speed(p.body.velocity) < 0.05),
+        ),
+        (
+            "asleep",
+            loose
+                .parts
+                .iter()
+                .all(|p| p.sleep.sleeping() && !p.in_kernel),
+        ),
+        ("plank_tipped", lowest(prim(&fixture, "Plank")?)? < 0.1),
+    ];
+    let failed: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
+    if !failed.is_empty() {
+        return Err(format!("part weld failed {failed:?}\n{report}"));
+    }
+    let _ = (weight, chain, arm);
+    writeln!(report, "part_weld_pass assemblies=2 snapped=true landed=true grounded_static=2 rested=true asleep=true native_differential=not_tested").unwrap();
+    Ok(report)
+}
+
 /// The character walks -Z into an unanchored 4 x 6 x 2 "Crate" resting on
 /// the Baseplate (its +Z face at z = -7, tall enough to meet the Head, whose
 /// touch test ends RunningNoPhysics).
@@ -1048,8 +1314,8 @@ pub fn audit_part_push(bundle: &Bundle) -> Result<String, String> {
     // PopperCam's ray (World::camera_raycast) sees the loose Crate: a ray
     // from 10 studs behind its centre stops on its +z face. The static-only
     // query passes through it.
-    let part = &fixture.world.loose.parts[0];
-    let centre = part.body.frame.position;
+    let centre = fixture.world.loose.parts[0].body.frame.position;
+    let part = &fixture.world.loose.prims[0];
     let from = [centre[0], centre[1], centre[2] + 10.0];
     let camera = fixture.world.camera_raycast(from, [0.0, 0.0, -1.0], 20.0);
     let statics = fixture.world.statics.raycast(from, [0.0, 0.0, -1.0], 20.0);
@@ -1654,18 +1920,14 @@ pub fn audit_broadphase(bundle: &Bundle) -> Result<String, String> {
     let prims = &world.broadphase.prims;
     let collides = |p: BroadPrim| match p {
         BroadPrim::Static(_) => true,
-        BroadPrim::Loose(i) => world.loose.parts[i].can_collide(),
+        BroadPrim::Loose(i) => world.loose.prims[i].can_collide(),
         BroadPrim::Character(_) => ["Torso", "Head"].contains(&world.broadphase_name(p).as_str()),
     };
     let mut missing = Vec::new();
     let mut inconsistent = Vec::new();
     for a in 0..prims.len() {
         for b in a + 1..prims.len() {
-            let same = matches!(
-                (prims[a], prims[b]),
-                (BroadPrim::Static(_), BroadPrim::Static(_))
-                    | (BroadPrim::Character(_), BroadPrim::Character(_))
-            );
+            let same = world.broadphase.same_assembly(a, b);
             let ea = world.broadphase_extents(&rig, prims[a])?;
             let eb = world.broadphase_extents(&rig, prims[b])?;
             let overlap = (0..3).all(|k| ea.min[k] <= eb.max[k] && eb.min[k] <= ea.max[k]);

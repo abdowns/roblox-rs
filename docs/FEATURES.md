@@ -197,8 +197,7 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   the other way round (0 in the audits). Native parity is **not tested**.
 
 - Joint spanning tree (`joints.rs`): which Part is an assembly's root and
-  how welded, snapped and motor-jointed Parts hang from it. Not yet connected
-  to the physics (the next step). Run
+  how welded, snapped and motor-jointed Parts hang from it. Run
   `sh tools/cargo.sh run --locked -- audit-joints`. Expect:
   - the R6 character from the shipped rig: `HumanoidRootPart priority=2001`
     hangs from the ground (`tree_joint_kind=Some(20)`, a FreeJoint), the
@@ -215,6 +214,29 @@ output to expect. Anything not covered by an audit is marked **not tested**.
 
   Assumed: GUID order is Part creation order and address ties follow joint
   creation order. Native parity is **not tested**.
+
+- Welded Parts in the physics: Workspace Weld/ManualWeld/Snap joints
+  (`Workspace::joints`) group unanchored Parts into one assembly with one
+  SimBody (mass, center and inertia over the Body tree). Each Part keeps its
+  own block for contacts and follows its parent Body. Assemblies tied to an
+  anchored Part never move and become static blocks. Run
+  `sh tools/cargo.sh run --locked -- audit-part-weld`. Expect:
+  - the tree lines (`joint_tree_part name=Arm ... body_parent=Base ...`,
+    `name=Hung ... tree_joint_kind=Some(0) ... grounded=true`), then
+    `part_weld_statics ["Baseplate", "Holder", "Hung", "Chain"]`;
+  - `part_weld_assembly root=Base prims=["Base", "Arm"] mass=9.52` and
+    `root=Plank prims=["Plank", "Weight"] mass=13.999999`;
+  - `part_weld_snap arm=[21.5, 4.6, 0.0]` (the Arm, placed 50 studs away,
+    sits where the weld puts it);
+  - `part_weld_result ... arm_in_base=[1.5000002, 2.5999997, 2.2351742e-8]`
+    with every Part's lowest corner above -0.02 and zero speeds;
+  - `part_weld_pass assemblies=2 snapped=true landed=true grounded_static=2 rested=true asleep=true native_differential=not_tested`.
+
+  Not ported: motors and kernel joints in the Body tree, breaking joints, and
+  joints made or removed while running. A fast impact on a Part whose center
+  of mass sits high above the contact gives it a large sideways kick; this
+  also happens to a single tall block (see the roadmap). Native parity is
+  **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,

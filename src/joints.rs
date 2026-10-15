@@ -669,7 +669,8 @@ impl JointTree {
             }
         }
     }
-    /// The assembly's Parts, depth first through the Body children.
+    /// The assembly's Parts, breadth first through the Body children (each
+    /// Body's children in IndexArray order).
     pub fn assembly_parts(&self, root: usize) -> Vec<usize> {
         let mut out = vec![root];
         let mut i = 0;
@@ -678,6 +679,31 @@ impl JointTree {
             i += 1;
         }
         out
+    }
+    /// Each Part's CFrame as its Body places it (Body::updatePV 00a8eabe
+    /// down the rigid links): an assembly root keeps its own CFrame from
+    /// `frames`, a child is its parent's CFrame times the link offset.
+    pub fn body_frames(&self, frames: &[CoordinateFrame]) -> Result<Vec<CoordinateFrame>, String> {
+        if frames.len() != self.nodes.len() {
+            return Err("one CFrame per Part expected".into());
+        }
+        let mut out: Vec<Option<CoordinateFrame>> = vec![None; frames.len()];
+        for root in (0..self.nodes.len()).filter(|&n| self.nodes[n].body_parent.is_none()) {
+            for n in self.assembly_parts(root) {
+                let frame = match (self.nodes[n].body_parent, &self.nodes[n].link) {
+                    (None, _) => frames[n].clone(),
+                    (Some(parent), Some(Link::Rigid(offset))) => {
+                        let parent = out[parent].as_ref().ok_or("Body child before its parent")?;
+                        g3d::frame_multiply(parent, offset)
+                    }
+                    _ => return Err("motor links need the motor angle".into()),
+                };
+                out[n] = Some(frame);
+            }
+        }
+        out.into_iter()
+            .map(|f| f.ok_or_else(|| "Part outside the Body tree".to_string()))
+            .collect()
     }
     /// One line per Part: tree joint, Body parent and offset.
     pub fn describe(&self, names: &[&str]) -> String {
@@ -869,6 +895,22 @@ mod tests {
         assert_eq!(tree.joint_kind(free), Some(FREE));
         assert_eq!(tree.joint_kind(tree.tree_joint(small).unwrap()), Some(WELD));
         assert!(!tree.grounded(small));
+    }
+
+    #[test]
+    fn body_frames_place_children_by_the_weld() {
+        let mut tree = JointTree::new();
+        let small = tree.add_part(part([1.0, 1.0, 1.0]));
+        let large = tree.add_part(part([4.0, 1.0, 4.0]));
+        tree.add_joint(WELD, large, small, at(0.0, 1.0, 0.0), IDENTITY)
+            .unwrap();
+        // The child's own CFrame is ignored: it hangs from the root's Body.
+        let frames = tree
+            .body_frames(&[at(50.0, 50.0, 50.0), at(2.0, 3.0, 4.0)])
+            .unwrap();
+        assert_eq!(frames[large], at(2.0, 3.0, 4.0));
+        assert_eq!(frames[small], at(2.0, 4.0, 4.0));
+        assert!(tree.body_frames(&[IDENTITY]).is_err());
     }
 
     #[test]

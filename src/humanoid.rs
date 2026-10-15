@@ -399,13 +399,9 @@ impl Humanoid {
         else {
             return Ok(([0.0; 3], [0.0; 3]));
         };
-        let pv = world
-            .loose
-            .parts
-            .get(index)
-            .ok_or("missing loose floor")?
-            .body
-            .body_state();
+        // The floor Part's Body PV (Primitive::getPV, a child Body's from
+        // updatePV 00a8eabe).
+        let pv = world.loose.prim_pv(index)?;
         let scale = 1.0f32 - 1.0 / 100_000_000.0f32;
         let p = pv.frame.position;
         let r: [f32; 3] = std::array::from_fn(|a| touch[a] - p[a]);

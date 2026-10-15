@@ -1291,6 +1291,31 @@ detaches the Body. Body children are an IndexArray: appended, with the last
 child moved into a removed child's slot (IndexedTree::setParent 00675752).
 Kernel joints (6 to 19) and ground joints start a new assembly.
 
+**Assemblies in the physics.** `World::in_workspace` builds the tree from
+`Workspace::joints` (every Part, then every joint, in Workspace order) and
+places each Part where its Body puts it (`JointTree::body_frames`). Parts of a
+grounded assembly become static blocks. `LooseWorld` splits what was one
+record per Part:
+- `prims` (`LoosePrim`): one per Part, with its block, materials and its
+  Body's parent and offset. Contacts, the broadphase and the Humanoid floor
+  rays work on these (`Prim::Loose` and `FloorPart::Loose` index them).
+- `parts` (`LoosePart`): one per assembly, with the SimBody (`KernelBody`),
+  the kernel lists and the SleepStage state (`Node::Loose` indexes them).
+  `add_assembly` takes the root Part and the Body links. Mass, center and
+  inertia come from Cofm 00a90502 over the Body tree, and the radius is the
+  largest primitive radius (00ad853c).
+
+A Part's pose and velocity are its Body's PV. The root's PV is published
+from the SimBody (00ab13e8). A child's PV is its parent's frame times the
+offset, with the parent's velocity taken at the child's origin
+(Body::updatePV 00a8eabe, whose add order matches `g3d::frame_multiply`).
+The contact spring reads each side's Body PV (a929f6). The impulse solver
+reads the SimBody's center-of-mass state for kernel bodies and the Body PV
+for a fixed one (a92dd6). Forces and impulses go to the SimBody at the
+contact point. For a single block, the Body origin and the center of mass are
+bit-identical, so single-Part worlds run exactly as before. The broadphase
+refuses pairs inside one assembly (00ae9612) through a per-primitive group.
+
 `audit-joints` checks the tree on the shipped R6 rig: HumanoidRootPart is the
 root and the Body child order matches the order `AssemblyProperties::from_rig`
 uses. Not modelled: real addresses. GUIDs follow Part creation order, address
