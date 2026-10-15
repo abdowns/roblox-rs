@@ -80,8 +80,8 @@ Left, in order:
    face geometry the surface joints need.
 3. **Shapes.** Ball (BallBall/BallBlock contacts), Cylinder, Wedge and
    CornerWedge (PolyContact), TrussPart, and the legacy ramp/prism/pyramid
-   Parts. Done: Ball Parts, loose and anchored (`ball_contact.rs`,
-   `audit-part-ball`). Left: Ball rendering, then the Poly geometries
+   Parts. Done: Ball Parts, loose and anchored, and against the character
+   (`ball_contact.rs`, `audit-part-ball`, `audit-part-ball-push`). Left: Ball rendering, then the Poly geometries
    (Cylinder, WedgePoly, CornerWedgePoly) and PolyPolyContact, which also
    serves Block against Poly.
 4. **Body movers.** BodyPosition, BodyGyro, BodyVelocity,

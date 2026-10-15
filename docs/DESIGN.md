@@ -1089,6 +1089,9 @@ In the world (`audit-part-ball`):
   floor mass. World's character/static contacts use `PrimContact` too.
   For a static Ball, the Torso/Head touch test runs the BallBlock test (00ae2aec)
   rather than the block overlap stand-in.
+- **The character.** Its colliders meet a Ball through BallBlock contacts:
+  realtime connectors for a loose Ball, character/static contacts for an
+  anchored one (`audit-part-ball-push`).
 - **Ray test.** The Humanoid ray query tests a loose Ball with Ball +0x70
   (00adc17c). That is G3D collisionTimeForMovingPointFixedSphere (0124e2c8),
   not solid, in part space against a sphere at the origin; a hit is a time

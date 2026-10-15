@@ -2314,6 +2314,131 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
     Ok(report)
 }
 
+/// The character against Ball Parts:
+/// - it walks 3 s along -Z into "Boulder", a loose ball of diameter 4 on its
+///   path. The ball stays below the Head, so the Torso's touch ends
+///   RunningNoPhysics; realtime BallBlock connectors between the Torso and
+///   the ball then push it along -Z;
+/// - in a second world it walks into "Post", an anchored ball of diameter 4
+///   (the character/static BallBlock contacts) and cannot pass through it.
+pub fn audit_part_ball_push(bundle: &Bundle) -> Result<String, String> {
+    use crate::workspace::{PartInstance, SHAPE_BALL};
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let ball = |name: &str, anchored: bool| {
+        let mut part = PartInstance {
+            name: name.into(),
+            anchored,
+            ..Default::default()
+        };
+        part.set_shape(SHAPE_BALL);
+        part.set_size([4.0; 3]);
+        part.frame.position = [0.0, 2.0, -8.0];
+        part
+    };
+    let mut report = String::new();
+    // The loose ball.
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    workspace.parts.push(ball("Boulder", false));
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    for _ in 0..720u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+    }
+    let settled = fixture.world.loose.parts[0].body.frame.position;
+    let mut first_contact = None;
+    let mut most = 0;
+    for step in 0..720u32 {
+        fixture.step_animated(&mut rig, [0.0, 0.0, -1.0])?;
+        let touching = fixture.world.loose.character_connector_count();
+        most = most.max(touching);
+        if touching > 0 && first_contact.is_none() {
+            first_contact = Some(step + 1);
+            writeln!(
+                report,
+                "part_ball_push_first_contact step={} root={:?} contacts={}",
+                step + 1,
+                fixture.world.body.frame.position,
+                fixture.world.loose.contact_report()
+            )
+            .unwrap();
+        }
+    }
+    let boulder = &fixture.world.loose.parts[0];
+    let moved: [f32; 3] = std::array::from_fn(|a| boulder.body.frame.position[a] - settled[a]);
+    writeln!(
+        report,
+        "part_ball_push_result first_contact_step={first_contact:?} max_character_connectors={most} settled={settled:?} boulder_moved={moved:?} boulder_velocity={:?} root={:?} upright_y={} max_penetration={} state={:?}",
+        boulder.body.velocity,
+        fixture.world.body.frame.position,
+        fixture.world.body.frame.rotation[1][1],
+        fixture.world.max_penetration,
+        fixture.state_type()
+    )
+    .unwrap();
+    let kicked = first_contact.is_some()
+        && moved[2] < -2.0
+        && moved[1].abs() < 0.1
+        && fixture.world.max_penetration < 0.5
+        && fixture.world.body.frame.rotation[1][1] > 0.99
+        && (settled[1] - 2.0).abs() < 0.05;
+    // The anchored ball.
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    workspace.parts.push(ball("Post", true));
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    for _ in 0..720u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+    }
+    let mut kinds = Vec::new();
+    let mut closest = f32::INFINITY;
+    for _ in 0..720u32 {
+        fixture.step_animated(&mut rig, [0.0, 0.0, -1.0])?;
+        for kind in fixture.world.block_contact_kinds() {
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+        let root = fixture.world.body.frame.position;
+        closest = closest.min((root[0] * root[0] + (root[2] + 8.0) * (root[2] + 8.0)).sqrt());
+    }
+    writeln!(
+        report,
+        "part_ball_post_result kinds={kinds:?} closest_root_distance={closest} root={:?} upright_y={} max_penetration={} state={:?}",
+        fixture.world.body.frame.position,
+        fixture.world.body.frame.rotation[1][1],
+        fixture.world.max_penetration,
+        fixture.state_type()
+    )
+    .unwrap();
+    // The Torso's bottom front edge (0.5 ahead of the root, 1 below it)
+    // meets the ball 0.2 above its center: with the edge p deep, the root is
+    // sqrt((2 - p)^2 - 0.04) + 0.5 from the ball's axis, above 1.98 while
+    // p < 0.5.
+    use crate::block_contact::PairKind;
+    let blocked = kinds.iter().any(|k| {
+        matches!(
+            k,
+            PairKind::BallPlane | PairKind::BallEdge | PairKind::BallVertex
+        )
+    }) && closest > 1.98
+        && fixture.world.max_penetration < 0.5;
+    if !(kicked && blocked) {
+        return Err(format!(
+            "part ball push failed kicked={kicked} blocked={blocked}\n{report}"
+        ));
+    }
+    writeln!(
+        report,
+        "part_ball_push_pass kicked=true blocked=true native_differential=not_tested"
+    )
+    .unwrap();
+    Ok(report)
+}
+
 /// The character walks -Z into an unanchored 4 x 6 x 2 "Crate" resting on
 /// the Baseplate (its +Z face at z = -7, tall enough to meet the Torso and
 /// Head, whose touch test ends RunningNoPhysics).

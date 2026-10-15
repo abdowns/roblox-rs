@@ -1,5 +1,38 @@
 # MODLOG
 
+## 2026-10-15 The character against Ball Parts
+
+**Changed:**
+- New `audit-part-ball-push` (`walking::audit_part_ball_push`), registered
+  in main.rs. The character walks 3 s along -Z into:
+  - "Boulder", a loose ball 4 studs across;
+  - in a second world, "Post", an anchored ball of the same size.
+- It checks:
+  - the Boulder is pushed more than 2 studs and stays on the ground;
+  - the Post shows a Ball contact kind and keeps the root outside the ball;
+  - penetration stays under 0.5 and the character stays upright.
+
+**Why:** "The character against a Ball" was the open gap in the Ball
+entries. Writing this audit found the RunningNoPhysics touch bug fixed in
+the previous commit.
+
+**Tested how:** `sh tools/cargo.sh test --locked` (107 pass), clippy clean,
+all 24 audits against the previous outputs.
+
+**Result:**
+- At step 89 the Torso's bottom front edge meets the Boulder (a BallEdge
+  connector, 0.23 deep: the Torso moved in kinematically first). That ends
+  RunningNoPhysics.
+- The character pushes the ball 39.4 studs, which keeps rolling at
+  15.9 studs/s, just under the walk speed.
+- The Post stops the character with BallEdge contacts at a root distance of
+  2.23, the Torso edge 0.25 deep. An anchored 4x4x4 block reaches the same
+  depth (tried during development; not part of the audit).
+- First draft: the Post check required a root distance above 2.3. That was
+  my own estimate and ignored the ~0.25 contact depth. It is now derived
+  from the geometry (above 1.98 while the depth is under 0.5).
+- Native parity is **not tested**.
+
 ## 2026-10-15 RunningNoPhysics ends on a Torso touch
 
 **Changed:**

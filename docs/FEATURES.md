@@ -341,9 +341,22 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   between steps 300 and 900 (exponential decay at about 0.29/s). The kernel's
   angular damping (0.9998 per pre-step and per impulse) explains only part of
   that. Whether native balls slow the same way is **not tested**. Not
-  tested: the character against an anchored or loose Ball. Not ported:
-  Cylinders (refused), Ball rendering (drawn as blocks), Balls in the
+  ported: Cylinders (refused), Ball rendering (drawn as blocks), Balls in the
   character. Native parity is **not tested**.
+
+- The character against Ball Parts. A ball 4 studs across stays below the
+  Head, so the Torso's touch ends RunningNoPhysics. Run
+  `sh tools/cargo.sh run --locked -- audit-part-ball-push`. Expect:
+  - `part_ball_push_first_contact step=89 root=[..., 3.2054923, -5.7723727] contacts=[Boulder/static0 BallPlane length=-0.003461957][Boulder/collider1 BallEdge length=-0.23461568]`:
+    the Torso's bottom front edge meets the loose Boulder (it went about
+    0.23 deep while still kinematic);
+  - `part_ball_push_result ... boulder_moved=[-0.106956504, -0.00883019, -39.435963] boulder_velocity=[..., ..., -15.936434] root=[0.009192032, 3.1812725, -44.956074] upright_y=0.9999999 max_penetration=0.24823523 state=Running`:
+    the character pushes the ball ahead of it at walking speed;
+  - `part_ball_post_result kinds=[BallEdge] closest_root_distance=2.232411 ... state=Running`:
+    an anchored ball stops the character, the Torso edge 0.25 deep;
+  - `part_ball_push_pass kicked=true blocked=true native_differential=not_tested`.
+
+  Native parity is **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,
