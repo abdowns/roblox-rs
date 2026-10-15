@@ -12,6 +12,7 @@
 //!   (character placement).
 use crate::{
     joints::{self, JointTree, TreePart},
+    kernel_joint::SurfaceInput,
     rig::{compose, inverse},
     scene::{CoordinateFrame, Part},
 };
@@ -53,6 +54,9 @@ pub struct PartInstance {
     pub friction: f32,
     pub elasticity: f32,
     pub surfaces: [u32; 6],
+    /// Primitive +0xd8 by NormalId: each face's InputType, ParamA and
+    /// ParamB (a motor hinge's axle reads its own).
+    pub surface_inputs: [SurfaceInput; 6],
 }
 
 impl Default for PartInstance {
@@ -80,6 +84,7 @@ impl Default for PartInstance {
             friction: 0.3,
             elasticity: 0.5,
             surfaces,
+            surface_inputs: [SurfaceInput::default(); 6],
         }
     }
 }
@@ -118,12 +123,13 @@ impl PartInstance {
 
 /// A JointInstance: Part0, Part1, C0, C1. A rigid joint (Weld, ManualWeld,
 /// Snap) holds Part0.CFrame * C0 = Part1.CFrame * C1; a Glue pulls the
-/// corners of its face in C0 toward the same corners in C1.
+/// corners of its face in C0 toward the same corners in C1; a hinge
+/// (Rotate, RotateP, RotateV) holds the two ends of C0's z axis on C1's.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JointInstance {
     pub name: String,
-    /// `joints::WELD`, `joints::MANUAL_WELD`, `joints::SNAP` or
-    /// `joints::GLUE`.
+    /// `joints::WELD`, `joints::MANUAL_WELD`, `joints::SNAP`, `joints::GLUE`,
+    /// `joints::ROTATE`, `joints::ROTATE_P` or `joints::ROTATE_V`.
     pub kind: u32,
     /// Indexes into `Workspace::parts`.
     pub part0: usize,
@@ -134,6 +140,9 @@ pub struct JointInstance {
     /// frame; zero for the other kinds (the GlueJoint ctor 00b0ce2c zeroes
     /// it).
     pub face: [[f32; 3]; 4],
+    /// RotateP / RotateV BaseAngle (DynamicRotateJoint +0xd8, getter
+    /// 0092b260); 0 for the others.
+    pub base_angle: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -215,9 +224,15 @@ impl Workspace {
             });
         }
         for joint in &self.joints {
-            if !joints::is_rigid(joint.kind) && joint.kind != joints::GLUE {
+            let kernel = [
+                joints::GLUE,
+                joints::ROTATE,
+                joints::ROTATE_P,
+                joints::ROTATE_V,
+            ];
+            if !joints::is_rigid(joint.kind) && !kernel.contains(&joint.kind) {
                 return Err(format!(
-                    "joint {:?}: only rigid joints and Glue are ported",
+                    "joint {:?}: only rigid joints, Glue and the hinges are ported",
                     joint.name
                 ));
             }

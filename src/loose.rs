@@ -33,15 +33,22 @@
 //!   leaves the kernel; waking zeroes velocity and impulses and restarts
 //!   the history countdown; AWAKE enters the kernel.
 //!
-//! Kernel joints (`kernel_joint.rs`, Glue for now) are SleepStage joint
-//! edges: onEdgeAdded 00b73cfe makes them AWAKE at once, which puts them in
+//! Kernel joints (`kernel_joint.rs`: Glue, Rotate, RotateP, RotateV) are
+//! SleepStage joint edges: onEdgeAdded 00b73cfe makes them AWAKE at once, which puts them in
 //! the kernel (00b7339e -> downstream onEdgeAdded); waking an assembly wakes
 //! its SLEEPING joints (00b72b82); a joint always counts as touching
 //! (00b72d00); at the end of each step a joint whose two assemblies are
 //! neither awake nor waking goes to SLEEPING and leaves the kernel
 //! (00b713bc); removing a SLEEPING joint wakes both sides (00b73f08).
 //! World::uiStep's breakJoints (00ba9032) removes an in-kernel joint whose
-//! connectors broke (World::onJointBroken 00baa94e).
+//! connectors broke (World::onJointBroken 00baa94e). Then
+//! MovingAssemblyStage::stepUi (00b39318) runs the motor hinges' stepUi
+//! (00b6bd86), which wakes both assemblies recursively (00ba7fb0 ->
+//! 00b737c4) while the motor value is not 0; that wake also sets SleepStage
+//! +0x16c, so the next recursive pass walks through awake assemblies too
+//! (00b7228e) until it ends (00b71f08 clears it). StepJointsStage::stepWorld
+//! (00b8a402), between SleepStage::step and Kernel::step, gives each motor
+//! hinge in the kernel its target or velocity.
 //!
 //! The contact pairs follow the broadphase (`broadphase.rs`,
 //! SpatialHashMultiRes, kept by `World`): `contact_created` and
@@ -58,7 +65,10 @@ use crate::{
     collision::{ContactBodyState, point_velocity},
     g3d,
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile},
-    kernel_joint::{self, BreakConnector, BreakTest, JointBody, KernelPoint},
+    kernel_joint::{
+        self, BreakConnector, BreakTest, GLUE, JointBody, KernelPoint, ROTATE, ROTATE_P, ROTATE_V,
+        RotateConnector, SurfaceInput,
+    },
     legacy_contact::{AwakeContact, ContactGeometry, ImpulseInput, ImpulseProfile},
     material::{MaterialProfile, PhysicalProperties, Shape},
     native_data::NativeImage,
@@ -262,20 +272,43 @@ pub enum JointEdge {
     Sleeping = 2,
 }
 
-/// A kernel joint (a GlueJoint) between two Bodies.
+/// A kernel joint (a GlueJoint or a RotateJoint) between two Bodies.
 #[derive(Clone, Debug)]
 pub struct KernelJoint {
     pub name: String,
+    /// Joint::JointType: `kernel_joint::GLUE`, `ROTATE`, `ROTATE_P` or
+    /// `ROTATE_V`.
+    pub kind: u32,
     /// Part0's and Part1's Bodies.
     pub bodies: [JointBody; 2],
     /// C0 and C1.
     coords: [CoordinateFrame; 2],
-    /// F0..F3 (GlueJoint +0xd0).
+    /// F0..F3 (GlueJoint +0xd0); zero for the hinges.
     face: [[f32; 3]; 4],
+    /// DynamicRotateJoint +0xd8 (BaseAngle); 0 for the others.
+    base_angle: f32,
+    /// The axle's surface input (Part0's face that C0's z axis names), as
+    /// loaded; the motor hinges read it every stepUi (00b6be18).
+    axle: SurfaceInput,
+    /// DynamicRotateJoint +0xe0: the motor value of the last stepUi.
+    pub value: f32,
     /// None once the joint has left SleepStage (it broke).
     pub edge: Option<JointEdge>,
     /// Its break connectors while it is in the kernel (MultiJoint +0xc0).
     connectors: Vec<u64>,
+    /// DynamicRotateJoint +0xdc: its RotateConnector while in the kernel.
+    rotator: Option<u64>,
+}
+
+/// An anchored or grounded Part a kernel joint holds (it never moves).
+#[derive(Clone, Debug)]
+struct FixedBody {
+    frame: CoordinateFrame,
+    /// Primitive +0xb8, the joint stiffness.
+    stiffness: f32,
+    /// The Part's size, which the motor hinges' gain reads (00b6b53c);
+    /// unknown for a Body added by `add_fixed_body`.
+    size: Option<[f32; 3]>,
 }
 
 /// What `reset` restores of the kernel joints.
@@ -284,6 +317,7 @@ struct JointSnapshot {
     joints: Vec<KernelJoint>,
     points: Vec<KernelPoint>,
     connectors: BTreeMap<u64, BreakConnector>,
+    rotators: BTreeMap<u64, RotateConnector>,
     joint_connectors: Vec<u64>,
 }
 
@@ -390,9 +424,8 @@ pub struct LooseWorld {
     /// the kernel, in the order they entered (00b6ee0a pushes at the back;
     /// leaving unlinks).
     simulating: Vec<usize>,
-    /// The anchored (or grounded) Parts kernel joints hold: CFrame and
-    /// joint stiffness (Primitive +0xb8).
-    fixed: Vec<(CoordinateFrame, f32)>,
+    /// The anchored (or grounded) Parts kernel joints hold.
+    fixed: Vec<FixedBody>,
     /// The kernel joints, in creation order (the native awake-joint set
     /// +0x150 is ordered by address; creation order stands in).
     pub joints: Vec<KernelJoint>,
@@ -400,6 +433,11 @@ pub struct LooseWorld {
     points: Vec<KernelPoint>,
     /// The break connectors in the kernel, by connector id.
     breakers: BTreeMap<u64, BreakConnector>,
+    /// The RotateConnectors in the kernel, by connector id.
+    rotators: BTreeMap<u64, RotateConnector>,
+    /// SleepStage +0x16c: set by a recursive wake from stepUi (00b737c4);
+    /// the next recursive pass then walks through awake assemblies as well.
+    wake_through_awake: bool,
     original_joints: JointSnapshot,
     /// Joints that broke: (step, joint).
     pub broken: Vec<(u32, usize)>,
@@ -524,6 +562,8 @@ impl LooseWorld {
             joints: Vec::new(),
             points: Vec::new(),
             breakers: BTreeMap::new(),
+            rotators: BTreeMap::new(),
+            wake_through_awake: false,
             original_joints: JointSnapshot::default(),
             broken: Vec::new(),
         })
@@ -728,7 +768,26 @@ impl LooseWorld {
     /// its CFrame and joint stiffness (Primitive +0xb8, 00b63194). Returns
     /// its index for `JointBody::Fixed`.
     pub fn add_fixed_body(&mut self, frame: CoordinateFrame, stiffness: f32) -> usize {
-        self.fixed.push((frame, stiffness));
+        self.fixed.push(FixedBody {
+            frame,
+            stiffness,
+            size: None,
+        });
+        self.fixed.len() - 1
+    }
+    /// `add_fixed_body` with the Part's size, which a motor hinge on it
+    /// needs.
+    pub fn add_fixed_part(
+        &mut self,
+        frame: CoordinateFrame,
+        size: [f32; 3],
+        stiffness: f32,
+    ) -> usize {
+        self.fixed.push(FixedBody {
+            frame,
+            stiffness,
+            size: Some(size),
+        });
         self.fixed.len() - 1
     }
     /// World::insertJoint for a Glue whose Parts are already in their
@@ -742,33 +801,74 @@ impl LooseWorld {
         coords: [CoordinateFrame; 2],
         face: [[f32; 3]; 4],
     ) -> Result<usize, String> {
-        for body in bodies {
+        self.add_joint(KernelJoint {
+            name: name.into(),
+            kind: GLUE,
+            bodies,
+            coords,
+            face,
+            base_angle: 0.0,
+            axle: SurfaceInput::default(),
+            value: 0.0,
+            edge: Some(JointEdge::Sleeping),
+            connectors: Vec::new(),
+            rotator: None,
+        })
+    }
+    /// `add_glue` for a hinge: `kind` is `ROTATE`, `ROTATE_P` or `ROTATE_V`,
+    /// `base_angle` the joint's BaseAngle and `axle` Part0's surface input
+    /// on the face C0's z axis names (the motor hinges read it).
+    pub fn add_hinge(
+        &mut self,
+        kind: u32,
+        name: &str,
+        bodies: [JointBody; 2],
+        coords: [CoordinateFrame; 2],
+        base_angle: f32,
+        axle: SurfaceInput,
+    ) -> Result<usize, String> {
+        if ![ROTATE, ROTATE_P, ROTATE_V].contains(&kind) {
+            return Err(format!("{name:?}: joint type {kind} is not a hinge"));
+        }
+        self.add_joint(KernelJoint {
+            name: name.into(),
+            kind,
+            bodies,
+            coords,
+            face: [[0.0; 3]; 4],
+            base_angle,
+            axle,
+            value: 0.0,
+            edge: Some(JointEdge::Sleeping),
+            connectors: Vec::new(),
+            rotator: None,
+        })
+    }
+    /// SleepStage::onEdgeAdded for a new kernel joint, which is then kept as
+    /// the state `reset` returns to.
+    fn add_joint(&mut self, joint: KernelJoint) -> Result<usize, String> {
+        let name = &joint.name;
+        for body in joint.bodies {
             let ok = match body {
                 JointBody::Loose(i) => self.prims.get(i).is_some_and(|p| p.assembly != usize::MAX),
                 JointBody::Fixed(k) => k < self.fixed.len(),
             };
             if !ok {
-                return Err(format!("Glue {name:?}: Part outside the kernel bodies"));
+                return Err(format!("joint {name:?}: Part outside the kernel bodies"));
             }
         }
-        if matches!(bodies, [JointBody::Fixed(_), JointBody::Fixed(_)]) {
-            return Err(format!("Glue {name:?}: two anchored Parts is not ported"));
+        if matches!(joint.bodies, [JointBody::Fixed(_), JointBody::Fixed(_)]) {
+            return Err(format!("joint {name:?}: two anchored Parts is not ported"));
         }
         let j = self.joints.len();
-        self.joints.push(KernelJoint {
-            name: name.into(),
-            bodies,
-            coords,
-            face,
-            edge: Some(JointEdge::Sleeping),
-            connectors: Vec::new(),
-        });
+        self.joints.push(joint);
         self.set_joint_edge(j, JointEdge::Awake)?;
         self.original = self.parts.clone();
         self.original_joints = JointSnapshot {
             joints: self.joints.clone(),
             points: self.points.clone(),
             connectors: self.breakers.clone(),
+            rotators: self.rotators.clone(),
             joint_connectors: self.joint_connectors.clone(),
         };
         Ok(j)
@@ -777,14 +877,23 @@ impl LooseWorld {
     fn body_frame(&self, body: JointBody) -> Result<CoordinateFrame, String> {
         match body {
             JointBody::Loose(i) => self.prim_frame(i),
-            JointBody::Fixed(k) => Ok(self.fixed.get(k).ok_or("missing fixed Body")?.0.clone()),
+            JointBody::Fixed(k) => Ok(self.fixed.get(k).ok_or("missing fixed Body")?.frame.clone()),
         }
     }
     /// The Body's joint stiffness (Primitive::getJointK 00b63194).
     fn joint_k(&self, body: JointBody) -> f32 {
         match body {
             JointBody::Loose(i) => self.prims[i].stiffness,
-            JointBody::Fixed(k) => self.fixed[k].1,
+            JointBody::Fixed(k) => self.fixed[k].stiffness,
+        }
+    }
+    /// The Body's Part size.
+    fn body_size(&self, body: JointBody) -> Result<[f32; 3], String> {
+        match body {
+            JointBody::Loose(i) => Ok(self.prims[i].size),
+            JointBody::Fixed(k) => self.fixed[k]
+                .size
+                .ok_or_else(|| "fixed Body added without its size".into()),
         }
     }
     /// The Body's assembly in SleepStage (none for a fixed one).
@@ -800,6 +909,9 @@ impl LooseWorld {
     /// smaller joint stiffness (00b3ed8a), 20 x the face strength
     /// (00b0d5ea) and C0's z axis as the normal (006b79ae).
     fn put_in_kernel(&mut self, j: usize) -> Result<(), String> {
+        if self.joints[j].kind != GLUE {
+            return self.put_hinge_in_kernel(j);
+        }
         let joint = &self.joints[j];
         let bodies = joint.bodies;
         let [c0, c1] = &joint.coords;
@@ -832,11 +944,75 @@ impl LooseWorld {
         self.joints[j].connectors = ids;
         Ok(())
     }
+    /// RotateJoint::putInKernel 00b6b640 (legacy solver): per hinge end, a
+    /// Point on each Body (`kernel_joint::hinge_points` through C0 and C1)
+    /// and a PointToPointBreakConnector between them with the smaller joint
+    /// stiffness that never breaks. RotateP and RotateV then add their
+    /// RotateConnector (DynamicRotateJoint::putInKernel 00b6bb04).
+    fn put_hinge_in_kernel(&mut self, j: usize) -> Result<(), String> {
+        let joint = &self.joints[j];
+        let (kind, bodies, base) = (joint.kind, joint.bodies, joint.base_angle);
+        let coords = joint.coords.clone();
+        let ends0 = kernel_joint::hinge_points(&coords[0]);
+        let ends1 = kernel_joint::hinge_points(&coords[1]);
+        let (k0, k1) = (self.joint_k(bodies[0]), self.joint_k(bodies[1]));
+        let k = if k0 <= k1 { k0 } else { k1 };
+        let mut ids = Vec::with_capacity(2);
+        for end in 0..2 {
+            let p0 = kernel_joint::new_point(&mut self.points, bodies[0], ends0[end]);
+            let p1 = kernel_joint::new_point(&mut self.points, bodies[1], ends1[end]);
+            self.next_id += 1;
+            let id = self.next_id;
+            self.breakers.insert(
+                id,
+                BreakConnector {
+                    points: [p0, p1],
+                    k,
+                    threshold: f32::INFINITY,
+                    test: BreakTest::PointToPoint,
+                    broken: false,
+                },
+            );
+            self.insert_joint_connector(id, bodies)?;
+            ids.push(id);
+        }
+        self.joints[j].connectors = ids;
+        if kind == ROTATE {
+            return Ok(());
+        }
+        // 00b6b53c: each Part's larger size across its joint face (Part1's
+        // face is the opposite of C1's z axis, 006b6bbc), the smaller of the
+        // two, times 0.1.
+        let axis = |c: &CoordinateFrame| {
+            kernel_joint::normal_id([c.rotation[0][2], c.rotation[1][2], c.rotation[2][2]])
+        };
+        let n0 = axis(&coords[0]);
+        let n1 = (axis(&coords[1]) + 3) % 6;
+        let s0 = kernel_joint::cross_size(self.body_size(bodies[0])?, n0);
+        let s1 = kernel_joint::cross_size(self.body_size(bodies[1])?, n1);
+        let size = if s0 <= s1 { s0 } else { s1 };
+        let r0 = self.body_frame(bodies[0])?.rotation;
+        let r1 = self.body_frame(bodies[1])?.rotation;
+        let rotator = RotateConnector::new(bodies, coords, base, k, size * 0.1, [&r0, &r1]);
+        self.next_id += 1;
+        let id = self.next_id;
+        self.rotators.insert(id, rotator);
+        self.insert_joint_connector(id, bodies)?;
+        self.joints[j].rotator = Some(id);
+        Ok(())
+    }
     /// MultiJoint::removeFromKernel 00b3ee8e: each connector leaves the
-    /// kernel, then its two Points are released.
+    /// kernel, then its two Points are released. A motor hinge's
+    /// RotateConnector goes first (00b6bc74).
     fn remove_from_kernel(&mut self, j: usize) -> Result<(), String> {
-        let ids = std::mem::take(&mut self.joints[j].connectors);
         let bodies = self.joints[j].bodies;
+        if let Some(id) = self.joints[j].rotator.take() {
+            self.remove_joint_connector(id, bodies)?;
+            self.rotators
+                .remove(&id)
+                .ok_or("missing rotate connector")?;
+        }
+        let ids = std::mem::take(&mut self.joints[j].connectors);
         for id in ids {
             self.remove_joint_connector(id, bodies)?;
             let c = self.breakers.remove(&id).ok_or("missing break connector")?;
@@ -927,7 +1103,9 @@ impl LooseWorld {
     pub fn break_joints(&mut self) -> Result<usize, String> {
         let mut count = 0;
         for j in 0..self.joints.len() {
-            if self.joints[j].edge != Some(JointEdge::Awake) {
+            // Only Glue is breakable (the Rotate family's isBreakable
+            // 00be5ee0 returns 0).
+            if self.joints[j].edge != Some(JointEdge::Awake) || self.joints[j].kind != GLUE {
                 continue;
             }
             let broken = self.joints[j]
@@ -960,6 +1138,51 @@ impl LooseWorld {
         self.joints[j].edge = None;
         Ok(())
     }
+    /// MovingAssemblyStage::stepUi 00b39318 for the motor hinges
+    /// (DynamicRotateJoint::stepUi 00b6bd86): the motor value is the axle's
+    /// surface input at `time` (Workspace.DistributedGameTime); while it is
+    /// not 0, both assemblies wake recursively (World::wakeAssembly
+    /// 00ba7fb0). Which joints the stage lists is not recovered: every motor
+    /// hinge still in SleepStage steps, asleep or not.
+    pub fn step_ui(&mut self, time: f64) -> Result<(), String> {
+        for j in 0..self.joints.len() {
+            let joint = &mut self.joints[j];
+            if joint.edge.is_none() || !matches!(joint.kind, ROTATE_P | ROTATE_V) {
+                continue;
+            }
+            joint.value = joint.axle.value(time);
+            // NaN wakes too.
+            if joint.value != 0.0 {
+                for body in joint.bodies {
+                    if let Some(Node::Loose(a)) = self.joint_node(body) {
+                        self.wake_assembly_recursive(a)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    /// StepJointsStage::stepWorld 00b8a402 for the motor hinges in the
+    /// kernel, between SleepStage::step and Kernel::step: RotateP sets its
+    /// RotateConnector's target (00b6bf20 -> 00a9159a), RotateV its velocity
+    /// (00b6c11e -> 00a916cc), from the value of the last stepUi.
+    pub fn step_joints(&mut self, kernel: &KernelProfile) -> Result<(), String> {
+        for joint in &self.joints {
+            let Some(id) = joint.rotator else {
+                continue;
+            };
+            let r = self
+                .rotators
+                .get_mut(&id)
+                .ok_or("missing rotate connector")?;
+            match joint.kind {
+                ROTATE_P => r.set_target(joint.value, kernel.physics.kernel_substeps),
+                ROTATE_V => r.set_velocity(joint.value, kernel.physics.kernel_dt),
+                _ => return Err("rotate connector on a joint that is not a motor".into()),
+            }
+        }
+        Ok(())
+    }
     /// Point::step 00aa3156 for every kernel Point (the first thing in each
     /// stepWorld substep).
     pub fn step_points(&mut self) -> Result<(), String> {
@@ -982,6 +1205,12 @@ impl LooseWorld {
             self.parts[assembly].body.apply_force(force, world)?;
         }
         Ok(())
+    }
+    /// A motor hinge's RotateConnector angles, (current, desired) less the
+    /// BaseAngle, while it is in the kernel.
+    pub fn hinge_angle(&self, j: usize) -> Option<(f32, f32)> {
+        let r = self.rotators.get(&self.joints.get(j)?.rotator?)?;
+        Some((r.current, r.desired))
     }
     /// The kernel Points (KernelData +0x50).
     pub fn point_count(&self) -> usize {
@@ -1006,13 +1235,20 @@ impl LooseWorld {
                 })
                 .fold(0.0f32, f32::max);
             out.push_str(&format!(
-                "[{} edge={:?} connectors={} broken={:?} gap={}]",
+                "[{} edge={:?} connectors={} broken={:?} gap={}",
                 joint.name,
                 joint.edge,
                 connectors.len(),
                 connectors.iter().map(|c| c.broken).collect::<Vec<_>>(),
                 gap
             ));
+            if let Some(r) = joint.rotator.and_then(|id| self.rotators.get(&id)) {
+                out.push_str(&format!(
+                    " value={} current={} desired={} increment={}",
+                    joint.value, r.current, r.desired, r.increment
+                ));
+            }
+            out.push(']');
         }
         out
     }
@@ -1035,7 +1271,9 @@ impl LooseWorld {
         self.joints = joints.joints;
         self.points = joints.points;
         self.breakers = joints.connectors;
+        self.rotators = joints.rotators;
         self.joint_connectors = joints.joint_connectors;
+        self.wake_through_awake = false;
         self.broken.clear();
         self.owners.clear();
         self.stats = StepStats::default();
@@ -1794,11 +2032,32 @@ impl LooseWorld {
         Ok(deepest)
     }
     /// jointConnectors in list order: contact springs (a93074) between
-    /// loose Parts and static blocks, and the kernel joints' break
-    /// connectors (computeForce 00a91a12 on the Points).
+    /// loose Parts and static blocks, the kernel joints' break connectors
+    /// (computeForce 00a91948 / 00a91a12 on the Points) and the motor
+    /// hinges' RotateConnectors (00a9178e, torques straight to the bodies).
     pub fn joint_springs(&mut self, kernel: &KernelProfile) -> Result<(), String> {
         for at in 0..self.joint_connectors.len() {
             let id = self.joint_connectors[at];
+            if let Some(r) = self.rotators.get(&id) {
+                // 00a914d6 reads both Bodies' PV rotations (+0xb4); the
+                // torque goes to each side's root SimBody (00a6c134), body
+                // 0 first and negated. A fixed Body never moves.
+                let bodies = r.bodies;
+                let r0 = self.body_frame(bodies[0])?.rotation;
+                let r1 = self.body_frame(bodies[1])?.rotation;
+                let torque = self
+                    .rotators
+                    .get_mut(&id)
+                    .ok_or("missing rotate connector")?
+                    .compute_torque([&r0, &r1]);
+                for (body, t) in [(bodies[0], torque.map(|v| -v)), (bodies[1], torque)] {
+                    if let JointBody::Loose(prim) = body {
+                        let a = self.prims[prim].assembly;
+                        self.parts[a].body.apply_torque(t)?;
+                    }
+                }
+                continue;
+            }
             if let Some(c) = self.breakers.get(&id) {
                 // The normal test reads point 0's Body rotation (+0xb4).
                 let axes = self.body_frame(self.points[c.points[0]].body)?.rotation;
@@ -2084,6 +2343,15 @@ impl LooseWorld {
         let part = self.parts.get_mut(index).ok_or("missing loose part")?;
         part.history.reset_countdown();
         self.wake(Node::Loose(index))
+    }
+    /// World::wakeAssembly 00ba7fb0 -> 00b737c4, recursive: the history
+    /// countdown restarts, SleepStage +0x16c is set, and a sleeping or
+    /// WAKE_PENDING assembly becomes RECURSIVE_WAKE_PENDING (00b735e6).
+    pub fn wake_assembly_recursive(&mut self, index: usize) -> Result<(), String> {
+        let part = self.parts.get_mut(index).ok_or("missing loose part")?;
+        part.history.reset_countdown();
+        self.wake_through_awake = true;
+        self.wake_recursive(Node::Loose(index))
     }
     /// 00b7361a: either primitive's assembly moves faster than 1 stud/s or
     /// spins faster than 1 stud/s at its radius (the root primitive's PV,
@@ -2373,6 +2641,7 @@ impl LooseWorld {
             self.wake_node(node, max_depth, &mut queue)?;
             *self.pass_depth(node).1 = -1;
         }
+        self.wake_through_awake = false;
         Ok(())
     }
     /// 00b7228e.
@@ -2401,9 +2670,10 @@ impl LooseWorld {
             };
             if depth < max_depth {
                 let pass = self.pass;
-                let state = self.state(Some(other));
+                let through =
+                    self.wake_through_awake || self.state(Some(other)) != AssemblyState::Awake;
                 let (p, d) = self.pass_depth(other);
-                if *p != pass && state != AssemblyState::Awake {
+                if *p != pass && through {
                     *p = pass;
                     *d = depth + 1;
                     queue.push_back(other);
@@ -2424,9 +2694,10 @@ impl LooseWorld {
             };
             if depth < max_depth {
                 let pass = self.pass;
-                let state = self.state(Some(other));
+                let through =
+                    self.wake_through_awake || self.state(Some(other)) != AssemblyState::Awake;
                 let (p, d) = self.pass_depth(other);
-                if *p != pass && state != AssemblyState::Awake {
+                if *p != pass && through {
                     *p = pass;
                     *d = depth + 1;
                     queue.push_back(other);

@@ -44,6 +44,8 @@ pub const SNAP: u32 = 3; // JointInstance.cpp:314
 pub const MOTOR: u32 = 4; // MotorJoint 00b3858a
 pub const MOTOR_6D: u32 = 5; // Motor6DJoint 00b379d8
 pub const ROTATE: u32 = 6; // JointInstance.cpp:616
+pub const ROTATE_P: u32 = 7; // RotatePJoint 00b6ca62
+pub const ROTATE_V: u32 = 8; // RotateVJoint 00b6ca6c
 pub const GLUE: u32 = 9; // JointInstance.cpp:577
 pub const FREE: u32 = 20; // FreeJoint 00b0fbf2
 

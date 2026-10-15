@@ -1,5 +1,64 @@
 # MODLOG
 
+## 2026-10-15 Hinges and motor hinges in the kernel
+
+**Changed:**
+- `kernel_joint.rs`:
+  - joint types `ROTATE`, `ROTATE_P`, `ROTATE_V`;
+  - `SurfaceInput` (InputType, ParamA, ParamB; default NoInput, -0.5, 0.5)
+    and its motor value (Constant, Sin);
+  - the angle helpers `wrap_angle` (006af7f9) and `halfway` (006af8f5);
+  - `hinge_points` (C x (0, 0, -1), then (0, 0, 1)) and `cross_size`
+    (00b6b53c);
+  - `RotateConnector`: the angle (00a913ec), `compute_torque` (00a9178e
+    with 00a91724), `set_target` (RotateP, 00a9159a) and `set_velocity`
+    (RotateV, 00a916cc).
+- `LooseWorld`:
+  - `add_hinge`, plus `add_fixed_part`, so a fixed Body knows its size;
+  - `step_ui` (the motor hinges' stepUi), `step_joints` (their stepWorld);
+  - `wake_assembly_recursive` and the SleepStage +0x16c flag: after a
+    recursive wake from stepUi, the next recursive pass also walks through
+    awake neighbours;
+  - `hinge_angle`. `joint_report` adds the motor angles.
+  RotateConnectors sit in jointConnectors after their hinge springs and
+  push torques straight into the root SimBodies. Only Glue is breakable.
+- `KernelJoint` has `kind` and `value`. `JointInstance::base_angle`,
+  `PartInstance::surface_inputs`. `Workspace::joint_tree` accepts the
+  hinges.
+- `World::in_workspace` loads the hinges (with the axle Part's input on the
+  face C0's z axis names). `World::step_ui` runs after breakJoints in
+  uiStep, and both world steps call `step_joints` between SleepStage and
+  Kernel::step.
+- New `audit-part-hinge`.
+
+**Why:** Roadmap physics item 2. The hinge surfaces and the old motors
+(RotateP, RotateV) are how 2016 places build doors, wheels and moving
+parts, and the JointsService surface joints (item 5) create them.
+
+**Tested how:** `sh tools/cargo.sh test --locked` (97 pass; new kernel_joint
+tests for the angle wrap, hinge points, surface inputs and the
+RotateConnector), clippy clean, `audit-part-hinge` twice (identical apart
+from the evidence log path), and the other 20 audits against the outputs of
+the previous commit.
+
+**Result:**
+- audit-part-hinge passes:
+  - the level arm on a Rotate swings down to -3.003 rad, nearly up the
+    other side, and stays aligned with its axis (z alignment 0.9999999);
+  - every hinge point stays within 0.001 studs of its axle;
+  - the hanging flap sleeps at step 119 and its hinge goes SLEEPING;
+  - the RotateV wheel (Constant 0.1) turns at 2.9989 rad/s over the last 2
+    seconds, against 30 x 0.1 = 3 expected;
+  - the RotateP paddle (Sin 0.5, 2) swings between -0.507 and 0.503 rad,
+    at most 0.016 rad off 0.5 sin(2t).
+- Every other audit is unchanged (audit-runtime differs only in timing).
+- Checked against setAssemblyState 00b727c0: a recursive wake sends an
+  AWAKE assembly to RECURSIVE_WAKE_PENDING and back each frame without
+  leaving the kernel, so the wheel's forces are not reset.
+- Not recovered: which joints MovingAssemblyStage lists for stepUi; the port
+  steps every motor hinge still in SleepStage. Whether the native arm,
+  wheel and paddle move the same way is **not tested**.
+
 ## 2026-10-15 Glue joints in the kernel
 
 **Changed:**

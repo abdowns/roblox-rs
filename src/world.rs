@@ -10,9 +10,9 @@ use crate::{
     bundle::Bundle,
     collision::ContactBodyState,
     humanoid_state::{FloorPart, Hit},
-    joints::{GLUE, Link},
+    joints::{GLUE, Link, ROTATE, ROTATE_P, ROTATE_V},
     kernel::{ContactParameters, ContactSpring, KernelBody, KernelProfile, cross},
-    kernel_joint::JointBody,
+    kernel_joint::{self, JointBody},
     legacy_contact::{BlockContactProfile, ContactGeometry, ImpulseProfile},
     loose::{CharacterMotion, LoosePrim, LooseWorld, Prim},
     material::{MaterialProfile, Shape},
@@ -867,10 +867,16 @@ impl World {
                 .loose
                 .add_assembly(prim(root)?, &links, &world.kernel)?;
         }
-        // The kernel joints (Glue), in Workspace order. A Part that does not
-        // move (anchored or grounded) holds its Points at its CFrame.
+        // The kernel joints (Glue and the hinges), in Workspace order. A Part
+        // that does not move (anchored or grounded) holds its Points at its
+        // CFrame.
         let mut fixed = BTreeMap::new();
-        for joint in workspace.joints.iter().filter(|j| j.kind == GLUE) {
+        let kernel_kinds = [GLUE, ROTATE, ROTATE_P, ROTATE_V];
+        for joint in workspace
+            .joints
+            .iter()
+            .filter(|j| kernel_kinds.contains(&j.kind))
+        {
             let mut bodies = [JointBody::Fixed(0); 2];
             for (side, n) in [joint.part0, joint.part1].into_iter().enumerate() {
                 let part = workspace.parts.get(n).ok_or("joint Part missing")?;
@@ -879,17 +885,41 @@ impl World {
                     None => {
                         let stiffness = world.materials.stiffness(part.size, Shape::Block)?;
                         let k = *fixed.entry(n).or_insert_with(|| {
-                            world.loose.add_fixed_body(frames[n].clone(), stiffness)
+                            world
+                                .loose
+                                .add_fixed_part(frames[n].clone(), part.size, stiffness)
                         });
                         JointBody::Fixed(k)
                     }
                 };
             }
-            world.loose.add_glue(
+            let coords = [joint.c0.clone(), joint.c1.clone()];
+            if joint.kind == GLUE {
+                world
+                    .loose
+                    .add_glue(&joint.name, bodies, coords, joint.face)?;
+                continue;
+            }
+            // The axle is Part0's face that C0's z axis names (00b6be18).
+            let r = &joint.c0.rotation;
+            let face = kernel_joint::normal_id([r[0][2], r[1][2], r[2][2]]) as usize;
+            let axle = match workspace.parts[joint.part0].surface_inputs.get(face) {
+                Some(input) => *input,
+                None if joint.kind == ROTATE => Default::default(),
+                None => {
+                    return Err(format!(
+                        "motor hinge {:?}: C0's z axis is not a Part axis (not ported)",
+                        joint.name
+                    ));
+                }
+            };
+            world.loose.add_hinge(
+                joint.kind,
                 &joint.name,
                 bodies,
-                [joint.c0.clone(), joint.c1.clone()],
-                joint.face,
+                coords,
+                joint.base_angle,
+                axle,
             )?;
         }
         let spawn = CoordinateFrame {
@@ -935,6 +965,12 @@ impl World {
     /// world steps: broken kernel joints are removed. Returns how many broke.
     pub fn break_joints(&mut self) -> Result<usize, String> {
         self.loose.break_joints()
+    }
+    /// World::uiStep's MovingAssemblyStage::stepUi (00b39318) for the motor
+    /// hinges, after breakJoints: `time` is Workspace.DistributedGameTime
+    /// (RunService's game time, copied in by physicsStep 00a7c4e2).
+    pub fn step_ui(&mut self, time: f64) -> Result<(), String> {
+        self.loose.step_ui(time)
     }
     /// The broadphase's new contact events become contact pairs: character
     /// against a static block in `static_contacts`, everything else in
@@ -1377,6 +1413,8 @@ impl World {
         // The character is in the Humanoid stage, outside SleepStage; the
         // loose Parts still step.
         self.sleep_stage(rig, false)?;
+        // doWorldStep: StepJointsStage::stepWorld (00b8a402), then Kernel::step.
+        self.loose.step_joints(&self.kernel)?;
         self.step_loose()?;
         for _ in 0..self.kernel.physics.kernel_substeps {
             self.loose.substep(&self.kernel)?;
@@ -1451,6 +1489,7 @@ impl World {
         self.states.retain(|key, _| active.contains(key));
         self.update_block_contacts(&frames, true)?;
         self.sleep_stage(rig, true)?;
+        self.loose.step_joints(&self.kernel)?;
         self.step_loose()?;
         self.contacts = active.len()
             + self

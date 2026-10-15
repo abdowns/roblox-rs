@@ -580,7 +580,8 @@ steps*(float)1/240 and fires Stepped, the keyframe "Animation" signal and the
 "Script" signal. World::step 00ba99d4 calls World::uiStep once and then the
 world steps. uiStep reaches MovingAssemblyStage 00b39200, which calls Motor6D
 vtable +0x44 (00b3717c) once per job, before the four world steps. Walking
-now steps motors there instead of before the fourth world step.
+now steps motors there instead of before the fourth world step. The same
+pass runs the motor hinges' stepUi (see Kernel joints).
 
 Lua `wait` (005b0774) clamps to the Lua setting minimum 0.03 and enqueues
 wall-clock now and now+seconds. WaitingScriptsJob (60 Hz) resumes threads whose
@@ -1321,8 +1322,8 @@ contact point. For a single block, the Body origin and the center of mass are
 bit-identical, so single-Part worlds run exactly as before. The broadphase
 refuses pairs inside one assembly (00ae9612) through a per-primitive group.
 
-**Kernel joints (kernel_joint.rs, Glue).** A kernel joint does not join
-Bodies. It puts Points and connectors in the kernel:
+**Kernel joints (kernel_joint.rs, Glue and the hinges).** A kernel joint
+does not join Bodies. It puts Points and connectors in the kernel:
 - *Points (Kernel::newPoint 00a96432).* A Point is a Body plus a local
   offset, kept in one IndexArray (KernelData +0x50). Asking for an existing
   (Body, offset) pair returns the old Point with one more use (00a96270);
@@ -1353,6 +1354,48 @@ Bodies. It puts Points and connectors in the kernel:
   - the normal is C0's z axis as a NormalId (006b79ae).
   removeFromKernel (00b3ee8e) removes each connector, then releases its two
   Points.
+- *Hinges (RotateJoint, type 6).* putInKernel (00b6b640) holds the two ends
+  of the hinge axis: Points at C0 x (0, 0, -1) on Part0 and C1 x (0, 0, -1)
+  on Part1, then the same at (0, 0, 1). Each pair gets a
+  PointToPointBreakConnector with the smaller Part stiffness and an
+  infinite threshold, so the Rotate family never breaks (isBreakable
+  00be5ee0 returns 0 as well). The Parts turn freely about C0's z axis.
+- *Motor hinges (RotatePJoint 7, RotateVJoint 8, via DynamicRotateJoint).*
+  putInKernel (00b6bb04) adds a RotateConnector (ctor 00a9124a), a type 1
+  connector in jointConnectors after the two hinge springs:
+  - the angle (00a913ec) is atan2(M[1][0], M[0][0]) in double, with
+    M = (R0 C0)^T (R1 C1) from the Bodies' PV rotations; the axis is
+    R0 C0's z column;
+  - k = jointK x s x s, where s is 0.1 x the smaller of the two Parts'
+    larger cross sizes at the joint face (00b6b53c);
+  - computeForce (00a9178e) takes current = angle - BaseAngle, moves
+    desired (00a91724: halfway to current first when the recenter flag is
+    set, 006af8f5; then plus the increment), and applies
+    k x wrap(desired - current) about the axis: +torque to Part1's root
+    SimBody, -torque to Part0's (accumulateTorque 00a6c134). Angles wrap
+    into [-pi, pi) in double (006af7f9);
+  - the joint's value comes from the axle Part's (Part0's) surface input on
+    the face C0's z axis names (00b6be18): Constant gives ParamB, Sin gives
+    ParamA x sin((float)t x ParamB), anything else 0. t is
+    Workspace.DistributedGameTime, RunService's game time after the
+    frame's increment. A Part with no inputs reads NoInput, -0.5, 0.5
+    (0098fffc);
+  - stepUi (00b6bd86), once per frame in uiStep after breakJoints, stores
+    the value and, when it is not 0, wakes both assemblies recursively
+    (World::wakeAssembly 00ba7fb0 -> 00b737c4). A recursive wake sets
+    SleepStage +0x16c: the next recursive pass also walks through AWAKE
+    neighbours, up to depth 8 (00b7228e), and every pass clears the flag at
+    its end (00b71f08). An AWAKE assembly goes to RECURSIVE_WAKE_PENDING
+    and back to AWAKE without leaving the kernel (00b727c0 only removes on a
+    sleeping state);
+  - stepWorld (StepJointsStage 00b8a402, after SleepStage::step and before
+    Kernel::step), only while the joint is in the kernel: RotateP sets the
+    increment to wrap(target - desired) / 19, so the target is reached over
+    one world step (00a9159a, target = value wrapped); RotateV sets it to
+    30 x value x kernel dt, so value is radians per 1/30 s, and at 0 sets
+    the recenter flag (00a916cc).
+  removeFromKernel (00b6bc74) removes the RotateConnector first, then the
+  hinge springs and Points.
 - *SleepStage.* A joint is a SleepStage edge that starts AWAKE (onEdgeAdded
   00b73cfe), and AWAKE means in the kernel (00b7339e). Waking an assembly
   wakes its SLEEPING joints (00b72b82). A joint always counts as touching for
@@ -1362,17 +1405,21 @@ Bodies. It puts Points and connectors in the kernel:
   asleep. When an assembly enters the kernel, its force is reset (00b7439e),
   so pushes gathered while it slept are dropped.
 - *Breaking.* World::uiStep runs breakJoints (00ba9032) once per frame,
-  before the Motor6D stepUi and the world steps. Every joint in the kernel
-  whose first four connectors include a broken one is removed
+  before MovingAssemblyStage::stepUi (00b39318: the Motor6Ds and the motor
+  hinges) and the world steps. Every Glue in the kernel whose first four
+  connectors include a broken one is removed
   (World::onJointBroken 00baa94e). The port assumes the JointInstance leaves
   at once. SleepStage's onEdgeRemoving (00b73f08) takes an AWAKE joint out of
   the kernel and wakes both sides of a SLEEPING one.
-- *Contacts.* Glued Parts still collide: ContactManager::createContact
-  (00ae9612, 00ae714a) has no joint test.
+- *Contacts.* Glued or hinged Parts still collide:
+  ContactManager::createContact (00ae9612, 00ae714a) has no joint test.
 
 Not recovered: the order of an assembly's edge list. The port wakes the
 joints after the contacts, and the awake-joint set (+0x150, ordered by
-address) follows creation order.
+address) follows creation order. Which joints MovingAssemblyStage lists for
+stepUi is not recovered either: the port steps every motor hinge still in
+SleepStage, asleep or not. A surface input is read from the Part's
+properties as loaded (no property changes while running yet).
 
 `audit-joints` checks the tree on the shipped R6 rig: HumanoidRootPart is the
 root and the Body child order matches the order `AssemblyProperties::from_rig`

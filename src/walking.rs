@@ -159,8 +159,9 @@ impl WalkingFixture {
         // Each call is one native world step. A new ideal 60 Hz frame runs the
         // Heartbeat and WaitingScripts jobs, then PhysicsJob: gameStepped
         // (Stepped -> Humanoid::onStepped, Animation -> Animator::onStepped),
-        // World::uiStep (breakJoints, then Motor6D stepUi once,
-        // 00ba8c68/00b39318) and its world steps (00ba9892).
+        // World::uiStep (breakJoints, then MovingAssemblyStage::stepUi for
+        // the motor hinges and the Motor6Ds, 00ba8c68/00b39318) and its
+        // world steps (00ba9892).
         while self.schedule.world_steps_remaining == 0 {
             let frame = self.schedule.begin_frame()?;
             if let Some(time) = frame.resumed_time {
@@ -177,6 +178,7 @@ impl WalkingFixture {
             self.humanoid_stepped(rig, input, dt)?;
             self.animator_stepped(rig, dt)?;
             self.world.break_joints()?;
+            self.world.step_ui(self.schedule.game_time)?;
             let before: Vec<_> = rig.joints.iter().map(|j| j.link_state()).collect();
             for joint in &mut rig.joints {
                 joint.step()?;
@@ -232,6 +234,7 @@ impl WalkingFixture {
             }
             self.humanoid_stepped(rig, input, self.stepped_dt(&frame))?;
             self.world.break_joints()?;
+            self.world.step_ui(self.schedule.game_time)?;
         }
         self.world_step(rig)?;
         self.schedule.finish_world_step()
@@ -981,6 +984,7 @@ pub fn audit_part_weld(bundle: &Bundle) -> Result<String, String> {
             c0: at(c0),
             c1: at([0.0; 3]),
             face: [[0.0; 3]; 4],
+            base_angle: 0.0,
         });
     };
     let base = add(
@@ -1253,6 +1257,7 @@ pub fn audit_part_glue(bundle: &Bundle) -> Result<String, String> {
                 rotation,
             },
             face: [[-a, -b, 0.0], [a, -b, 0.0], [a, b, 0.0], [-a, b, 0.0]],
+            base_angle: 0.0,
         });
     };
     // z along -Y (columns x, z, -y), and z along +X (columns -z, y, x).
@@ -1471,6 +1476,311 @@ pub fn audit_part_glue(bundle: &Bundle) -> Result<String, String> {
     writeln!(
         report,
         "part_glue_pass hung=held pair=kept heavy=broke asleep=true native_differential=not_tested"
+    )
+    .unwrap();
+    Ok(report)
+}
+
+/// Legacy hinges in a Workspace, with the character idling at the origin.
+/// Each pair is an anchored 1 x 1 x 1 block (Part0, the axle) and a plank
+/// in front of it, 0.1 studs clear, on a hinge through the block's center:
+/// - "Arm" (6 x 0.4 x 1) on a Rotate about Z, released level: it swings
+///   down under gravity about the hinge;
+/// - "Flap" (1 x 4 x 0.4) on a Rotate about Z, hanging still: it sleeps;
+/// - "Wheel" (4 x 4 x 0.4) on a RotateV about Z whose axle face (Back)
+///   reads Constant 0.1: it turns at 30 x 0.1 = 3 rad/s;
+/// - "Paddle" (4 x 0.4 x 1) on a RotateP about Y whose axle face (Top)
+///   reads Sin with ParamA 0.5 and ParamB 2: it follows 0.5 sin(2t).
+pub fn audit_part_hinge(bundle: &Bundle) -> Result<String, String> {
+    use crate::joints::{ROTATE, ROTATE_P, ROTATE_V};
+    use crate::kernel_joint::{INPUT_CONSTANT, INPUT_SIN, SurfaceInput};
+    use crate::loose::JointEdge;
+    use crate::workspace::{JointInstance, PartInstance};
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    // z along +Y (columns x, -z, y).
+    let up = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+    let add = |workspace: &mut Workspace, name: &str, size: [f32; 3], position, anchored| {
+        let mut part = PartInstance {
+            name: name.into(),
+            anchored,
+            frame: CoordinateFrame {
+                position,
+                rotation: IDENTITY,
+            },
+            ..Default::default()
+        };
+        part.set_size(size);
+        workspace.parts.push(part);
+        workspace.parts.len() - 1
+    };
+    let hinge = |workspace: &mut Workspace,
+                 kind: u32,
+                 part0: usize,
+                 part1: usize,
+                 c1: [f32; 3],
+                 rotation: [[f32; 3]; 3]| {
+        workspace.joints.push(JointInstance {
+            name: format!("Hinge{}", workspace.joints.len()),
+            kind,
+            part0,
+            part1,
+            c0: CoordinateFrame {
+                position: [0.0; 3],
+                rotation,
+            },
+            c1: CoordinateFrame {
+                position: c1,
+                rotation,
+            },
+            face: [[0.0; 3]; 4],
+            base_angle: 0.0,
+        });
+    };
+    let block = [1.0, 1.0, 1.0];
+    let pivot = add(&mut workspace, "Pivot", block, [-20.0, 12.0, 10.0], true);
+    let arm = add(
+        &mut workspace,
+        "Arm",
+        [6.0, 0.4, 1.0],
+        [-17.5, 12.0, 11.1],
+        false,
+    );
+    hinge(
+        &mut workspace,
+        ROTATE,
+        pivot,
+        arm,
+        [-2.5, 0.0, -1.1],
+        IDENTITY,
+    );
+    let hook = add(&mut workspace, "Hook", block, [-30.0, 12.0, 10.0], true);
+    let flap = add(
+        &mut workspace,
+        "Flap",
+        [1.0, 4.0, 0.4],
+        [-30.0, 10.0, 10.8],
+        false,
+    );
+    hinge(
+        &mut workspace,
+        ROTATE,
+        hook,
+        flap,
+        [0.0, 2.0, -0.8],
+        IDENTITY,
+    );
+    let axle = add(&mut workspace, "Axle", block, [-40.0, 12.0, 10.0], true);
+    workspace.parts[axle].surface_inputs[2] = SurfaceInput {
+        input: INPUT_CONSTANT,
+        ..Default::default()
+    };
+    workspace.parts[axle].surface_inputs[2].param_b = 0.1;
+    let wheel = add(
+        &mut workspace,
+        "Wheel",
+        [4.0, 4.0, 0.4],
+        [-40.0, 12.0, 10.8],
+        false,
+    );
+    hinge(
+        &mut workspace,
+        ROTATE_V,
+        axle,
+        wheel,
+        [0.0, 0.0, -0.8],
+        IDENTITY,
+    );
+    let motor = add(&mut workspace, "Motor", block, [-50.0, 12.0, 10.0], true);
+    workspace.parts[motor].surface_inputs[1] = SurfaceInput {
+        input: INPUT_SIN,
+        param_a: 0.5,
+        param_b: 2.0,
+    };
+    let paddle = add(
+        &mut workspace,
+        "Paddle",
+        [4.0, 0.4, 1.0],
+        [-48.5, 12.8, 10.0],
+        false,
+    );
+    hinge(
+        &mut workspace,
+        ROTATE_P,
+        motor,
+        paddle,
+        [-1.5, -0.8, 0.0],
+        up,
+    );
+    let names: Vec<&str> = workspace.parts.iter().map(|p| p.name.as_str()).collect();
+    let mut report = workspace.joint_tree()?.describe(&names);
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let loose = &fixture.world.loose;
+    writeln!(
+        report,
+        "part_hinge_load assemblies={} points={} {} {}",
+        loose.parts.len(),
+        loose.point_count(),
+        loose.joint_report(),
+        loose.report()
+    )
+    .unwrap();
+    let loaded = loose.joints.len() == 4
+        && loose
+            .joints
+            .iter()
+            .all(|j| j.edge == Some(JointEdge::Awake))
+        && loose.point_count() == 16
+        && loose.hinge_angle(0).is_none()
+        && loose.hinge_angle(2).is_some()
+        && loose.hinge_angle(3).is_some();
+    let prim = |fixture: &WalkingFixture, name: &str| {
+        fixture
+            .world
+            .loose
+            .prims
+            .iter()
+            .position(|p| p.name == name)
+            .ok_or(format!("{name} is not a loose Part"))
+    };
+    let frame_of = |fixture: &WalkingFixture, name: &str| -> Result<CoordinateFrame, String> {
+        fixture.world.loose.prim_frame(prim(fixture, name)?)
+    };
+    // How far the plank's hinge point (C1) is from the block's center.
+    let gap = |fixture: &WalkingFixture, name: &str, c1: [f32; 3], center: [f32; 3]| {
+        let f = frame_of(fixture, name)?;
+        let p = crate::g3d::frame_multiply(
+            &f,
+            &CoordinateFrame {
+                position: c1,
+                rotation: IDENTITY,
+            },
+        )
+        .position;
+        Ok::<f32, String>(
+            (0..3)
+                .map(|k| (p[k] - center[k]).powi(2))
+                .sum::<f32>()
+                .sqrt(),
+        )
+    };
+    let frames = |fixture: &WalkingFixture| -> String {
+        fixture
+            .world
+            .loose
+            .frames()
+            .iter()
+            .map(|(n, f)| format!("{n}={:?}", f.position))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let steps = 1440u32;
+    let mut arm_lowest = 0.0f32;
+    let mut arm_tilt = 1.0f32;
+    let mut max_gap = [0.0f32; 4];
+    let mut wheel_turn = 0.0f64;
+    let mut wheel_last = None;
+    let mut wheel_turn_at_4s = 0.0f64;
+    let mut paddle_range = (f32::INFINITY, f32::NEG_INFINITY);
+    let mut paddle_lag = 0.0f32;
+    for step in 0..steps {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        let a = frame_of(&fixture, "Arm")?.rotation;
+        // The Arm's x axis turned about Z.
+        arm_lowest = arm_lowest.min(a[1][0].atan2(a[0][0]));
+        arm_tilt = arm_tilt.min(a[2][2]);
+        let gaps = [
+            gap(&fixture, "Arm", [-2.5, 0.0, -1.1], [-20.0, 12.0, 10.0])?,
+            gap(&fixture, "Flap", [0.0, 2.0, -0.8], [-30.0, 12.0, 10.0])?,
+            gap(&fixture, "Wheel", [0.0, 0.0, -0.8], [-40.0, 12.0, 10.0])?,
+            gap(&fixture, "Paddle", [-1.5, -0.8, 0.0], [-50.0, 12.0, 10.0])?,
+        ];
+        for k in 0..4 {
+            max_gap[k] = max_gap[k].max(gaps[k]);
+        }
+        let loose = &fixture.world.loose;
+        if let Some((current, _)) = loose.hinge_angle(2) {
+            if let Some(last) = wheel_last {
+                wheel_turn += f64::from(crate::kernel_joint::wrap_angle(current, last));
+            }
+            wheel_last = Some(current);
+        }
+        if step + 1 == 960 {
+            wheel_turn_at_4s = wheel_turn;
+        }
+        let time = fixture.schedule.game_time;
+        if let Some((current, _)) = loose.hinge_angle(3)
+            && step >= 960
+        {
+            paddle_range = (paddle_range.0.min(current), paddle_range.1.max(current));
+            let target = 0.5 * (f64::from(time as f32 * 2.0)).sin() as f32;
+            paddle_lag = paddle_lag.max((current - target).abs());
+        }
+        if step < 4 || (step + 1) % 240 == 0 {
+            writeln!(
+                report,
+                "part_hinge_state step={} game_time={time} arm_angle={} gaps={gaps:?} {} {} {}",
+                step + 1,
+                a[1][0].atan2(a[0][0]),
+                frames(&fixture),
+                loose.joint_report(),
+                loose.report()
+            )
+            .unwrap();
+        }
+    }
+    let loose = &fixture.world.loose;
+    let assembly = |name: &str| -> Result<&crate::loose::LoosePart, String> {
+        Ok(&loose.parts[loose.prims[prim(&fixture, name)?].assembly])
+    };
+    // Turn per second over the last 2 seconds.
+    let wheel_rate = (wheel_turn - wheel_turn_at_4s) / 2.0;
+    let wheel_spin = assembly("Wheel")?.body.angular_velocity;
+    writeln!(
+        report,
+        "part_hinge_result arm_lowest_angle={arm_lowest} arm_min_z_alignment={arm_tilt} max_gaps={max_gap:?} wheel_turn={wheel_turn} wheel_rate={wheel_rate} wheel_angular_velocity={wheel_spin:?} paddle_range={paddle_range:?} paddle_max_lag={paddle_lag} edges={:?}",
+        loose.joints.iter().map(|j| j.edge).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    writeln!(report, "{}", sleep_summary("part_hinge_sleep", loose)).unwrap();
+    let flap_part = assembly("Flap")?;
+    let checks = [
+        ("loaded_in_kernel", loaded),
+        ("hinges_held", max_gap.iter().all(|g| *g < 0.05)),
+        ("arm_swung", arm_lowest < -1.2 && 0.999 < arm_tilt),
+        (
+            "flap_asleep",
+            flap_part.sleep.sleeping()
+                && !flap_part.in_kernel
+                && loose.joints[1].edge == Some(JointEdge::Sleeping),
+        ),
+        ("wheel_turns", (wheel_rate - 3.0).abs() < 0.15),
+        (
+            "wheel_awake",
+            assembly("Wheel")?.in_kernel && loose.joints[2].edge == Some(JointEdge::Awake),
+        ),
+        (
+            "paddle_follows",
+            0.4 < paddle_range.1
+                && paddle_range.1 < 0.6
+                && -0.6 < paddle_range.0
+                && paddle_range.0 < -0.4,
+        ),
+    ];
+    let failed: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
+    if !failed.is_empty() {
+        return Err(format!("part hinge failed {failed:?}\n{report}"));
+    }
+    let _ = (arm, flap, wheel, paddle);
+    writeln!(
+        report,
+        "part_hinge_pass arm=swung flap=asleep wheel_rate={wheel_rate:.3} paddle=follows native_differential=not_tested"
     )
     .unwrap();
     Ok(report)

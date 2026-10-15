@@ -255,10 +255,37 @@ output to expect. Anything not covered by an audit is marked **not tested**.
     apart, the cube lands, and the two intact Glues sleep with their Parts;
   - `part_glue_pass hung=held pair=kept heavy=broke asleep=true native_differential=not_tested`.
 
-  Only Glues present at load. Not ported: ManualGlue, the hinge and motor
-  joints, joints to the character, and Glue between two anchored Parts
-  (refused). The JointInstance removal after a break is assumed to happen
-  at once. Native parity is **not tested**.
+  Only Glues present at load. Not ported: ManualGlue, joints to the
+  character, and Glue between two anchored Parts (refused). The
+  JointInstance removal after a break is assumed to happen at once. Native
+  parity is **not tested**.
+
+- Hinge joints in the physics: a Workspace Rotate, RotateP or RotateV
+  (`joints::ROTATE`, `ROTATE_P`, `ROTATE_V`) holds both ends of C0's z axis
+  with two never-breaking springs, so the Parts turn freely about it.
+  RotateP and RotateV add a RotateConnector that drives the angle from the
+  axle Part's surface input (`PartInstance::surface_inputs`, Constant or
+  Sin) and `JointInstance::base_angle`: RotateP turns to the value, RotateV
+  turns at 30 x value rad/s. While the value is not 0 the motor keeps both
+  assemblies awake. Run
+  `sh tools/cargo.sh run --locked -- audit-part-hinge`. Expect:
+  - `part_hinge_load assemblies=4 points=16 [Hinge0 edge=Some(Awake) connectors=2 ...`:
+    every hinge is in the kernel before the first step, the two motors with
+    their angles at 0;
+  - `part_hinge_result arm_lowest_angle=-3.003305 arm_min_z_alignment=0.9999999 max_gaps=[0.00042617292, 0.00026417468, 0.0009584427, 0.00027128975] wheel_turn=18.002966428321088 wheel_rate=2.9988605701364577 ... paddle_range=(-0.5067923, 0.5029547) paddle_max_lag=0.016227335 edges=[Some(Awake), Some(Sleeping), Some(Awake), Some(Awake)]`:
+    the level arm swings down and nearly up the other side, every hinge
+    point stays within 0.001 studs of its axle, the RotateV wheel (Constant
+    0.1) turns at 3 rad/s, and the RotateP paddle (Sin 0.5, 2) stays within
+    0.017 rad of 0.5 sin(2t);
+  - `part_hinge_sleep ... [Flap final=SleepingDeeply in_kernel=false changes=[(0, Awake), (119, SleepingDeeply)]] ...`:
+    the still flap sleeps and its hinge leaves the kernel; the wheel goes
+    RECURSIVE_WAKE_PENDING and back every frame without leaving it;
+  - `part_hinge_pass arm=swung flap=asleep wheel_rate=2.999 paddle=follows native_differential=not_tested`.
+
+  Only hinges present at load, and surface inputs as loaded (no changes
+  while running). Not ported: Motor and VelocityMotor, hinges to the
+  character, the controller inputs (they give 0), and hinges between two
+  anchored Parts (refused). Native parity is **not tested**.
 
 - Legacy block vertex/plane contact generation for shared box orientation and
   complete face containment, plus awake impulse response through assembly mass,

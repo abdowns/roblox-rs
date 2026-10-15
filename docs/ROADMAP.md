@@ -44,12 +44,12 @@ constructor creates the next one:
 | SpatialFilter | 00b78fa8 | part of the broadphase wiring |
 | MechToAssemblyStage | 00b2f0a2 | not ported |
 | AssemblyStage | 00adbae0 | not ported |
-| MovingAssemblyStage | 00b38a4a | not ported |
-| StepJointsStage | 00b89fa0 | Motor6D only |
+| MovingAssemblyStage | 00b38a4a | stepUi only (Motor6D, motor hinges) |
+| StepJointsStage | 00b89fa0 | Motor6D and the motor hinges |
 | HumanoidStage | 00b0ff5c | character only |
 | SleepStage | 00b6f814 | ported (sleep.rs, loose.rs; contact and joint edges) |
 | SimulateStage | 00b6eb12 | lists ported |
-| Kernel | 00a95592 | ported (kernel.rs, loose.rs, kernel_joint.rs Points and break connectors) |
+| Kernel | 00a95592 | ported (kernel.rs, loose.rs, kernel_joint.rs Points, break and rotate connectors) |
 
 The World also owns the ContactManager (+0x150, the broadphase), the ground
 primitive (+0x5c) and the head of the chain (+0x158).
@@ -70,8 +70,10 @@ Left, in order:
    (hinge and motor surfaces), Motor, DynamicRotate, VelocityMotor, and their
    connectors (JointConnector, RotateConnector, the break connectors). Done:
    kernel Points, the break connectors, SleepStage joint edges, breakJoints,
-   and Glue present at load (`audit-part-glue`). Left: ManualGlue (its face
-   comes from 00b0da3a), the Rotate family and the motors.
+   Glue present at load (`audit-part-glue`), and Rotate, RotateP and RotateV
+   with their RotateConnector and surface inputs (`audit-part-hinge`).
+   Left: ManualGlue (its face comes from 00b0da3a), Motor and VelocityMotor
+   (Motor joints in Body links, MotorJoint 00b3858a).
 3. **Shapes.** Ball (BallBall/BallBlock contacts), Cylinder, Wedge and
    CornerWedge (PolyContact), TrussPart, and the legacy ramp/prism/pyramid
    Parts.
