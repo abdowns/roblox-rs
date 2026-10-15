@@ -1,5 +1,21 @@
 # MODLOG
 
+## 2026-10-15 Fast-impact tumble traced
+
+**Changed:** `docs/ROADMAP.md`, open findings: the trace of the fast-impact
+tumble.
+
+**Why:** The previous step found that a tall block dropped flat at high speed
+gets a sideways kick. This entry checks whether that is a porting bug.
+
+**Tested how:** A temporary trace of every connector impulse on a 4x4x2
+block's first contact step (not committed). The ported `AwakeContact::solve`
+was compared with a936d0 and a92dd6, line by line.
+
+**Result:** The four corner impulses run once each, in order; the block leaves
+the floor before a second pass. The port matches the decompiled solver, so no
+code changed. Native behaviour is **not tested**.
+
 ## 2026-10-15 Welded Parts in the physics
 
 **Changed:**

@@ -87,10 +87,16 @@ Open findings:
   about 46 studs/s, with no welds, leaves its first contact with a sideways
   velocity of about 12 studs/s and a spin of about 7.7 rad/s, then falls on
   its side. A 1x4x1 block falling upright from 50 studs is thrown about 10
-  studs sideways. The low 4x1.2x2 blocks of `audit-part-drop` land flat. This
-  looks wrong for a symmetric drop, so the contact impulse path (a936d0 and
-  the corner connectors) has to be re-checked against the binary. Not yet
-  investigated.
+  studs sideways. The low 4x1.2x2 blocks of `audit-part-drop` land flat.
+  Traced: on the first contact step the four corner connectors each get one
+  impulse, in order, and each stops its own corner. The first one spins the
+  block hard. After the fourth, the block moves up at about 10 studs/s, every
+  corner is separating, and a936d0 returns early for all of them, so no
+  second pass evens it out. The ported impulse matches a936d0 as decompiled:
+  the resting flags, rebound, penetration target, friction cone and minimum
+  impulse all agree. So this is the legacy solver's own behaviour as far as
+  the port can tell. Whether the real client tumbles the same way is **not
+  tested**.
 - **Character contact velocity.** The character's springs read its SimBody's
   center-of-mass state. Natively a929f6 reads the Torso's and Head's Body PV.
   The results agree up to float rounding, but they are not bit-identical.
