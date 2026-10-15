@@ -1,5 +1,19 @@
 # MODLOG
 
+## 2026-10-15 Poly research notes (no code)
+
+**Changed:** `docs/RESEARCH.md` gains the raw reverse-engineering notes
+for WedgePoly, the Poly mesh, PolyPolyContact (FaceFacePair, EdgeEdgePair),
+the PolyConnector classes and the Block-as-Poly vtable.
+
+**Why:** To keep the findings for the Wedge port (roadmap item 3) across
+sessions. Nothing is ported yet.
+
+**Tested how:** documentation only; no code changed.
+
+**Result:** not tested. The decompiler's float association must still be
+checked against the disassembly before porting.
+
 ## 2026-10-15 addSphere float order from the disassembly
 
 **Changed:** `geometry::workspace_sphere` now follows the disassembly
