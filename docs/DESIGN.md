@@ -1074,15 +1074,20 @@ In the world (`audit-part-ball`):
   `set_size` keep a Ball's size uniform.
 - **Loose Parts.** `LoosePrim::shape` picks the mass, inertia and stiffness
   (00a92640 with the Ball flag). It also picks the broadphase extents and the
-  contact class: `PairContact` holds a BlockBlockContact or a `BallContact`.
-  Statics and the character's colliders are Blocks.
+  contact class: `ball_contact::PrimContact` holds a BlockBlockContact or a
+  `BallContact`. The character's colliders are Blocks.
+- **Anchored Parts.** `StaticBlock::shape` does the same for static Parts.
+  `LooseWorld::add_static_shape` records it for the contact class and the
+  floor mass. World's character/static contacts use `PrimContact` too.
+  For a static Ball, the Head touch test runs the BallBlock test (00ae2aec)
+  rather than the block overlap stand-in.
 - **Ray test.** The Humanoid ray query tests a loose Ball with Ball +0x70
   (00adc17c). That is G3D collisionTimeForMovingPointFixedSphere (0124e2c8),
   not solid, in part space against a sphere at the origin; a hit is a time
-  that is not infinite. getSlowHit's bound for a Ball is its radius.
-- **Not ported.** Anchored Balls and Cylinders are refused when the world is
-  built: StaticBlock, the character/static contacts and the static ray tests
-  are all Block-only. Balls render as blocks.
+  that is not infinite. getSlowHit's bound for a Ball is its radius. Static
+  and loose Balls are both tested this way.
+- **Not ported.** Cylinders are refused when the world is built. Balls render
+  as blocks.
 
 ## Unanchored Parts (loose.rs)
 

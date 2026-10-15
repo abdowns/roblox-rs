@@ -80,11 +80,10 @@ Left, in order:
    face geometry the surface joints need.
 3. **Shapes.** Ball (BallBall/BallBlock contacts), Cylinder, Wedge and
    CornerWedge (PolyContact), TrussPart, and the legacy ramp/prism/pyramid
-   Parts. Done: loose Ball Parts (`ball_contact.rs`, `audit-part-ball`).
-   Left: anchored Balls (statics, the character/static contacts and the
-   static ray tests are Block-only), Ball rendering, then the Poly
-   geometries (Cylinder, WedgePoly, CornerWedgePoly) and PolyPolyContact,
-   which also serves Block against Poly.
+   Parts. Done: Ball Parts, loose and anchored (`ball_contact.rs`,
+   `audit-part-ball`). Left: Ball rendering, then the Poly geometries
+   (Cylinder, WedgePoly, CornerWedgePoly) and PolyPolyContact, which also
+   serves Block against Poly.
 4. **Body movers.** BodyPosition, BodyGyro, BodyVelocity,
    BodyAngularVelocity, BodyForce, BodyThrust, RocketPropulsion.
 5. **Automatic joints.** JointsService and the surface pairs (studs/inlets,

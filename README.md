@@ -30,7 +30,8 @@ Not there yet:
 - a general Lua runtime;
 - place loading and saving;
 - the remaining joint kinds (VelocityMotor, ManualGlue, surface joints);
-- anchored Balls, Cylinders, Wedges and the other Part shapes;
+- Cylinders, Wedges and the other Part shapes (Balls work but render as
+  blocks);
 - textures and decals beyond the character, shadows and outlines.
 
 Matching the original is not tested pixel for pixel or step for step. See

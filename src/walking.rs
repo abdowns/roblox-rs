@@ -1504,7 +1504,10 @@ pub fn audit_part_glue(bundle: &Bundle) -> Result<String, String> {
 /// - "Rider" (diameter 2) lands on top of "Crate", a loose 4 x 1.2 x 2
 ///   block on the Baseplate (BallBlock between two kernel bodies);
 /// - "Top" (diameter 2) falls onto "Bottom" (diameter 3) half a stud off
-///   its center (BallBall), so the two push apart along X.
+///   its center (BallBall), so the two push apart along X;
+/// - "Pebble" (diameter 1) lands on "Dome", an anchored ball of diameter 6
+///   (BallBall against a static ball), half a stud off its top, and rolls
+///   off it onto the Baseplate.
 pub fn audit_part_ball(bundle: &Bundle) -> Result<String, String> {
     use crate::workspace::{PartInstance, SHAPE_BALL};
     let bytes = bundle.read(
@@ -1608,6 +1611,22 @@ pub fn audit_part_ball(bundle: &Bundle) -> Result<String, String> {
         at([25.5, 6.0, 20.0]),
         false,
     );
+    add(
+        &mut workspace,
+        "Dome",
+        true,
+        [6.0; 3],
+        at([-25.0, 3.0, 15.0]),
+        true,
+    );
+    add(
+        &mut workspace,
+        "Pebble",
+        true,
+        [1.0; 3],
+        at([-24.5, 8.0, 15.0]),
+        false,
+    );
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
     let index = |name: &str| {
         fixture
@@ -1618,10 +1637,10 @@ pub fn audit_part_ball(bundle: &Bundle) -> Result<String, String> {
             .position(|p| p.name == name)
             .ok_or(format!("missing assembly {name}"))
     };
-    let [drop, roll, crate_part, rider, bottom, top] =
-        ["Drop", "Roll", "Crate", "Rider", "Bottom", "Top"].map(index);
-    let (drop, roll, crate_part, rider, bottom, top) =
-        (drop?, roll?, crate_part?, rider?, bottom?, top?);
+    let [drop, roll, crate_part, rider, bottom, top, pebble] =
+        ["Drop", "Roll", "Crate", "Rider", "Bottom", "Top", "Pebble"].map(index);
+    let (drop, roll, crate_part, rider, bottom, top, pebble) =
+        (drop?, roll?, crate_part?, rider?, bottom?, top?, pebble?);
     let mut report = String::new();
     writeln!(
         report,
@@ -1708,7 +1727,7 @@ pub fn audit_part_ball(bundle: &Bundle) -> Result<String, String> {
     let rolling = roll_spin * 1.0 / roll_speed[1];
     writeln!(
         report,
-        "part_ball_result first_contact={first_contact:?} drop_y={} rider_y={} crate_y={} roll_acceleration={acceleration} expected={expected} ratio={} spin_ratio={rolling} min_gap={min_gap} top={:?} top_velocity={:?} bottom={:?} bottom_velocity={:?} roll={:?}",
+        "part_ball_result first_contact={first_contact:?} drop_y={} rider_y={} crate_y={} roll_acceleration={acceleration} expected={expected} ratio={} spin_ratio={rolling} min_gap={min_gap} top={:?} top_velocity={:?} bottom={:?} bottom_velocity={:?} roll={:?} pebble={:?} pebble_velocity={:?}",
         y(drop),
         y(rider),
         y(crate_part),
@@ -1718,6 +1737,8 @@ pub fn audit_part_ball(bundle: &Bundle) -> Result<String, String> {
         parts[bottom].body.frame.position,
         parts[bottom].body.velocity,
         parts[roll].body.frame.position,
+        parts[pebble].body.frame.position,
+        parts[pebble].body.velocity,
     )
     .unwrap();
     writeln!(
@@ -1735,14 +1756,19 @@ pub fn audit_part_ball(bundle: &Bundle) -> Result<String, String> {
         && parts[bottom].body.velocity[0] < 0.0
         && (y(top) - 1.0).abs() < 0.05
         && (y(bottom) - 1.5).abs() < 0.05;
-    if !(rested && rides && rolls && parted) || first_contact.iter().any(Option::is_none) {
+    // Off the dome (radius 3 about x = -25) and down on the Baseplate.
+    let p = parts[pebble].body.frame.position;
+    let rolled_off = p[0] > -22.0 && (p[1] - 0.5).abs() < 0.05;
+    if !(rested && rides && rolls && parted && rolled_off)
+        || first_contact.iter().any(Option::is_none)
+    {
         return Err(format!(
-            "part ball failed rested={rested} rides={rides} rolls={rolls} parted={parted}\n{report}"
+            "part ball failed rested={rested} rides={rides} rolls={rolls} parted={parted} rolled_off={rolled_off}\n{report}"
         ));
     }
     writeln!(
         report,
-        "part_ball_pass rested=true rides=true rolls={ratio:.3} parted=true native_differential=not_tested"
+        "part_ball_pass rested=true rides=true rolls={ratio:.3} parted=true rolled_off=true native_differential=not_tested"
     )
     .unwrap();
     Ok(report)

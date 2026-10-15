@@ -58,11 +58,8 @@
 use crate::sleep::{self, AssemblyState, MotionHistory, SleepProfile};
 use crate::{
     assembly::{AssemblyProperties, MassPart, MassProfile},
-    ball_contact::{self, BallContact, BallPair},
-    block_contact::{
-        Block, BlockBlockContact, BlockTables, Connector, ContactEvent, ContactPoint,
-        extents_overlap,
-    },
+    ball_contact::{self, PrimContact},
+    block_contact::{Block, BlockTables, ContactEvent, ContactPoint, extents_overlap},
     bundle::Bundle,
     collision::{ContactBodyState, point_velocity},
     g3d,
@@ -377,84 +374,9 @@ struct JointSnapshot {
     joint_connectors: Vec<u64>,
 }
 
-/// A contact pair's narrowphase, by the primitives' collide types
-/// (ContactManager::createContact 00ae714a).
-#[derive(Clone, Debug)]
-enum PairContact {
-    Block(BlockBlockContact<Link>),
-    Ball(BallContact<Link>),
-}
-
-impl PairContact {
-    /// BallBallContact, BallBlockContact (the ball is the native first
-    /// primitive) or BlockBlockContact.
-    fn new(shapes: [Shape; 2]) -> Self {
-        match shapes {
-            [Shape::Ball, Shape::Ball] => Self::Ball(BallContact::new(BallPair::BallBall)),
-            [Shape::Ball, Shape::Block] => {
-                Self::Ball(BallContact::new(BallPair::BallBlock { ball: 0 }))
-            }
-            [Shape::Block, Shape::Ball] => {
-                Self::Ball(BallContact::new(BallPair::BallBlock { ball: 1 }))
-            }
-            [Shape::Block, Shape::Block] => Self::Block(BlockBlockContact::default()),
-        }
-    }
-    fn connectors(&self) -> &[Connector<Link>] {
-        match self {
-            Self::Block(c) => c.connectors(),
-            Self::Ball(c) => c.connectors(),
-        }
-    }
-    fn connectors_mut(&mut self) -> &mut [Connector<Link>] {
-        match self {
-            Self::Block(c) => c.connectors_mut(),
-            Self::Ball(c) => c.connectors_mut(),
-        }
-    }
-    fn take_connectors(&mut self) -> Vec<Connector<Link>> {
-        match self {
-            Self::Block(c) => c.take_connectors(),
-            Self::Ball(c) => c.take_connectors(),
-        }
-    }
-    fn take_events(&mut self) -> Vec<ContactEvent<Link>> {
-        match self {
-            Self::Block(c) => std::mem::take(&mut c.events),
-            Self::Ball(c) => std::mem::take(&mut c.events),
-        }
-    }
-    /// computeIsColliding (vtable +0x28) with no ignored overlap.
-    fn compute_is_colliding(&mut self, blocks: [&Block; 2]) -> bool {
-        match self {
-            Self::Block(c) => c.compute_is_colliding(blocks, 0.0).0,
-            Self::Ball(c) => c.compute_is_colliding(blocks, 0.0),
-        }
-    }
-    /// The contact step (vtable +0x20).
-    fn update(
-        &mut self,
-        blocks: [&Block; 2],
-        in_kernel: bool,
-        tables: &BlockTables,
-    ) -> Result<bool, String> {
-        match self {
-            Self::Block(c) => c.update(blocks, in_kernel, tables),
-            Self::Ball(c) => c.update(blocks, in_kernel),
-        }
-    }
-    /// Forget the cached features (a fresh contact of the same kind).
-    fn reset(&mut self) {
-        match self {
-            Self::Block(c) => *c = BlockBlockContact::default(),
-            Self::Ball(c) => *c = BallContact::new(c.pair),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 struct Pair {
-    contact: PairContact,
+    contact: PrimContact<Link>,
     parameters: ContactParameters,
     /// None while the contact is not in SleepStage.
     edge: Option<EdgeState>,
@@ -520,6 +442,8 @@ pub struct LooseWorld {
     original: Vec<LoosePart>,
     /// Material defaults and stiffness of each static block.
     statics: Vec<(PhysicalProperties, f32)>,
+    /// The geometry of each static block (Block or Ball).
+    static_shapes: Vec<Shape>,
     /// The static blocks as of the last contact update (for substep springs).
     static_blocks: Vec<Block>,
     /// Material defaults and stiffness of each character collider.
@@ -667,6 +591,7 @@ impl LooseWorld {
             prims: Vec::new(),
             original: Vec::new(),
             statics: Vec::new(),
+            static_shapes: Vec::new(),
             static_blocks: Vec::new(),
             colliders: Vec::new(),
             free_fall: Vec::new(),
@@ -706,14 +631,27 @@ impl LooseWorld {
     }
     /// A static (anchored, colliding) block, in Statics order.
     pub fn add_static(&mut self, properties: PhysicalProperties, stiffness: f32) {
+        self.add_static_shape(properties, stiffness, Shape::Block);
+    }
+    /// `add_static` for a static Part of either geometry.
+    pub fn add_static_shape(
+        &mut self,
+        properties: PhysicalProperties,
+        stiffness: f32,
+        shape: Shape,
+    ) {
         self.statics.push((properties, stiffness));
+        self.static_shapes.push(shape);
     }
     /// A static block's Body mass (Primitive::setMass 00b63366 sets Body +0x9c
-    /// whether or not the Part is anchored): size product times density, in
+    /// whether or not the Part is anchored): its volume times density, in
     /// the `add_part` order.
     pub fn static_mass(&self, index: usize, size: [f32; 3]) -> Result<f32, String> {
         let (properties, _) = self.statics.get(index).ok_or("missing static block")?;
-        Ok((size[0] * size[1]) * size[2] * properties.density)
+        Ok(match self.static_shapes[index] {
+            Shape::Block => (size[0] * size[1]) * size[2] * properties.density,
+            Shape::Ball => self.mass.ball_volume(ball_contact::radius(size)) * properties.density,
+        })
     }
     /// A character collider, in the order its blocks are passed later.
     pub fn add_collider(&mut self, properties: PhysicalProperties, stiffness: f32) {
@@ -1888,12 +1826,12 @@ impl LooseWorld {
         }
         Ok(())
     }
-    /// A primitive's geometry: the character's colliders and the static
-    /// blocks are Blocks.
+    /// A primitive's geometry: the character's colliders are Blocks.
     fn prim_shape(&self, prim: Prim) -> Shape {
         match prim {
             Prim::Loose(i) => self.prims[i].shape,
-            Prim::Static(_) | Prim::Character(_) => Shape::Block,
+            Prim::Static(j) => self.static_shapes[j],
+            Prim::Character(_) => Shape::Block,
         }
     }
     /// A contact for a primitive pair, outside SleepStage.
@@ -1903,7 +1841,7 @@ impl LooseWorld {
         self.pairs.insert(
             key,
             Pair {
-                contact: PairContact::new([self.prim_shape(key.0), self.prim_shape(key.1)]),
+                contact: PrimContact::new([self.prim_shape(key.0), self.prim_shape(key.1)]),
                 parameters,
                 edge: None,
                 throttle: usize::from(!character),

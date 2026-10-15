@@ -1,5 +1,34 @@
 # MODLOG
 
+## 2026-10-15 Anchored Ball Parts
+
+**Changed:**
+- `ball_contact::PrimContact<T>`: the contact-class enum moved out of
+  loose.rs and made generic. LooseWorld (`PrimContact<Link>`) and World's
+  character/static contacts (`PrimContact<ContactState>`) both use it.
+- `StaticBlock::shape`. A static Ball gets the Ball stiffness, extents and
+  contact class, the sphere ray test, and the Ball volume as floor mass
+  (`LooseWorld::add_static_shape`; `add_static` still adds a Block).
+- The Head touch test against a static Ball runs the BallBlock test
+  (00ae2aec) instead of the box overlap stand-in.
+- Kernel joints to an anchored Ball use the Ball stiffness.
+- Only Cylinders are refused now.
+- `audit-part-ball` adds "Pebble", dropped off-center on the anchored
+  "Dome".
+
+**Why:** Finishes the Ball shape, the first part of roadmap item 3.
+
+**Tested how:** `sh tools/cargo.sh test --locked` (107 pass), clippy clean,
+all 23 audits against the previous commit's outputs.
+
+**Result:**
+- `audit-part-ball` passes. The Pebble meets the Dome (a static BallBall
+  connector at step 32), rolls off and lands on the Baseplate.
+- The existing balls' results are unchanged. The other 22 audits are
+  unchanged (audit-runtime differs only in timing).
+- The character against a Ball is **not tested**. Native parity is **not
+  tested**.
+
 ## 2026-10-15 Ball Parts in the world
 
 **Changed:**

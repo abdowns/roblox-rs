@@ -35,10 +35,11 @@
 //! kept again as reused.
 use crate::{
     block_contact::{
-        Block, Connector, ContactEvent, ContactPoint, GeoPair, PairKind, UNSET, dot,
-        extents_overlap, mul_transpose, normal_direction, sub, to_world,
+        Block, BlockBlockContact, BlockTables, Connector, ContactEvent, ContactPoint, GeoPair,
+        PairKind, UNSET, dot, extents_overlap, mul_transpose, normal_direction, sub, to_world,
     },
     g3d::unitize,
+    material::Shape,
     scene::CoordinateFrame,
 };
 
@@ -372,6 +373,88 @@ impl<T: Default> BallContact<T> {
             reused: true,
         });
         Ok(true)
+    }
+}
+
+/// A contact pair's narrowphase, by the primitives' collide types
+/// (ContactManager::createContact 00ae714a).
+#[derive(Clone, Debug)]
+pub enum PrimContact<T> {
+    Block(BlockBlockContact<T>),
+    Ball(BallContact<T>),
+}
+
+impl<T: Default> PrimContact<T> {
+    /// BallBallContact, BallBlockContact (the ball is the native first
+    /// primitive) or BlockBlockContact.
+    pub fn new(shapes: [Shape; 2]) -> Self {
+        match shapes {
+            [Shape::Ball, Shape::Ball] => Self::Ball(BallContact::new(BallPair::BallBall)),
+            [Shape::Ball, Shape::Block] => {
+                Self::Ball(BallContact::new(BallPair::BallBlock { ball: 0 }))
+            }
+            [Shape::Block, Shape::Ball] => {
+                Self::Ball(BallContact::new(BallPair::BallBlock { ball: 1 }))
+            }
+            [Shape::Block, Shape::Block] => Self::Block(BlockBlockContact::default()),
+        }
+    }
+    pub fn connectors(&self) -> &[Connector<T>] {
+        match self {
+            Self::Block(c) => c.connectors(),
+            Self::Ball(c) => c.connectors(),
+        }
+    }
+    pub fn connectors_mut(&mut self) -> &mut [Connector<T>] {
+        match self {
+            Self::Block(c) => c.connectors_mut(),
+            Self::Ball(c) => c.connectors_mut(),
+        }
+    }
+    pub fn take_connectors(&mut self) -> Vec<Connector<T>> {
+        match self {
+            Self::Block(c) => c.take_connectors(),
+            Self::Ball(c) => c.take_connectors(),
+        }
+    }
+    pub fn take_events(&mut self) -> Vec<ContactEvent<T>> {
+        match self {
+            Self::Block(c) => std::mem::take(&mut c.events),
+            Self::Ball(c) => std::mem::take(&mut c.events),
+        }
+    }
+    /// computeIsColliding (vtable +0x28) with no ignored overlap.
+    pub fn compute_is_colliding(&mut self, blocks: [&Block; 2]) -> bool {
+        match self {
+            Self::Block(c) => c.compute_is_colliding(blocks, 0.0).0,
+            Self::Ball(c) => c.compute_is_colliding(blocks, 0.0),
+        }
+    }
+    /// The contact step (vtable +0x20).
+    pub fn update(
+        &mut self,
+        blocks: [&Block; 2],
+        in_kernel: bool,
+        tables: &BlockTables,
+    ) -> Result<bool, String> {
+        match self {
+            Self::Block(c) => c.update(blocks, in_kernel, tables),
+            Self::Ball(c) => c.update(blocks, in_kernel),
+        }
+    }
+    /// Connector geometry refresh (virtual +0x24) for the current frames.
+    pub fn refresh(&mut self, blocks: [&Block; 2]) {
+        match self {
+            Self::Block(c) => c.refresh(blocks),
+            Self::Ball(c) => c.refresh(blocks),
+        }
+    }
+    /// Forget the cached features (a fresh contact of the same kind).
+    pub fn reset(&mut self) {
+        match self {
+            Self::Block(c) => *c = BlockBlockContact::default(),
+            Self::Ball(c) => *c = BallContact::new(c.pair),
+        }
     }
 }
 

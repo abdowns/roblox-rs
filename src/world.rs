@@ -5,8 +5,8 @@
 //! anchored Parts of a Workspace (`World::in_workspace`).
 use crate::{
     assembly::{AssemblyProperties, MassPart, MassProfile, Tensor},
-    ball_contact,
-    block_contact::{Block, BlockBlockContact, BlockTables, Connector},
+    ball_contact::{self, PrimContact},
+    block_contact::{Block, BlockTables, Connector},
     broadphase::{Event, Extents, SpatialHash, ball_extents, block_extents},
     bundle::Bundle,
     collision::ContactBodyState,
@@ -127,12 +127,14 @@ const POPPER_PIERCE_TRANSPARENCY: f32 = 0.95;
 const STATIC_GROUP: usize = usize::MAX;
 const CHARACTER_GROUP: usize = usize::MAX - 1;
 
-/// An anchored, colliding block Part in the world.
+/// An anchored, colliding Part in the world: a Block, or a Ball of radius
+/// size.x / 2.
 #[derive(Clone, Debug)]
 pub struct StaticBlock {
     pub name: String,
     pub frame: CoordinateFrame,
     pub size: [f32; 3],
+    pub shape: Shape,
 }
 
 /// G3D::CollisionDetection::collisionLocationForMovingPointFixedAABox
@@ -255,21 +257,9 @@ fn ball_hit_test(
 }
 
 /// One getSlowHit (00ae7d08) candidate: the bounding-sphere test (vtable
-/// +0x10 radius), the hit test, then a positive distance strictly below the
-/// best so far.
+/// +0x10 radius: half the size's length for a Block, the radius for a Ball),
+/// the hit test, then a positive distance strictly below the best so far.
 fn slow_hit_candidate(
-    frame: &CoordinateFrame,
-    size: [f32; 3],
-    origin: [f32; 3],
-    direction: [f32; 3],
-    best: f32,
-) -> Option<(f32, Hit)> {
-    slow_hit_shape(frame, size, Shape::Block, origin, direction, best)
-}
-
-/// `slow_hit_candidate` for a Primitive of either geometry: a Ball's
-/// bounding radius is its radius (00adc208).
-fn slow_hit_shape(
     frame: &CoordinateFrame,
     size: [f32; 3],
     shape: Shape,
@@ -394,9 +384,14 @@ impl Statics {
             if !accept(index) {
                 continue;
             }
-            if let Some((distance, hit)) =
-                slow_hit_candidate(&block.frame, block.size, origin, direction, best)
-            {
+            if let Some((distance, hit)) = slow_hit_candidate(
+                &block.frame,
+                block.size,
+                block.shape,
+                origin,
+                direction,
+                best,
+            ) {
                 best = distance;
                 result = Some((distance, hit, FloorPart::Static(index)));
             }
@@ -472,7 +467,22 @@ impl Statics {
     /// vertex/plane connector against the fixture wall, or overlaps a static
     /// block (until the BlockBlockContact narrowphase is ported).
     pub fn touching(&self, frame: &CoordinateFrame, size: [f32; 3]) -> Result<bool, String> {
-        if self.blocks.iter().any(|b| b.overlaps(frame, size)) {
+        let collider = Block {
+            frame: frame.clone(),
+            size,
+        };
+        // A static Ball runs its contact's own test (BallBlock 00ae2aec).
+        let touches = |b: &StaticBlock| match b.shape {
+            Shape::Block => b.overlaps(frame, size),
+            Shape::Ball => {
+                let ball = Block {
+                    frame: b.frame.clone(),
+                    size: b.size,
+                };
+                ball_contact::ball_block_colliding(&ball, &collider, 0.0).0
+            }
+        };
+        if self.blocks.iter().any(touches) {
             return Ok(true);
         }
         Ok(self.wall_enabled()
@@ -536,7 +546,7 @@ fn raycast_where(
                 continue;
             };
             if let Some((distance, hit)) =
-                slow_hit_shape(&frame, part.size, part.shape, origin, direction, limit)
+                slow_hit_candidate(&frame, part.size, part.shape, origin, direction, limit)
             {
                 limit = distance;
                 best = Some((distance, hit, FloorPart::Loose(index)));
@@ -702,7 +712,7 @@ pub struct World {
     wall_parameters: BTreeMap<String, ContactParameters>,
     states: BTreeMap<(String, usize), ContactState>,
     /// BlockBlockContact per (character collider, static block index).
-    block_contacts: BTreeMap<(String, usize), BlockBlockContact<ContactState>>,
+    block_contacts: BTreeMap<(String, usize), PrimContact<ContactState>>,
     mass_parts: BTreeMap<String, MassPart>,
     /// Every character Part's size, for the assembly radius (00ad853c).
     part_sizes: Vec<(String, [f32; 3])>,
@@ -907,18 +917,11 @@ impl World {
         let mut prim_of = vec![None; workspace.parts.len()];
         for (n, part) in workspace.parts.iter().enumerate() {
             let grounded = part.anchored || tree.grounded(n);
-            if grounded && part.shape != SHAPE_BLOCK {
-                // Static contents are blocks (StaticBlock).
-                return Err(format!(
-                    "{:?}: an anchored {} is not ported",
-                    part.name,
-                    if part.shape == SHAPE_BALL {
-                        "Ball"
-                    } else {
-                        "Cylinder"
-                    }
-                ));
-            }
+            let shape = match part.shape {
+                SHAPE_BALL => Shape::Ball,
+                SHAPE_BLOCK => Shape::Block,
+                _ => return Err(format!("{:?}: a Cylinder Part is not ported", part.name)),
+            };
             let extents = if part.shape == SHAPE_BALL {
                 ball_extents(&frames[n], ball_contact::radius(part.size))
             } else {
@@ -955,8 +958,8 @@ impl World {
                 world.broadphase.insert(id, extents, true);
                 entered.push((id, extents));
                 let properties = world.materials.defaults(part.material)?;
-                let stiffness = world.materials.stiffness(part.size, Shape::Block)?;
-                world.loose.add_static(properties, stiffness);
+                let stiffness = world.materials.stiffness(part.size, shape)?;
+                world.loose.add_static_shape(properties, stiffness, shape);
                 let index = world.statics.blocks.len();
                 for (collider, (own, own_stiffness)) in world.collider_materials.iter().enumerate()
                 {
@@ -972,6 +975,7 @@ impl World {
                     name: part.name.clone(),
                     frame: frames[n].clone(),
                     size: part.size,
+                    shape,
                 });
                 world
                     .statics
@@ -1045,7 +1049,12 @@ impl World {
                 bodies[side] = match prim_of[n] {
                     Some(prim) => JointBody::Loose(prim),
                     None => {
-                        let stiffness = world.materials.stiffness(part.size, Shape::Block)?;
+                        let shape = if part.shape == SHAPE_BALL {
+                            Shape::Ball
+                        } else {
+                            Shape::Block
+                        };
+                        let stiffness = world.materials.stiffness(part.size, shape)?;
                         let k = *fixed.entry(n).or_insert_with(|| {
                             world
                                 .loose
@@ -1202,7 +1211,10 @@ impl World {
         Ok(match prim {
             BroadPrim::Static(i) => {
                 let b = &self.statics.blocks[i];
-                block_extents(&b.frame, b.size)
+                match b.shape {
+                    Shape::Block => block_extents(&b.frame, b.size),
+                    Shape::Ball => ball_extents(&b.frame, ball_contact::radius(b.size)),
+                }
             }
             BroadPrim::Loose(i) => loose_extents(&self.loose.prim_frame(i)?, &self.loose.prims[i]),
             BroadPrim::Character(k) => {
@@ -1366,9 +1378,10 @@ impl World {
                 frame: block.frame.clone(),
                 size: block.size,
             };
+            let shape = block.shape;
             self.block_contacts
                 .entry((name, index))
-                .or_default()
+                .or_insert_with(|| PrimContact::new([Shape::Block, shape]))
                 .update([&part, &other], in_kernel, &self.statics.tables)?;
         }
         Ok(())
@@ -1791,7 +1804,8 @@ mod tests {
         // getSlowHit takes the radius, not the half diagonal, as its bound.
         let near = [0.0, 10.0, 1.2];
         assert!(
-            slow_hit_shape(&ball, [2.0; 3], Shape::Ball, near, [0.0, -1.0, 0.0], 100.0).is_none()
+            slow_hit_candidate(&ball, [2.0; 3], Shape::Ball, near, [0.0, -1.0, 0.0], 100.0)
+                .is_none()
         );
     }
     #[test]
@@ -1803,6 +1817,7 @@ mod tests {
                 rotation: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
             },
             size: [4.0, 2.0, 2.0],
+            shape: Shape::Block,
         };
         // Rotated 90 degrees about Z: the 4-stud axis points along world Y.
         let (point, normal) = block.hit_test([10.0, 10.0, 0.0], [0.0, -1.0, 0.0]).unwrap();
