@@ -1903,7 +1903,7 @@ impl LooseWorld {
         }
         Ok(colliding)
     }
-    /// The Head touch test of HumanoidState c0192c -> c02209: each contact of
+    /// The Torso/Head touch test of HumanoidState c0192c -> c02209: each contact of
     /// the collider with a loose Part runs vtable +0x24 (ae26a6: extents,
     /// then computeIsColliding with no ignored overlap, which updates the
     /// contact's cached separating axis), stopping at the first colliding

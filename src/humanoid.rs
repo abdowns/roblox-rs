@@ -416,15 +416,17 @@ impl Humanoid {
             w.map(|x| x * scale),
         ))
     }
-    /// c0192c: HumanoidRootPart (non-colliding, never) or Head touching.
-    fn root_or_head_touching(&mut self, world: &mut World, rig: &R6Rig) -> Result<bool, String> {
-        let head = rig
-            .pose(&world.body.frame)?
-            .remove("Head")
-            .ok_or("missing Head")?;
-        if world.collider_touching("Head", &head)? {
-            self.state.elapsed = 0.0;
-            return Ok(true);
+    /// c0192c: the Torso (Humanoid +0x2a4 through bdd830, RootJoint's Part1
+    /// in 00bdb2dc) touching, else the Head (+0x27c, bdbe54). c02209 skips
+    /// contacts with the character's own Parts.
+    fn torso_or_head_touching(&mut self, world: &mut World, rig: &R6Rig) -> Result<bool, String> {
+        let mut pose = rig.pose(&world.body.frame)?;
+        for name in ["Torso", "Head"] {
+            let frame = pose.remove(name).ok_or("missing touch Part")?;
+            if world.collider_touching(name, &frame)? {
+                self.state.elapsed = 0.0;
+                return Ok(true);
+            }
         }
         Ok(false)
     }
@@ -476,11 +478,11 @@ impl Humanoid {
             15 => {
                 self.state.floor.floor.is_some() && world.point_velocity(torso.position)[1] <= 0.0
             }
-            16 => self.root_or_head_touching(world, rig)?,
+            16 => self.torso_or_head_touching(world, rig)?,
             20 => self.state.jump_done,
             21 => self.state.timer <= 0.0,
             22 => {
-                self.root_or_head_touching(world, rig)?;
+                self.torso_or_head_touching(world, rig)?;
                 // No BodyMover descendants in the character (00c01a4c).
                 self.profile.running_idle_seconds < self.state.elapsed
             }

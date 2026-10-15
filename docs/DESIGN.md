@@ -631,11 +631,19 @@ replaces the earlier constant torso-height fixture. Implemented states:
 - Freefall: balancing kP 5000, yaw torque 7500*I limited to 120000*I, air
   control gain 1250 limited to 143, Head/Torso friction 0. Lands when a floor is
   found and Torso relative vertical velocity is not upward.
-- RunningNoPhysics: entered from Running after more than 1 s without Head or
-  HumanoidRootPart contacts and no BodyMover. The Torso assembly leaves the
+- RunningNoPhysics: entered from Running after more than 1 s without Torso or
+  Head contacts and no BodyMover. The Torso assembly leaves the
   kernel; each Stepped moves it kinematically toward the desired velocity
   (gain 1250, limits 500/143), snaps it to the support height and yaws it by
-  AxisAngle(up, yaw*dt). Head contact returns it to Running.
+  AxisAngle(up, yaw*dt). A Torso or Head contact returns it to Running.
+  - The touch test c0192c checks Humanoid +0x2a4 (bdd830), then +0x27c
+    (bdbe54). The RootJoint builder 00bdb2dc shows what they are: +0x2a4 is
+    RootJoint's Part1 and Part0 of the shoulders, hips and Neck, so it is
+    the Torso; +0x27c is Neck's Part1, the Head. (+0x274 is the
+    HumanoidRootPart, RootJoint's Part0.)
+  - c02209 walks the Part's contacts, skips those whose other Part is inside
+    the character, and returns at the first whose vtable +0x24 reports a
+    collision.
 Events follow 00bfda98: Jumping fires Jumping, Freefall/Landed fire
 FreeFalling, Running/RNP fire raw Running(speed) on either edge plus the
 per-state deadband. The bundled script's handlers turn them into poses.
@@ -1079,7 +1087,7 @@ In the world (`audit-part-ball`):
 - **Anchored Parts.** `StaticBlock::shape` does the same for static Parts.
   `LooseWorld::add_static_shape` records it for the contact class and the
   floor mass. World's character/static contacts use `PrimContact` too.
-  For a static Ball, the Head touch test runs the BallBlock test (00ae2aec)
+  For a static Ball, the Torso/Head touch test runs the BallBlock test (00ae2aec)
   rather than the block overlap stand-in.
 - **Ray test.** The Humanoid ray query tests a loose Ball with Ball +0x70
   (00adc17c). That is G3D collisionTimeForMovingPointFixedSphere (0124e2c8),
@@ -1250,8 +1258,9 @@ is a `Prim::Character` in the same pair map.
 - While the character is kinematic (RunningNoPhysics), its assembly is in the
   Humanoid stage (SleepStage line 790, `a->inStage(IStage::HUMANOID_STAGE)`),
   so its contacts with loose Parts leave SleepStage and are not stepped.
-- The Head touch test that ends RunningNoPhysics (c0192c → c02209) runs
-  vtable +0x24 (ae26a6) on each of the Head's contacts:
+- The Torso/Head touch test that ends RunningNoPhysics (c0192c → c02209)
+  runs vtable +0x24 (ae26a6) on each of the Torso's, then the Head's,
+  contacts:
   - first the extents check, then computeIsColliding with no ignored overlap;
   - it uses the persistent pair, so it updates the cached separating axis.
 

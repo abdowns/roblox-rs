@@ -1405,7 +1405,7 @@ impl World {
             .collect()
     }
     /// A character collider touching anything outside the character (the
-    /// HumanoidState Head test c0192c): the static blocks' stand-in first,
+    /// HumanoidState Torso/Head test c0192c): the static blocks' stand-in first,
     /// then the loose Parts through their contacts.
     pub fn collider_touching(
         &mut self,

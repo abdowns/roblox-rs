@@ -1,5 +1,34 @@
 # MODLOG
 
+## 2026-10-15 RunningNoPhysics ends on a Torso touch
+
+**Changed:**
+- The touch test that ends RunningNoPhysics (HumanoidState c0192c) checks
+  the Torso first, then the Head. The port had read Humanoid +0x2a4 as the
+  HumanoidRootPart, which never touches, so only the Head counted.
+- The RootJoint builder 00bdb2dc settles it: +0x2a4 is RootJoint's Part1
+  and Part0 of "Right Shoulder", "Left Shoulder", "Right Hip", "Left Hip"
+  and "Neck" (strings at 018da730), so it is the Torso. +0x27c is Neck's
+  Part1, the Head, and +0x274 is the HumanoidRootPart.
+- `Humanoid::root_or_head_touching` (private) is now
+  `torso_or_head_touching`. Comments and docs that said "Head touch" now say
+  "Torso/Head touch".
+
+**Why:** While writing a ball-push audit, the kinematic character walked
+straight through a loose 4-stud Ball and a loose 4x4x4 Block. Both stay
+below the Head, so nothing ended RunningNoPhysics.
+
+**Tested how:** `sh tools/cargo.sh test --locked` (107 pass), clippy clean,
+all 23 audits against the previous commit's outputs.
+
+**Result:**
+- All 23 audits are unchanged (audit-runtime differs only in timing). None
+  of them puts a loose Part in reach of the Torso but not the Head.
+- Run against the uncommitted ball-push audit: the character now stops at
+  a loose 4x4x4 Block (Block moves 0.3 studs) and pushes a loose 4-stud
+  Ball (39 studs in 3 s). Before the fix it walked through both.
+- Native parity is **not tested**.
+
 ## 2026-10-15 Anchored Ball Parts
 
 **Changed:**

@@ -2315,8 +2315,8 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
 }
 
 /// The character walks -Z into an unanchored 4 x 6 x 2 "Crate" resting on
-/// the Baseplate (its +Z face at z = -7, tall enough to meet the Head, whose
-/// touch test ends RunningNoPhysics).
+/// the Baseplate (its +Z face at z = -7, tall enough to meet the Torso and
+/// Head, whose touch test ends RunningNoPhysics).
 /// Their contacts are realTimeConnectors (the character cannot throttle);
 /// the Crate is logged through its kernel lists while it is pushed.
 pub fn audit_part_push(bundle: &Bundle) -> Result<String, String> {
@@ -2400,7 +2400,7 @@ pub fn audit_part_push(bundle: &Bundle) -> Result<String, String> {
         fixture.state_type()
     )
     .unwrap();
-    // Mechanism checks only: the Head touch ends RunningNoPhysics, the
+    // Mechanism checks only: the Torso/Head touch ends RunningNoPhysics, the
     // character's contacts with the Crate are realtime connectors that move
     // it out of contactBodies, and the Crate is pushed along the path.
     use crate::loose::BodyList;

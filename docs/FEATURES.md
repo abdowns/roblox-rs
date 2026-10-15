@@ -102,7 +102,8 @@ output to expect. Anything not covered by an audit is marked **not tested**.
 - The character against unanchored Parts:
   - realtime contact springs between Torso/Head and loose Parts;
   - loose jointConnectors springs;
-  - the Head touch test that ends RunningNoPhysics also checks loose Parts.
+  - the Torso/Head touch test that ends RunningNoPhysics also checks loose
+    Parts.
 
   Run `sh tools/cargo.sh run --locked -- audit-part-push`. Expect:
   - `part_push_first_contact step=101`;
