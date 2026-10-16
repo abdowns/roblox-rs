@@ -372,10 +372,27 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   a Wedge welded into a multi-Part assembly, and Wedge against Wedge.
   Not ported:
   - Ball against Wedge (BallPolyContact): the step fails with an error;
-  - Wedge rendering: the renderer refuses a Wedge Part;
   - CornerWedge and Cylinder.
 
   Native parity is **not tested**.
+
+- Wedge Parts are drawn by the native Wedge path (010dc290,
+  `geometry::workspace_wedge`): the Block's strips, without the Top face,
+  with the slope as face 5 and the +X/-X triangles drawn as narrowing
+  strips whose studs follow them. Run
+  `sh tools/cargo.sh test --locked wedge_draw`: every vertex of a studded
+  4 x 10 x 20 Wedge lies on its face of the physics mesh with that face's
+  normal. Run `sh tools/cargo.sh run --locked -- viewport-baseplate-smoke`
+  and expect, among the draws:
+  - `workspace_draw name="WedgeRamp" geometry=wedge quads=6 vertices=24 triangles=12 ... stud_extent=[4.0, 0.75]`;
+  - `workspace_draw name="Chute" geometry=wedge quads=5 vertices=20 triangles=10 ...`;
+  - `workspace_draw name="Doorstop" geometry=wedge quads=5 ...` and
+    `name="Tumbler" geometry=wedge quads=5 ...`.
+
+  The float association of the corner and normal sums is copied from
+  `workspace_block`; it is **not checked** against 010dc290's disassembly.
+  How it looks is **not tested** (log, don't look). Material UVs, tangents
+  and outline distances are not produced, as for blocks.
 
 - Ball Parts are drawn as addSphere's cube sphere (`geometry::workspace_sphere`).
   Run `sh tools/cargo.sh run --locked -- audit-ball-render`. Expect:

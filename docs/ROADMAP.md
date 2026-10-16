@@ -85,8 +85,8 @@ Left, in order:
    rendering (`geometry::workspace_sphere`, `audit-ball-render`).
    WedgePoly and PolyPolyContact (Block or Wedge against Wedge), with the
    Wedge's mass, center of mass and ray test (`poly.rs`, `poly_contact.rs`,
-   `audit-part-wedge`). Left:
-   - Wedge rendering (010dc290);
+   `audit-part-wedge`), and Wedge rendering (`geometry::workspace_wedge`).
+   Left:
    - BallPolyContact (Ball against Wedge, 00add538);
    - CornerWedgePoly;
    - Cylinder.

@@ -33,6 +33,15 @@ East of the spawn (+X, turn right) a showcase of the later features:
   plate spins on a motor hinge at x 30, and a red Motor arm on a loose tower
   at x 40 turns 90 degrees.
 
+West of the spawn (-X, turn left), the **Wedges** (x -20..-40):
+- a grey Wedge ramp at (-24, 2, 6), rising towards +Z: walk up it from its
+  low end at z -2;
+- a red block slides down the slope of an anchored grey Wedge at x -36 and
+  off its low end;
+- a yellow Wedge dropped flat from y = 20 at (-26, -14), and a green one
+  dropped upside down from y = 14 at (-36, -14) that lands and rolls onto a
+  face.
+
 Every 60 frames the live log gets a `loose_parts` line with each Part's kernel
 list, position and connector counts. The character can stand on loose Parts,
 step up onto low ones and ride them (`audit-part-stand`).
@@ -51,7 +60,8 @@ roll down a ramp and knock into each other (`audit-part-ball`), and the
 character pushes a loose ball and is stopped by an anchored one
 (`audit-part-ball-push`). Balls are drawn as spheres (`audit-ball-render`).
 Wedge Parts land, tumble and carry blocks down their slope, and the
-character walks up them (`audit-part-wedge`). Wedges do not render yet.
+character walks up them (`audit-part-wedge`). They are drawn by the native
+Wedge path (`geometry::workspace_wedge`).
 The demo place shows these features too (see the top of this file).
 Contacts come from the native broadphase (`audit-broadphase`). Not ported
 yet: outlines and the Studio camera.

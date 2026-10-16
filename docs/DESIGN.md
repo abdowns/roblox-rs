@@ -1197,12 +1197,18 @@ Block against Block keeps BlockBlockContact.
     - world.rs counts and pushes only live connectors.
   - `LooseWorld::apply_events` handles the events of `update` and of
     `compute_is_colliding`, because a PolyContact rebuilds its list in both.
+- **Drawing.** `geometry::workspace_wedge` is the Wedge path of
+  GeometryGenerator (010dc290). It is addBlock with:
+  - its own face table (017f0744);
+  - no Top face;
+  - the slope as face 5;
+  - the side triangles drawn as strips that narrow, with one edge stepping
+    down the slope.
 - **Static Wedges.** The Torso/Head touch test runs a fresh PolyContact
   test against a static Wedge. A static Block still uses the box-overlap
   stand-in.
 - **Not ported.**
   - Ball against Wedge (BallPolyContact 00add538): the step returns an error.
-  - Wedge rendering (010dc290): the renderer refuses the Part.
   - CornerWedge and Cylinder are refused.
 
 ## Unanchored Parts (loose.rs)

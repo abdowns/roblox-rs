@@ -311,6 +311,201 @@ pub fn workspace_block(
     Ok((draw, studs))
 }
 
+/// GeometryGenerator's Wedge path (010dc290) for a Workspace WedgePart
+/// without a decal. It is addBlock with these changes:
+/// - the face table is 017f0744;
+/// - face 1 (Top) is skipped;
+/// - face 5 is the slope: normal unit(R1 z/y - R2), length |(y, z)|, and
+///   strips stepping down it along unit(-(y R1 + z R2));
+/// - the +X and -X faces are triangles. Both edges start at the top back
+///   corner. One steps straight down (-R1); the other follows the slope
+///   (-R1 - (z/y) R2). Its stud u starts at 0 (+X) or keeps width/2 (-X)
+///   and moves by 4 z/y per full strip (by 4 z/y times the fraction on the
+///   last one), so the studs follow the narrowing face.
+///
+/// As for blocks, only positions, normals and stud coordinates are
+/// produced. The float association of the corner and normal sums follows
+/// `workspace_block`; it is not checked against this function's
+/// disassembly.
+pub fn workspace_wedge(
+    faces: &[[usize; 4]; 6],
+    rows: &[f32; 6],
+    colors: &BTreeMap<u32, [u8; 3]>,
+    part: &PartInstance,
+) -> Result<(Draw, Vec<[f32; 2]>), String> {
+    let size = part.size;
+    let r = &part.frame.rotation;
+    let t = part.frame.position;
+    let slope_length = (size[2] * size[2] + size[1] * size[1]).sqrt();
+    // local_2c: each face's strip length.
+    let lengths = [size[1], size[2], size[1], size[1], size[2], slope_length];
+    let smooth = |face: usize| matches!(part.surfaces[face], 0 | 10);
+    let count_of = |face: usize| {
+        if smooth(face) {
+            1
+        } else {
+            (lengths[face] * 0.125 + 0.999) as i32
+        }
+    };
+    let quads: i64 = [0, 2, 3, 4, 5]
+        .iter()
+        .map(|&f| i64::from(count_of(f)))
+        .sum();
+    if quads > 0x2000 {
+        return Err("wedge exceeds the native 0x2000 quad limit".into());
+    }
+    let half = size.map(|v| v * 0.5);
+    let base: [f32; 3] = std::array::from_fn(|i| {
+        -half[2] * r[i][2] + -half[1] * r[i][1] + -half[0] * r[i][0] + t[i]
+    });
+    let column = |c: usize| [r[0][c], r[1][c], r[2][c]];
+    let corners: [[f32; 3]; 8] = std::array::from_fn(|k| {
+        let mut p = base;
+        for (bit, axis) in [(4, 0), (2, 1), (1, 2)] {
+            if k & bit != 0 {
+                let c = column(axis);
+                p = std::array::from_fn(|i| p[i] + c[i] * size[axis]);
+            }
+        }
+        p
+    });
+    let unit = |v: [f32; 3]| {
+        let inverse = 1.0 / (v[2] * v[2] + v[1] * v[1] + v[0] * v[0]).sqrt();
+        v.map(|x| inverse * x)
+    };
+    let k = size[2] / size[1];
+    let (c0, c1, c2) = (column(0), column(1), column(2));
+    let normals = [
+        unit(c0.map(|x| 0.0 + x)),
+        unit(c1.map(|x| 0.0 + x)),
+        unit(c2.map(|x| x + 0.0)),
+        unit(c0.map(|x| 0.0 - x)),
+        unit(c1.map(|x| 0.0 - x)),
+        unit(std::array::from_fn(|i| c1[i] * k + (0.0 - c2[i]))),
+    ];
+    let down = c1.map(|x| -x);
+    let sloped: [f32; 3] = std::array::from_fn(|i| down[i] - c2[i] * k);
+    let slope_step = unit(std::array::from_fn(|i| size[1] * down[i] - c2[i] * size[2]));
+    // local_1ec: per face, the steps of corners a and b and the stud u
+    // rates of a (f6) and b (f7).
+    let steps: [([f32; 3], [f32; 3], f32, f32); 6] = [
+        (sloped, down, k, 0.0),
+        ([0.0; 3], [0.0; 3], 0.0, 0.0),
+        (down, down, 0.0, 0.0),
+        (down, sloped, 0.0, k),
+        (c2, c2, 0.0, 0.0),
+        (slope_step, slope_step, 0.0, 0.0),
+    ];
+    let color = part_color(colors, part)?;
+    let specular = specular(part.material)?;
+    let mut draw = Draw {
+        name: part.name.clone(),
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        material: part.material,
+        geometry: "wedge".into(),
+    };
+    let mut studs = Vec::new();
+    for face in [0, 2, 3, 4, 5] {
+        let table = faces[face];
+        let (a, b) = (corners[table[0]], corners[table[1]]);
+        let (step_a, step_b, rate_a, rate_b) = steps[face];
+        let width = if face == 0 || face == 3 {
+            size[2]
+        } else {
+            size[0]
+        };
+        let count = count_of(face);
+        let surface = part.surfaces[face] as usize;
+        let (studded, row) = if (1..=5).contains(&surface) {
+            (true, rows[surface])
+        } else {
+            (false, 0.0)
+        };
+        let (extent, u_rate) = if studded {
+            (0.25f32, 4.0f32)
+        } else {
+            (0.0, 0.0)
+        };
+        let mut u_a = if studded { width * 0.5 } else { 0.0 };
+        let mut u_b = if rate_b != 0.0 { u_a } else { 0.0 };
+        if rate_a != 0.0 {
+            u_a = 0.0;
+        }
+        let mut quad = |positions: [[f32; 3]; 4], us: [f32; 4], v_end: f32| {
+            let first = draw.vertices.len() as u32;
+            for (position, stud) in positions.into_iter().zip([
+                [us[0], row],
+                [us[1], row],
+                [us[2], v_end],
+                [us[3], v_end],
+            ]) {
+                draw.vertices.push(RenderVertex {
+                    position,
+                    normal: normals[face],
+                    uv: [0.0; 2],
+                    color,
+                    specular,
+                });
+                studs.push(stud);
+            }
+            draw.indices
+                .extend([first, first + 1, first + 2, first + 2, first + 1, first + 3]);
+        };
+        let (mut off_a, mut off_b) = ([0.0f32; 3], [0.0f32; 3]);
+        for _ in 1..count {
+            let (start_a, start_b) = (u_a, u_b);
+            if rate_b != 0.0 {
+                u_b -= u_rate * rate_b;
+            }
+            if rate_a != 0.0 {
+                u_a += u_rate * rate_a;
+            }
+            let next_a: [f32; 3] = std::array::from_fn(|i| step_a[i] * 8.0 + off_a[i]);
+            let next_b: [f32; 3] = std::array::from_fn(|i| step_b[i] * 8.0 + off_b[i]);
+            quad(
+                [
+                    std::array::from_fn(|i| off_a[i] + a[i]),
+                    std::array::from_fn(|i| off_b[i] + b[i]),
+                    std::array::from_fn(|i| a[i] + next_a[i]),
+                    std::array::from_fn(|i| b[i] + next_b[i]),
+                ],
+                [start_a, start_b, u_a, u_b],
+                extent + row,
+            );
+            off_a = next_a;
+            off_b = next_b;
+        }
+        if count > 0 {
+            let rest = (count - 1) as f32 * -8.0 + lengths[face];
+            let scaled = if 0.0 <= rest * 0.125 {
+                rest * 0.125
+            } else {
+                0.0
+            };
+            let fraction = if scaled <= 1.0 { scaled } else { 1.0 };
+            let (start_a, start_b) = (u_a, u_b);
+            if rate_b != 0.0 {
+                u_b -= rate_b * fraction * u_rate;
+            }
+            if rate_a != 0.0 {
+                u_a += u_rate * fraction * rate_a;
+            }
+            quad(
+                [
+                    std::array::from_fn(|i| a[i] + off_a[i]),
+                    std::array::from_fn(|i| b[i] + off_b[i]),
+                    corners[table[2]],
+                    corners[table[3]],
+                ],
+                [start_a, start_b, u_a, u_b],
+                extent * fraction + row,
+            );
+        }
+    }
+    Ok((draw, studs))
+}
+
 /// addSphere's grid for a Ball Part: `tiles` strips per cube face, each
 /// `rows` quads tall, and `tiles * rows` quads across. A Part whose six
 /// surfaces are all Smooth (isPartSmooth 010cae50) gets one tile; otherwise
@@ -641,6 +836,7 @@ pub fn workspace_draws(
         image.brick_colors()?,
         image.sphere_tiling()?,
     );
+    let wedge_faces = image.wedge_faces()?;
     let mut draws = Vec::new();
     let mut coordinates = BTreeMap::new();
     let mut report = String::new();
@@ -670,9 +866,28 @@ pub fn workspace_draws(
             draws.push(draw);
             continue;
         }
+        if part.shape == crate::workspace::SHAPE_WEDGE {
+            let (draw, studs) = workspace_wedge(&wedge_faces, &rows, &colors, part)?;
+            writeln!(
+                report,
+                "workspace_draw name={:?} geometry=wedge quads={} vertices={} triangles={} color={:?} stud_extent={:?}",
+                draw.name,
+                draw.vertices.len() / 4,
+                draw.vertices.len(),
+                draw.indices.len() / 3,
+                draw.vertices.first().map(|v| v.color),
+                studs.iter().fold([0.0f32; 2], |m, s| [m[0].max(s[0]), m[1].max(s[1])])
+            )
+            .unwrap();
+            if coordinates.insert(draw.name.clone(), studs).is_some() {
+                return Err(format!("duplicate Workspace Part name {:?}", draw.name));
+            }
+            draws.push(draw);
+            continue;
+        }
         if part.shape != crate::workspace::SHAPE_BLOCK {
             return Err(format!(
-                "Part {:?}: only Block and Ball Parts render",
+                "Part {:?}: only Block, Ball and Wedge Parts render",
                 part.name
             ));
         }
@@ -949,6 +1164,52 @@ impl RenderScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wedge_draw_lies_on_the_wedge_mesh() {
+        // The 017f0744 corner columns (see docs/RESEARCH.md).
+        let faces = [
+            [7, 7, 4, 5],
+            [3, 7, 3, 7],
+            [7, 3, 5, 1],
+            [3, 3, 1, 0],
+            [0, 4, 1, 5],
+            [3, 7, 0, 4],
+        ];
+        let colors = BTreeMap::from([(194, [163, 162, 165])]);
+        let mut part = PartInstance {
+            name: "W".into(),
+            ..Default::default()
+        };
+        part.set_shape(crate::workspace::SHAPE_WEDGE);
+        part.set_size([4.0, 10.0, 20.0]);
+        part.surfaces = [3; 6];
+        let (draw, studs) = workspace_wedge(&faces, &[0.0; 6], &colors, &part).unwrap();
+        let mesh = crate::poly::Mesh::wedge(part.size);
+        // Strips: +X, Back, -X 2 each (10 tall), Bottom 3, slope 3 (22.4).
+        assert_eq!(draw.vertices.len(), 4 * 12);
+        for v in &draw.vertices {
+            let face = mesh
+                .faces
+                .iter()
+                .find(|f| {
+                    let n = f.plane.normal;
+                    (n[0] - v.normal[0]).abs() < 1e-5
+                        && (n[1] - v.normal[1]).abs() < 1e-5
+                        && (n[2] - v.normal[2]).abs() < 1e-5
+                })
+                .expect("normal of a wedge face");
+            let p = v.position;
+            let d = |f: &crate::poly::Face| {
+                (f.plane.normal[0] * p[0] + f.plane.normal[1] * p[1]) + f.plane.normal[2] * p[2]
+                    - f.plane.distance
+            };
+            assert!(d(face).abs() < 1e-4, "{p:?} off its face");
+            assert!(mesh.faces.iter().all(|f| d(f) < 1e-4), "{p:?} outside");
+        }
+        // The +X triangle's studs: u grows from 0 to width/2 = 10.
+        assert_eq!(studs[0], [0.0, 0.0]);
+        assert!((studs[6][0] - 10.0).abs() < 1e-5);
+    }
     #[test]
     fn head_stretches_with_sign_branch_and_preserves_offset() {
         assert_eq!(

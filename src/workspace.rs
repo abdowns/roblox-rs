@@ -255,8 +255,10 @@ impl Workspace {
     /// - a welded "L" ("Base" + "Mast", z 8) that falls as one assembly;
     /// - "Hung", glued under an anchored "Holder";
     /// - hinges on anchored blocks (z 16): "Swing" (free Hinge), "Wheel"
-    ///   (motor hinge, constant 0.1) and a Motor arm on a loose "Tower".
+    ///   (motor hinge, constant 0.1) and a Motor arm on a loose "Tower";
+    /// - Wedges, west of the spawn (-X; see `add_wedge_showcase`).
     fn add_feature_showcase(&mut self) {
+        self.add_wedge_showcase();
         const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let frame = |position: [f32; 3]| CoordinateFrame {
             position,
@@ -490,6 +492,89 @@ impl Workspace {
         );
         self.joints[motor].desired_angle = std::f32::consts::FRAC_PI_2;
         self.joints[motor].max_velocity = 0.05;
+    }
+    /// WedgeParts west of the spawn (x -20..-40):
+    /// - "WedgeRamp", an anchored 8 x 4 x 16 Wedge rising towards +Z, to walk
+    ///   up from its low end at z -2;
+    /// - "Chute", an anchored 8 x 4 x 8 Wedge, with "Slider" (2 x 1 x 2) set on
+    ///   its slope: it slides off the low end;
+    /// - "Doorstop", a loose 4 x 2 x 4 Wedge dropped flat from 20 studs, and
+    ///   "Tumbler", one dropped upside down and turned, which lands on its
+    ///   edges and rolls onto a face.
+    fn add_wedge_showcase(&mut self) {
+        let mut add = |name: &str,
+                       wedge: bool,
+                       size: [f32; 3],
+                       position: [f32; 3],
+                       rotation: [[f32; 3]; 3],
+                       anchored: bool,
+                       color: u32| {
+            let mut part = PartInstance {
+                name: name.into(),
+                anchored,
+                brick_color: color,
+                frame: CoordinateFrame { position, rotation },
+                ..Default::default()
+            };
+            if wedge {
+                part.set_shape(SHAPE_WEDGE);
+            }
+            part.set_size(size);
+            self.parts.push(part);
+        };
+        const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        add(
+            "WedgeRamp",
+            true,
+            [8.0, 4.0, 16.0],
+            [-24.0, 2.0, 6.0],
+            IDENTITY,
+            true,
+            194,
+        );
+        // The Chute's slope normal is (0, 2, -1) / sqrt 5; the Slider's up
+        // axis is that normal, 0.05 studs clear of the slope at local z 2.
+        let root5 = 5f32.sqrt();
+        let (c, s) = (2.0 / root5, -1.0 / root5);
+        let lift = 0.55;
+        add(
+            "Chute",
+            true,
+            [8.0, 4.0, 8.0],
+            [-36.0, 2.0, 0.0],
+            IDENTITY,
+            true,
+            194,
+        );
+        add(
+            "Slider",
+            false,
+            [2.0, 1.0, 2.0],
+            [-36.0, 3.0 + c * lift, 2.0 + s * lift],
+            [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]],
+            false,
+            21,
+        );
+        add(
+            "Doorstop",
+            true,
+            [4.0, 2.0, 4.0],
+            [-26.0, 20.0, -14.0],
+            IDENTITY,
+            false,
+            24,
+        );
+        // Upside down (180 degrees about Z), then 30 degrees about Y.
+        let (sy, cy) = 30f32.to_radians().sin_cos();
+        add(
+            "Tumbler",
+            true,
+            [4.0, 2.0, 4.0],
+            [-36.0, 14.0, -14.0],
+            [[-cy, 0.0, -sy], [0.0, -1.0, 0.0], [-sy, 0.0, cy]],
+            false,
+            28,
+        );
     }
     /// The World's joint spanning tree (`joints.rs`): every Part in
     /// Workspace order (World::insertPrimitive), then every joint in

@@ -1,5 +1,36 @@
 # MODLOG
 
+## 2026-10-15 Wedge rendering and the Wedge demo
+
+**Changed:**
+- `geometry::workspace_wedge`: the Wedge path of GeometryGenerator
+  (010dc290). It uses the face table 017f0744 (`NativeImage::wedge_faces`).
+  `workspace_draws` now draws Wedge Parts.
+- The viewport baseplate demo (`add_wedge_showcase`) shows, west of the
+  spawn:
+  - a Wedge ramp to walk up;
+  - a block sliding off an anchored Wedge;
+  - a Wedge dropped flat and one dropped upside down.
+- AGENTS.md: a new rule to update the demo whenever a change can be shown
+  in it.
+
+**Why:** The user asked for the demo to show the Wedge work, and for every
+demonstrable change from now on. The Wedges could not be shown until they
+rendered.
+
+**Tested how:**
+- `sh tools/cargo.sh test --locked wedge_draw`: every drawn vertex lies on
+  its face of the physics mesh.
+- `viewport-baseplate-smoke` exits 0 and logs four `geometry=wedge` draws.
+  At step 457 the Slider has slid off the Chute (z -5.8) and is asleep, and
+  the Tumbler is asleep on a face. The Doorstop is still moving.
+- Tests (116), clippy, and the render, geometry and wedge audits pass.
+
+**Result:** Wedges draw and act in the demo. How they look is **not
+tested** by me. The float order of the wedge corners is copied from the
+block port and **not checked** against 010dc290's disassembly. Native parity
+is **not tested**.
+
 ## 2026-10-15 Wedge Parts and PolyPolyContact
 
 **Changed:**
