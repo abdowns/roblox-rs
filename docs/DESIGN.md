@@ -1145,6 +1145,66 @@ In the world (`audit-part-ball`):
 - **Not ported.** Cylinders are refused when the world is built. Balls render
   as blocks.
 
+## Wedge Parts and PolyPolyContact (poly.rs, poly_contact.rs)
+
+A WedgePart is a Poly geometry: a convex mesh. Natively, Block is a Poly
+too, so a Wedge meets a Block or another Wedge through PolyPolyContact.
+Block against Block keeps BlockBlockContact.
+
+- **Shape.** `PartInstance::shape` holds the Primitive part type
+  (vtable +0xa4). It equals Part.Shape for Ball and Block, and is
+  `SHAPE_WEDGE` (4) for a WedgePart. `material::Shape::Wedge` follows it
+  through the world.
+- **Mesh (`poly::Mesh`).** It is built from the size alone, as the native
+  mesh cache does, in the native order:
+  - the vertex, edge and face ids;
+  - each edge's forward face first;
+  - each face plane from its first three edges.
+
+  Block and Wedge both have one. The contact rebuilds both meshes every
+  time it searches.
+- **Mass.**
+  - Volume is the whole box, x*y*z.
+  - The moment is the Block polynomial, taken about the Part's center.
+  - The center of mass is offset to (0, -y/6, z/6) in the Part frame.
+
+  The offset goes to `MassPart::center`. `assembly::combine` then puts the
+  Body's center of mass there and shifts the moment by m P(offset)
+  (006b0234), as Cofm 00a90502 does. Every other Part has a zero offset,
+  so its numbers are unchanged.
+- **Extents and ray tests.**
+  - The extents are the Block's (vertices 0, 1, 3 and 4 span the box).
+  - The getSlowHit bound is |size|/2.
+  - The ray test (00b340c0) tries every face's plane in order and keeps the
+    hit behind all neighbouring faces that is nearest by squared distance.
+  - `world::part_space_hit` is Primitive hitTest 00b631de. It moves the
+    ray into part space for any geometry.
+- **The contact (`PolyContact`).**
+  - Each step searches for a separating pair, from the cached answer first:
+    - face against vertices (FaceFacePair, in both orders);
+    - edge against edge (EdgeEdgePair).
+  - Touching pairs generate connectors:
+    - FaceVertex, FaceEdge and EdgeEdge, as `PairKind` in a `GeoPair`
+      with a `PolyFeature`;
+    - each takes the place of an old connector with the same ids and kind.
+  - Unlike BlockBlock, a separated PolyContact keeps its connectors but
+    takes them out of the kernel. A connector is put back only when it is
+    deeper than -0.01.
+  - `ContactEvent::Withdrawn` reports that removal. `PrimContact::is_live`
+    tells which listed connectors are in the kernel:
+    - loose.rs removes the kernel link and keeps the connector's impulse
+      and spring state;
+    - world.rs counts and pushes only live connectors.
+  - `LooseWorld::apply_events` handles the events of `update` and of
+    `compute_is_colliding`, because a PolyContact rebuilds its list in both.
+- **Static Wedges.** The Torso/Head touch test runs a fresh PolyContact
+  test against a static Wedge. A static Block still uses the box-overlap
+  stand-in.
+- **Not ported.**
+  - Ball against Wedge (BallPolyContact 00add538): the step returns an error.
+  - Wedge rendering (010dc290): the renderer refuses the Part.
+  - CornerWedge and Cylinder are refused.
+
 ## Unanchored Parts (loose.rs)
 
 Each unanchored Workspace Part is its own single-Part assembly and SimBody, a

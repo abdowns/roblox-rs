@@ -344,6 +344,39 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   ported: Cylinders (refused), Balls in the character. Native parity is
   **not tested**.
 
+- Wedge Parts in the physics: a WedgePart (`set_shape(SHAPE_WEDGE)`), loose
+  or anchored, has the Wedge mass, center of mass, moment and extents. It
+  collides with Blocks and Wedges through PolyPolyContact (`poly_contact.rs`),
+  and the Humanoid ray query hits its faces. Run
+  `sh tools/cargo.sh run --locked -- audit-part-wedge`. Expect:
+  - `part_wedge_load masses=[22.4, 22.4, 2.8] centers_in_body=[[0.0, -0.33333334, 0.6666667], ...]`:
+    a 4 x 2 x 4 Plastic Wedge weighs the whole box (x y z x 0.7), with its
+    center of mass at (0, -y/6, z/6);
+  - `part_wedge_first_contact part=Slider step=8 contacts=[static1/Slider FaceVertex length=-0.024642944]...`
+    and `part=Drop step=56 contacts=[static0/Drop FaceVertex length=-0.1519562]...`:
+    FaceVertex connectors from PolyPolyContact (static0 is the Baseplate,
+    static1 the anchored Slope);
+  - `part_wedge_result ... lowest=[-0.020267248, -0.019460559, -0.012765029] speeds=[0.0, 0.0, 0.0] drop=[29.997982, 0.9859274, -30.00273] ... slider=[-29.91549, 0.48844653, 24.16576] slider_slope_steps=150 ray=Some((([-33.0, 2.0, 30.0], [0.0, 0.8944272, -0.4472136]), Static(1))) ramp_steps=148 worst_ramp_height_error=0.07017875 walk_end=[5.068154e-5, 5.4002967, -15.872218]`:
+    - a dropped Wedge rests flat on the Baseplate, 0.02 studs in;
+    - an upside-down Wedge tumbles and comes to rest on its slope;
+    - a block set on a 27 degree anchored slope slides off its low end;
+    - a ray hits the slope with the slope's normal;
+    - the character walks up a 14 degree Wedge ramp, its root 3 studs over
+      the slope (within 0.07);
+  - `part_wedge_sleep ... [Drop final=SleepingDeeply ...] [Flip final=SleepingDeeply ...] [Slider final=SleepingDeeply ...]`;
+  - `part_wedge_pass rested=true flat=true slid=true hit=true climbed=true native_differential=not_tested`.
+
+  Unit tests: `sh tools/cargo.sh test --locked poly` (mesh topology, the
+  face tests, the ray hit test, and three contact cases). Not tested: the
+  character's Torso or Head touching a Wedge (in the audit they never do),
+  a Wedge welded into a multi-Part assembly, and Wedge against Wedge.
+  Not ported:
+  - Ball against Wedge (BallPolyContact): the step fails with an error;
+  - Wedge rendering: the renderer refuses a Wedge Part;
+  - CornerWedge and Cylinder.
+
+  Native parity is **not tested**.
+
 - Ball Parts are drawn as addSphere's cube sphere (`geometry::workspace_sphere`).
   Run `sh tools/cargo.sh run --locked -- audit-ball-render`. Expect:
   - `ball_mesh name="Boulder" diameter=4 smooth=false tiles=1 rows=6 vertices=294 expected_vertices=294 quads=216 expected_quads=216 radius_error=0.00000023841858 ... least_normal_alignment=0.9999999 inward_triangles=0 distinct_points=Some(218) expected_distinct=218`,

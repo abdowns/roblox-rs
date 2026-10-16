@@ -30,6 +30,8 @@ pub mod motor;
 pub mod native_data;
 pub mod physics;
 pub mod player;
+pub mod poly;
+pub mod poly_contact;
 pub mod rbxm;
 pub mod render;
 pub mod rig;

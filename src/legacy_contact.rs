@@ -484,6 +484,7 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
         frame: frame.clone(),
         mass: 2.0,
         inertia: crate::assembly::MassProfile::load(bundle)?.block_inertia([2.0; 3], 2.0)?,
+        center: [0.0; 3],
     };
     let assembly = crate::assembly::AssemblyProperties::combine(&part, &[])?;
     let original = crate::physics::FreeFallBody::new(frame, [0.0, -10.0, 0.0], [0.0; 3])?;

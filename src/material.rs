@@ -57,11 +57,14 @@ impl ContactParams {
 }
 
 /// Geometry kinds that reach Primitive stiffness (Geometry vtable +0xc):
-/// Ball = 1 selects the ball table, Block = 2 (vtable 01c866e8 00adf94a).
+/// Ball = 1 selects the ball table, Block = 2 (vtable 01c866e8 00adf94a),
+/// Wedge = 4 (WedgePoly 00ba5096). The collide type (vtable +0x10) is Ball
+/// 1, Block 2 and Poly 3 for a Wedge (00af55f0).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
     Ball,
     Block,
+    Wedge,
 }
 
 const DENSITY: (u32, u32, Register) = (0x00a4346a, 0x00a43756, Register::EAX);

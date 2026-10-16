@@ -210,6 +210,10 @@ impl KernelBody {
     pub fn inverse_mass(&self) -> f32 {
         self.inverse_mass
     }
+    /// The center of mass in the root Body's frame.
+    pub fn center_in_body(&self) -> [f32; 3] {
+        self.center_in_body
+    }
     /// Dirty SimBody refresh (00ab16aa): publish root origin state, rebuild
     /// Cofm/inertia and momentum from angular velocity, preserve accumulators.
     pub fn refresh_assembly(

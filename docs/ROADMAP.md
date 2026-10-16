@@ -82,10 +82,14 @@ Left, in order:
    CornerWedge (PolyContact), TrussPart, and the legacy ramp/prism/pyramid
    Parts. Done: Ball Parts, loose and anchored, and against the character
    (`ball_contact.rs`, `audit-part-ball`, `audit-part-ball-push`), and Ball
-   rendering (`geometry::workspace_sphere`, `audit-ball-render`). Left: the
-   Poly geometries
-   (Cylinder, WedgePoly, CornerWedgePoly) and PolyPolyContact, which also
-   serves Block against Poly.
+   rendering (`geometry::workspace_sphere`, `audit-ball-render`).
+   WedgePoly and PolyPolyContact (Block or Wedge against Wedge), with the
+   Wedge's mass, center of mass and ray test (`poly.rs`, `poly_contact.rs`,
+   `audit-part-wedge`). Left:
+   - Wedge rendering (010dc290);
+   - BallPolyContact (Ball against Wedge, 00add538);
+   - CornerWedgePoly;
+   - Cylinder.
 4. **Body movers.** BodyPosition, BodyGyro, BodyVelocity,
    BodyAngularVelocity, BodyForce, BodyThrust, RocketPropulsion.
 5. **Automatic joints.** JointsService and the surface pairs (studs/inlets,

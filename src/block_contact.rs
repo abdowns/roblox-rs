@@ -144,6 +144,14 @@ pub enum PairKind {
     BallEdge,
     /// BallBlockConnector kind 2: `point_b` is a vertex on face `id_b`.
     BallPlane,
+    /// FaceVertexConnector (type 6, `poly_contact`): a face of A (`id_a`)
+    /// and a vertex of B (`id_b`).
+    FaceVertex,
+    /// FaceEdgeConnector (type 8): the edge index `id_a` of a face of A and
+    /// the edge `id_b` of B.
+    FaceEdge,
+    /// EdgeEdgeConnector (type 7): edge `id_a` of A and edge `id_b` of B.
+    PolyEdgeEdge,
 }
 
 /// GeoPair fields the native constructor leaves uninitialized (pool memory).
@@ -163,6 +171,8 @@ pub struct GeoPair {
     pub id_a: i32,
     pub id_b: i32,
     pub id_c: i32,
+    /// The local geometry of a Poly connector.
+    pub poly: Option<Box<crate::poly_contact::PolyFeature>>,
 }
 
 /// The connector contact point (connector +0xdc): normal, signed length
@@ -187,6 +197,7 @@ impl GeoPair {
             id_a: UNSET,
             id_b: UNSET,
             id_c: UNSET,
+            poly: None,
         }
     }
     /// Lookup comparison ae6024, by the queried kind (the stored kind is not
@@ -206,11 +217,14 @@ impl GeoPair {
                         && self.id_b == first
                         && self.id_a == second)
             }
-            // Ball connectors are never looked up.
+            // Ball and Poly connectors are never looked up here.
             PairKind::BallBall
             | PairKind::BallVertex
             | PairKind::BallEdge
-            | PairKind::BallPlane => false,
+            | PairKind::BallPlane
+            | PairKind::FaceVertex
+            | PairKind::FaceEdge
+            | PairKind::PolyEdgeEdge => false,
         }
     }
     /// GeoPair::computeContactPoint (ae5f1a).
@@ -226,6 +240,9 @@ impl GeoPair {
             }
             PairKind::BallVertex | PairKind::BallEdge | PairKind::BallPlane => {
                 crate::ball_contact::ball_block_point(self, a, b)
+            }
+            PairKind::FaceVertex | PairKind::FaceEdge | PairKind::PolyEdgeEdge => {
+                crate::poly_contact::compute(self, a, b)
             }
         }
     }
@@ -339,6 +356,9 @@ pub enum ContactEvent<T> {
         connector: Connector<T>,
         recomputed: bool,
     },
+    /// Taken out of the kernel but still listed at `index` (a separated
+    /// PolyContact, 00b51ec4).
+    Withdrawn { index: usize },
 }
 
 /// Native connector buffer capacity (BlockBlockContact data, 8 per buffer).

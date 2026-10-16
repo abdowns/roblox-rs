@@ -1774,6 +1774,286 @@ pub fn audit_part_ball(bundle: &Bundle) -> Result<String, String> {
     Ok(report)
 }
 
+/// WedgeParts (PolyPolyContact 00b5203a / 00b51fc4) in a Workspace, with
+/// the character idling at the origin:
+/// - "Drop" (4 x 2 x 4) falls flat onto the Baseplate and comes to rest on
+///   its bottom face;
+/// - "Flip" (4 x 2 x 4), upside down, lands on its slope and back edge and
+///   settles somewhere on the Baseplate;
+/// - "Slider" (2 x 1 x 2), a block set on the slope of "Slope" (an
+///   anchored 8 x 4 x 8 Wedge), slides down it towards -Z;
+/// - a ray straight down onto the Slope's slope (Mesh hitTest 00b340c0);
+/// - then the character walks one second towards -Z up "Ramp", an anchored
+///   8 x 4 x 16 Wedge turned to rise towards -Z (14 degrees), on the
+///   Humanoid floor ray.
+///
+/// Each loose Part's lowest vertex should end on the Baseplate top (y 0).
+pub fn audit_part_wedge(bundle: &Bundle) -> Result<String, String> {
+    use crate::workspace::{PartInstance, SHAPE_WEDGE};
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let mut workspace = Workspace::studio_new_document();
+    const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let add = |workspace: &mut Workspace,
+               name: &str,
+               wedge: bool,
+               size: [f32; 3],
+               frame: CoordinateFrame,
+               anchored: bool| {
+        let mut part = PartInstance {
+            name: name.into(),
+            anchored,
+            frame,
+            ..Default::default()
+        };
+        if wedge {
+            part.set_shape(SHAPE_WEDGE);
+        }
+        part.set_size(size);
+        workspace.parts.push(part);
+    };
+    let at = |position: [f32; 3]| CoordinateFrame {
+        position,
+        rotation: IDENTITY,
+    };
+    // The slope of an 8 x 4 x 8 Wedge rises along +Z with normal
+    // (0, 2, -1) / sqrt 5; the Slider's up axis is that normal.
+    let root5 = 5f32.sqrt();
+    let (c, s) = (2.0 / root5, -1.0 / root5);
+    let slope_center = [-30.0, 2.0, 30.0];
+    let on_slope = [-30.0, slope_center[1] + 1.0, slope_center[2] + 2.0];
+    let lift = 0.5 + 0.05;
+    add(
+        &mut workspace,
+        "Drop",
+        true,
+        [4.0, 2.0, 4.0],
+        at([30.0, 6.0, -30.0]),
+        false,
+    );
+    add(
+        &mut workspace,
+        "Flip",
+        true,
+        [4.0, 2.0, 4.0],
+        CoordinateFrame {
+            position: [30.0, 6.0, 30.0],
+            rotation: [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]],
+        },
+        false,
+    );
+    add(
+        &mut workspace,
+        "Slope",
+        true,
+        [8.0, 4.0, 8.0],
+        at(slope_center),
+        true,
+    );
+    add(
+        &mut workspace,
+        "Slider",
+        false,
+        [2.0, 1.0, 2.0],
+        CoordinateFrame {
+            position: [on_slope[0], on_slope[1] + c * lift, on_slope[2] + s * lift],
+            rotation: [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]],
+        },
+        false,
+    );
+    // Its low edge is at z -6, its high one at z -22 (4 studs up).
+    add(
+        &mut workspace,
+        "Ramp",
+        true,
+        [8.0, 4.0, 16.0],
+        CoordinateFrame {
+            position: [0.0, 2.0, -14.0],
+            rotation: [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]],
+        },
+        true,
+    );
+    let ramp_floor = |z: f32| ((-6.0 - z) / 4.0).clamp(0.0, 4.0);
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let ramp_index = fixture
+        .world
+        .statics
+        .blocks
+        .iter()
+        .position(|b| b.name == "Ramp")
+        .ok_or("missing static Ramp")?;
+    let loose = &fixture.world.loose;
+    let prim = |name: &str| {
+        loose
+            .prims
+            .iter()
+            .position(|p| p.name == name)
+            .ok_or(format!("missing Part {name}"))
+    };
+    let names = ["Drop", "Flip", "Slider"];
+    let prims = [prim(names[0])?, prim(names[1])?, prim(names[2])?];
+    let assemblies = names.map(|name| loose.parts.iter().position(|p| p.name == name));
+    let assemblies = [
+        assemblies[0].ok_or("missing assembly Drop")?,
+        assemblies[1].ok_or("missing assembly Flip")?,
+        assemblies[2].ok_or("missing assembly Slider")?,
+    ];
+    let mut report = String::new();
+    writeln!(
+        report,
+        "part_wedge_load masses={:?} centers_in_body={:?}",
+        assemblies.map(|a| 1.0 / loose.parts[a].body.inverse_mass()),
+        assemblies.map(|a| loose.parts[a].body.center_in_body()),
+    )
+    .unwrap();
+    // The lowest vertex of a loose Part at its current frame.
+    let lowest = |loose: &crate::loose::LooseWorld, i: usize| -> Result<f32, String> {
+        let frame = loose.prim_frame(i)?;
+        let p = &loose.prims[i];
+        let mesh = match p.shape {
+            crate::material::Shape::Wedge => crate::poly::Mesh::wedge(p.size),
+            _ => crate::poly::Mesh::block(p.size),
+        };
+        Ok(mesh
+            .vertices
+            .iter()
+            .map(|v| frame.transform_point(v.position)[1])
+            .fold(f32::INFINITY, f32::min))
+    };
+    let mut first_contact = [None; 3];
+    let mut slider_slope_steps = 0u32;
+    for step in 0..900u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        let loose = &fixture.world.loose;
+        for (k, &a) in assemblies.iter().enumerate() {
+            if first_contact[k].is_none() && loose.parts[a].list != crate::loose::BodyList::FreeFall
+            {
+                first_contact[k] = Some(step + 1);
+                writeln!(
+                    report,
+                    "part_wedge_first_contact part={} step={} contacts={}",
+                    names[k],
+                    step + 1,
+                    loose.contact_report()
+                )
+                .unwrap();
+            }
+        }
+        // The Slope is static1 (the Baseplate is static0).
+        if loose.contact_report().contains("static1/Slider") {
+            slider_slope_steps += 1;
+        }
+        let frame = step + 1;
+        if frame % 150 == 0 {
+            let mut line = format!("part_wedge_state step={frame}");
+            for (k, &i) in prims.iter().enumerate() {
+                let f = loose.prim_frame(i)?;
+                let v = loose.parts[assemblies[k]].body.velocity;
+                write!(
+                    line,
+                    " {}=(position={:?} up={:?} velocity={:?} lowest={})",
+                    names[k],
+                    f.position,
+                    [f.rotation[0][1], f.rotation[1][1], f.rotation[2][1]],
+                    v,
+                    lowest(loose, i)?
+                )
+                .unwrap();
+            }
+            writeln!(
+                report,
+                "{line} connectors={} contacts={}",
+                loose.connector_count(),
+                loose.contact_report()
+            )
+            .unwrap();
+        }
+    }
+    // The character walks up the Ramp (world input -Z).
+    let mut ramp_steps = 0u32;
+    let mut worst_height = 0.0f32;
+    for step in 0..240u32 {
+        fixture.step_animated(&mut rig, [0.0, 0.0, -1.0])?;
+        let root = fixture.world.body.frame.position;
+        let on_ramp = fixture.humanoid.floor_part()
+            == Some(crate::humanoid_state::FloorPart::Static(ramp_index));
+        if on_ramp {
+            ramp_steps += 1;
+            worst_height = worst_height.max((root[1] - ramp_floor(root[2]) - 3.0).abs());
+        }
+        if (step + 1) % 30 == 0 {
+            writeln!(
+                report,
+                "part_wedge_walk step={} root={root:?} floor_y={} floor={:?} state={:?} block_contacts={}",
+                step + 1,
+                ramp_floor(root[2]),
+                fixture.humanoid.floor_part(),
+                fixture.state_type(),
+                fixture.world.block_contact_report()
+            )
+            .unwrap();
+        }
+    }
+    let walk_end = fixture.world.body.frame.position;
+    let loose = &fixture.world.loose;
+    let lows = [
+        lowest(loose, prims[0])?,
+        lowest(loose, prims[1])?,
+        lowest(loose, prims[2])?,
+    ];
+    let speeds = assemblies.map(|a| {
+        let v = loose.parts[a].body.velocity;
+        (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+    });
+    let drop = loose.prim_frame(prims[0])?;
+    let slider = loose.prim_frame(prims[2])?;
+    let ray = fixture
+        .world
+        .raycast([-33.0, 20.0, 30.0], [0.0, -1.0, 0.0], 100.0);
+    writeln!(
+        report,
+        "part_wedge_result first_contact={first_contact:?} lowest={lows:?} speeds={speeds:?} drop={:?} drop_up={:?} slider={:?} slider_slope_steps={slider_slope_steps} ray={ray:?} ramp_steps={ramp_steps} worst_ramp_height_error={worst_height} walk_end={walk_end:?}",
+        drop.position,
+        [drop.rotation[0][1], drop.rotation[1][1], drop.rotation[2][1]],
+        slider.position,
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "{}",
+        sleep_summary("part_wedge_sleep", &fixture.world.loose)
+    )
+    .unwrap();
+    let rested = lows.iter().all(|y| y.abs() < 0.05) && speeds.iter().all(|v| *v < 0.05);
+    let flat = (drop.position[1] - 1.0).abs() < 0.05 && drop.rotation[1][1] > 0.999;
+    // Off the low end of the slope (local z -4, world z 26).
+    let slid = slider_slope_steps > 0 && slider.position[2] < 26.0;
+    // The slope at local z 0 is local y 0: world y 2, normal (0, 2, -1)/sqrt 5.
+    let hit = ray.as_ref().is_some_and(|((p, n), part)| {
+        (p[1] - 2.0).abs() < 1e-4
+            && (n[1] - c).abs() < 1e-5
+            && (n[2] - s).abs() < 1e-5
+            && matches!(part, crate::humanoid_state::FloorPart::Static(_))
+    });
+    // The root stays 3 studs over the slope under it, and ends high on it.
+    let climbed = ramp_steps > 0 && worst_height < 0.2 && walk_end[1] > 5.0;
+    if !(rested && flat && slid && hit && climbed) || first_contact.iter().any(Option::is_none) {
+        return Err(format!(
+            "part wedge failed rested={rested} flat={flat} slid={slid} hit={hit} climbed={climbed}\n{report}"
+        ));
+    }
+    writeln!(
+        report,
+        "part_wedge_pass rested=true flat=true slid=true hit=true climbed=true native_differential=not_tested"
+    )
+    .unwrap();
+    Ok(report)
+}
+
 /// Legacy hinges in a Workspace, with the character idling at the origin.
 /// Each pair is an anchored 1 x 1 x 1 block (Part0, the axle) and a plank
 /// in front of it, 0.1 studs clear, on a hinge through the block's center:

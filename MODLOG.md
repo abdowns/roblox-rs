@@ -1,5 +1,51 @@
 # MODLOG
 
+## 2026-10-15 Wedge Parts and PolyPolyContact
+
+**Changed:**
+- `poly.rs` (new): the Poly mesh (Mesh.cpp), with the Block and Wedge
+  meshes, the face, edge and plane tests, the ray hit test (00b340c0), and
+  the Wedge's center of mass and moment shift.
+- `poly_contact.rs` (new): PolyPolyContact. It covers:
+  - the separating-pair search (FaceFacePair, EdgeEdgePair);
+  - connector generation (FaceVertex, FaceEdge, EdgeEdge) and connector
+    reuse;
+  - the step that takes a separated pair's connectors out of the kernel but
+    keeps them.
+- `PartInstance` shape `SHAPE_WEDGE` (4) and `Shape::Wedge`. The loose and
+  static worlds handle it:
+  - mass, extents, stiffness and the getSlowHit bound;
+  - the static Torso/Head touch test.
+- `MassPart::center`: the Cofm offset of a Body (00a90502). It is zero for
+  every Part except a Wedge.
+- `ContactEvent::Withdrawn` and `PrimContact::is_live`, and loose.rs
+  `apply_events` shared by `update_pair` and `collider_touching`. world.rs
+  counts and pushes only live character/static connectors.
+- `world::part_space_hit` (Primitive hitTest 00b631de), now shared by the
+  Block and Wedge ray tests.
+- `KernelBody::center_in_body` accessor (new; no signature changed).
+- New audit `audit-part-wedge`.
+
+**Why:** Roadmap item 3 (shapes), part of the remaining physics work.
+
+**Tested how:**
+- `audit-part-wedge` passes (numbers in docs/FEATURES.md).
+- `sh tools/cargo.sh test --locked` (115 tests) and clippy are clean.
+- I diffed 20 existing audits (kernel, assembly, contacts, baseplate, every
+  part audit, humanoid slope, broadphase, walking, physics) against a build
+  of 21cca33. Their output is byte-identical.
+
+**Result:**
+- Works in the audit: wedges rest, tumble and carry blocks, rays hit them,
+  and the character walks up them.
+- **Not tested:**
+  - the character's Torso or Head touching a Wedge;
+  - Wedge against Wedge;
+  - a Wedge inside a welded assembly;
+  - native parity.
+- **Not ported:** BallPolyContact (a Ball touching a Wedge makes the step
+  return an error) and Wedge rendering (the renderer refuses the Part).
+
 ## 2026-10-15 Viewport demo shows the later physics features
 
 **Changed:** `Workspace::loose_parts_demo` (the viewport-baseplate place)

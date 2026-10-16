@@ -50,6 +50,8 @@ and Motor6Ds turn the Parts they link (`audit-part-motor`). Ball Parts land,
 roll down a ramp and knock into each other (`audit-part-ball`), and the
 character pushes a loose ball and is stopped by an anchored one
 (`audit-part-ball-push`). Balls are drawn as spheres (`audit-ball-render`).
+Wedge Parts land, tumble and carry blocks down their slope, and the
+character walks up them (`audit-part-wedge`). Wedges do not render yet.
 The demo place shows these features too (see the top of this file).
 Contacts come from the native broadphase (`audit-broadphase`). Not ported
 yet: outlines and the Studio camera.

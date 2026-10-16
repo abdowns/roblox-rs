@@ -19,7 +19,7 @@ Early and incomplete. Working today, with an automated audit for each item:
   - the original Humanoid state machine and forces;
   - collisions with anchored Parts;
   - unanchored Parts that fall, stack, get pushed, carry the character and
-    fall asleep at rest, including Ball Parts that roll;
+    fall asleep at rest, including Ball Parts that roll and Wedge Parts;
   - welded Parts that move as one, glued Parts that break under load,
     hinges, motor hinges, Motors and Motor6Ds.
 - **Rendering:** the character, the studded Baseplate, block and Ball
@@ -30,7 +30,7 @@ Not there yet:
 - a general Lua runtime;
 - place loading and saving;
 - the remaining joint kinds (VelocityMotor, ManualGlue, surface joints);
-- Cylinders, Wedges and the other Part shapes;
+- Cylinders, CornerWedges and the other Part shapes, and drawing Wedges;
 - textures and decals beyond the character, shadows and outlines.
 
 Matching the original is not tested pixel for pixel or step for step. See

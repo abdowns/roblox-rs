@@ -25,7 +25,11 @@ pub struct MassPart {
     pub name: String,
     pub frame: CoordinateFrame,
     pub mass: f32,
+    /// The geometry's moment (vtable +0x68), about the Part's center.
     pub inertia: Tensor,
+    /// The center of mass in the Part's frame (geometry vtable +0x64, Body
+    /// +0xa4): zero except for a Wedge.
+    pub center: [f32; 3],
 }
 
 #[derive(Clone, Debug)]
@@ -218,6 +222,7 @@ impl MassProfile {
                         frame: part.frame.clone(),
                         mass,
                         inertia,
+                        center: [0.0; 3],
                     },
                 )
                 .is_some()
@@ -246,18 +251,31 @@ impl AssemblyProperties {
             return Err("invalid assembly parent".into());
         }
         if children.is_empty() {
-            // Native no-children branch copies mass, offset and tensor directly.
+            // Native no-children branch copies mass and offset and moves the
+            // moment to the offset (006b0234). A Body with no offset has no
+            // Cofm: its parent reads its position (00a8f4ea) and moment.
+            let center_world = if parent.center == [0.0; 3] {
+                parent.frame.position
+            } else {
+                crate::block_contact::to_world(&parent.frame, parent.center)
+            };
             return Ok(Self {
                 mass: parent.mass,
-                center_world: parent.frame.position,
-                center_in_body: [0.0; 3],
-                inertia_in_body: parent.inertia,
+                center_world,
+                center_in_body: parent.center,
+                inertia_in_body: crate::poly::moment_about(
+                    parent.inertia,
+                    parent.mass,
+                    parent.center,
+                ),
                 body_frame: parent.frame.clone(),
                 parts: 1,
             });
         }
         let mut mass = parent.mass;
-        let mut weighted = parent.frame.position.map(|v| v * mass);
+        // The parent's center of mass in world space times its mass.
+        let mut weighted =
+            crate::block_contact::to_world(&parent.frame, parent.center).map(|v| v * mass);
         let mut count = 1;
         for child in children {
             if !child.mass.is_finite() || child.mass <= 0.0 {
@@ -427,6 +445,7 @@ mod tests {
             },
             mass: 1.0,
             inertia: [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]],
+            center: [0.0; 3],
         }
     }
     #[test]

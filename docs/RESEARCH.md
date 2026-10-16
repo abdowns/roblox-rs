@@ -71,7 +71,7 @@ the linked wgpu issue and versioned winit docs was unavailable during this check
 no system tool or dependency was changed. Numeric motion smoke confirms recovery
 from a startup Occluded result, not complete macOS lifecycle equivalence.
 
-## Poly geometry and PolyPolyContact (raw notes, not yet ported)
+## Poly geometry and PolyPolyContact (raw notes; ported in poly.rs and poly_contact.rs)
 
 ## createContact 00ae714a (non-Bullet)
 types ordered low first. 3-3 and 2-3 -> PolyPolyContact (ctor 00b52b82->00b52b0a, 0xd8 bytes, vtable 01c87858)
@@ -153,4 +153,14 @@ BallVertex 01c86008: aa9ea4, 9 | BallEdge 01c86068: aa9c2a, 10 | BallPlane 01c86
 - clones: FFP b53058 (0x28, copies +0x1c,+0x20,+0x24), EEP b54a0c (0x24)
 - Block geometry vtable 01c866e8 (Block derives Poly): slot 24 adf0a0 extents, 25 b4fc7e CoM, 26 adf960 inertia, 32 adec1a buildMesh -> mesh cache ae0138 (mesh builder not yet decompiled)
 - BallPolyContact vtable ends ...add542 (+0x40 findPolyConnectors); ctor add538
-- TODO: Block mesh builder (via ae0138), b55496/b554aa pair type, BallPolyContact add542, Ball* connectors aa9ea4/aa9c2a/aa99b2, Wedge render 010dc290, Wedge volume/mass, asm checks of float order
+- TODO (still open): b55496/b554aa pair type, BallPolyContact add542, Ball* connectors aa9ea4/aa9c2a/aa99b2, Wedge render 010dc290. Block mesh 00b2f962 and the Wedge mass were recovered in the port session (see poly.rs header).
+
+## Poly ray hit test (Wedge port session, 2026-10-15)
+- Primitive hitTest 00b631de: Body PV (a8eabe), CoordinateFrame::toObjectSpace(RbxRay), geometry vt+0x70 (point, normal) in part space, then point = R p + t and normal = R n. Shared by every geometry (the port's `part_space_hit`).
+- WedgePoly vt+0x70 = 00b4fbd6 -> 00b340c0(mesh at geometry +0x18, ray, &point, &normal).
+- 00b340c0: best = FLT_MAX, count = 0; for each face i (0x24 stride): 00b33f22(ray, face, &p); on hit: d = ((dx*dx + dy*dy) + dz*dz) from ray origin (+4); count++; if best > d (UCOMISS best,d / JBE): point = p, normal = face +0x14 (plane normal). Returns count > 0. Assert "tempDistance >= 0.0f" Mesh.cpp:940.
+- 00b33f22: p = RbxRay::intersectionPlane(face plane d1fbd0); p == Vector3::inf -> false; else 00b33fd6(face, p) (behind every neighbouring face plane via otherFace b357cc + d1fc5a). It does NOT project p onto the face plane first (Face::inside 00b553e0 does).
+- RbxRay layout: +4 origin, +0x10 direction. Plane: +4 normal, +0x10 distance.
+- RbxRay::intersectionPlane 0129b702: rate = (n.x d.x + n.y d.y) + n.z d.z; if 1e-6 > |rate| -> inf (NaN rate falls through); t = (dist - ((n.x o.x + n.y o.y) + n.z o.z)) / rate; t >= 0 (JNC, NaN -> inf) -> o + d t, else inf.
+- Primitive stiffness 00b6312e: 00a92640(size, geometryType (b62c78 = geometry vt+0xc) == 1). Only the Ball (geometry type 1) takes the Ball path; a Wedge (type 4) takes the Block one. Geometry types 10/11 use size (4,4,4).
+

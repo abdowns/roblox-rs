@@ -21,7 +21,7 @@ use crate::{
     physics,
     rig::{Motor6D, R6Rig, compose},
     scene::{CoordinateFrame, Scene},
-    workspace::{SHAPE_BALL, SHAPE_BLOCK, Workspace, character_placement},
+    workspace::{SHAPE_BALL, SHAPE_BLOCK, SHAPE_WEDGE, Workspace, character_placement},
 };
 use std::collections::BTreeMap;
 
@@ -188,14 +188,14 @@ fn moving_point_fixed_aabox(
     Some((location, normal))
 }
 
-/// Primitive hitTest (00b631de) with Block geometry (vtable +0x70,
-/// 00adeffe): the unit ray in part space against the centered box, the hit
+/// Primitive hitTest (00b631de): the ray into part space
+/// (toObjectSpace), the geometry's own test (vtable +0x70), and the hit
 /// point and normal back in world space.
-fn box_hit_test(
+fn part_space_hit(
     frame: &CoordinateFrame,
-    size: [f32; 3],
     origin: [f32; 3],
     direction: [f32; 3],
+    test: impl FnOnce([f32; 3], [f32; 3]) -> Option<Hit>,
 ) -> Option<Hit> {
     let r = &frame.rotation;
     let t = frame.position;
@@ -205,13 +205,37 @@ fn box_hit_test(
     let local_direction: [f32; 3] = std::array::from_fn(|i| {
         r[0][i] * direction[0] + r[1][i] * direction[1] + r[2][i] * direction[2]
     });
-    let half = size.map(|s| s * 0.5);
-    let (hit, normal) =
-        moving_point_fixed_aabox(local_origin, local_direction, half.map(|h| -h), half)?;
+    let (hit, normal) = test(local_origin, local_direction)?;
     Some((
         std::array::from_fn(|i| r[i][2] * hit[2] + r[i][1] * hit[1] + r[i][0] * hit[0] + t[i]),
         std::array::from_fn(|i| r[i][2] * normal[2] + r[i][1] * normal[1] + r[i][0] * normal[0]),
     ))
+}
+
+/// Primitive hitTest (00b631de) with Block geometry (vtable +0x70,
+/// 00adeffe): the unit ray in part space against the centered box.
+fn box_hit_test(
+    frame: &CoordinateFrame,
+    size: [f32; 3],
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> Option<Hit> {
+    let half = size.map(|s| s * 0.5);
+    part_space_hit(frame, origin, direction, |o, d| {
+        moving_point_fixed_aabox(o, d, half.map(|h| -h), half)
+    })
+}
+
+/// Primitive hitTest (00b631de) with Wedge geometry (vtable +0x70,
+/// 00b4fbd6): every face of the Wedge mesh (`Mesh::hit_test`).
+fn wedge_hit_test(
+    frame: &CoordinateFrame,
+    size: [f32; 3],
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> Option<Hit> {
+    let mesh = crate::poly::Mesh::wedge(size);
+    part_space_hit(frame, origin, direction, |o, d| mesh.hit_test(o, d))
 }
 
 /// Primitive hitTest (00b631de) with Ball geometry (vtable +0x70, 00adc17c):
@@ -257,7 +281,8 @@ fn ball_hit_test(
 }
 
 /// One getSlowHit (00ae7d08) candidate: the bounding-sphere test (vtable
-/// +0x10 radius: half the size's length for a Block, the radius for a Ball),
+/// +0x10 radius: half the size's length for a Block or Wedge (Poly::setSize
+/// 00b4fcae), the radius for a Ball),
 /// the hit test, then a positive distance strictly below the best so far.
 fn slow_hit_candidate(
     frame: &CoordinateFrame,
@@ -274,7 +299,7 @@ fn slow_hit_candidate(
     let off: [f32; 3] = std::array::from_fn(|i| c[i] - (direction[i] * along + origin[i]));
     let h = size.map(|s| s * 0.5);
     let radius = match shape {
-        Shape::Block => (h[0] * h[0] + h[1] * h[1] + h[2] * h[2]).sqrt(),
+        Shape::Block | Shape::Wedge => (h[0] * h[0] + h[1] * h[1] + h[2] * h[2]).sqrt(),
         Shape::Ball => crate::ball_contact::radius(size),
     };
     if (off[2] * off[2] + off[1] * off[1] + off[0] * off[0]).sqrt() > radius {
@@ -282,6 +307,7 @@ fn slow_hit_candidate(
     }
     let (point, normal) = match shape {
         Shape::Block => box_hit_test(frame, size, origin, direction)?,
+        Shape::Wedge => wedge_hit_test(frame, size, origin, direction)?,
         Shape::Ball => ball_hit_test(frame, radius, origin, direction)?,
     };
     let distance = (point[2] - origin[2]) * direction[2]
@@ -481,6 +507,18 @@ impl Statics {
                 };
                 ball_contact::ball_block_colliding(&ball, &collider, 0.0).0
             }
+            // A static Wedge runs a fresh PolyPolyContact test (00b5203a).
+            Shape::Wedge => {
+                let wedge = Block {
+                    frame: b.frame.clone(),
+                    size: b.size,
+                };
+                crate::poly_contact::PolyContact::<()>::new([
+                    crate::poly::PolyShape::Wedge,
+                    crate::poly::PolyShape::Block,
+                ])
+                .compute_is_colliding([&wedge, &collider], 0.0)
+            }
         };
         if self.blocks.iter().any(touches) {
             return Ok(true);
@@ -496,7 +534,8 @@ impl Statics {
 /// Primitive extents 00b61c9a of a loose Part.
 fn loose_extents(frame: &CoordinateFrame, part: &LoosePrim) -> Extents {
     match part.shape {
-        Shape::Block => block_extents(frame, part.size),
+        // Wedge 00ba4de6: its vertices 0, 1, 3 and 4 span the whole box.
+        Shape::Block | Shape::Wedge => block_extents(frame, part.size),
         Shape::Ball => ball_extents(frame, ball_contact::radius(part.size)),
     }
 }
@@ -920,6 +959,7 @@ impl World {
             let shape = match part.shape {
                 SHAPE_BALL => Shape::Ball,
                 SHAPE_BLOCK => Shape::Block,
+                SHAPE_WEDGE => Shape::Wedge,
                 _ => return Err(format!("{:?}: a Cylinder Part is not ported", part.name)),
             };
             let extents = if part.shape == SHAPE_BALL {
@@ -1049,6 +1089,8 @@ impl World {
                 bodies[side] = match prim_of[n] {
                     Some(prim) => JointBody::Loose(prim),
                     None => {
+                        // 00b6312e: only the Ball geometry (type 1) takes
+                        // the Ball stiffness; a Wedge takes the Block's.
                         let shape = if part.shape == SHAPE_BALL {
                             Shape::Ball
                         } else {
@@ -1212,7 +1254,7 @@ impl World {
             BroadPrim::Static(i) => {
                 let b = &self.statics.blocks[i];
                 match b.shape {
-                    Shape::Block => block_extents(&b.frame, b.size),
+                    Shape::Block | Shape::Wedge => block_extents(&b.frame, b.size),
                     Shape::Ball => ball_extents(&b.frame, ball_contact::radius(b.size)),
                 }
             }
@@ -1379,10 +1421,14 @@ impl World {
                 size: block.size,
             };
             let shape = block.shape;
-            self.block_contacts
+            let contact = self
+                .block_contacts
                 .entry((name, index))
-                .or_insert_with(|| PrimContact::new([Shape::Block, shape]))
-                .update([&part, &other], in_kernel, &self.statics.tables)?;
+                .or_insert_with(|| PrimContact::new([Shape::Block, shape]));
+            contact.update([&part, &other], in_kernel, &self.statics.tables)?;
+            // Static blocks hold no kernel ids: the force loop reads
+            // `is_live` instead of the events.
+            contact.take_events();
         }
         Ok(())
     }
@@ -1533,7 +1579,12 @@ impl World {
     pub fn block_contact_report(&self) -> String {
         let mut out = String::new();
         for ((name, index), contact) in &self.block_contacts {
-            for c in contact.connectors() {
+            let live = contact
+                .connectors()
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| contact.is_live(*i));
+            for (_, c) in live {
                 out.push_str(&format!(
                     "[{name}/{} {:?} bodies=({},{}) length={} normal={:?} point={:?}]",
                     self.statics.blocks[*index].name,
@@ -1671,7 +1722,7 @@ impl World {
             + self
                 .block_contacts
                 .values()
-                .map(|c| c.connectors().len())
+                .map(|c| (0..c.connectors().len()).filter(|&i| c.is_live(i)).count())
                 .sum::<usize>()
             + self.loose.character_connector_count();
         for _ in 0..self.kernel.physics.kernel_substeps {
@@ -1711,7 +1762,15 @@ impl World {
             for (key, contact) in &mut self.block_contacts {
                 let fixed = block_body(&self.statics.blocks[key.1]);
                 let pair = pair_parameters(&self.colliders, &self.block_parameters, &key.0, key.1)?;
-                for c in contact.connectors_mut() {
+                let live: Vec<bool> = (0..contact.connectors().len())
+                    .map(|i| contact.is_live(i))
+                    .collect();
+                for (c, _) in contact
+                    .connectors_mut()
+                    .iter_mut()
+                    .zip(live)
+                    .filter(|(_, l)| *l)
+                {
                     let g = character_geometry(c);
                     self.max_penetration = self.max_penetration.max(-g.distance);
                     let force = c.state.spring.force(

@@ -75,7 +75,7 @@ use crate::{
     physics::FreeFallBody,
     rig::Motor6D,
     scene::CoordinateFrame,
-    workspace::{PartInstance, SHAPE_BALL, SHAPE_BLOCK},
+    workspace::{PartInstance, SHAPE_BALL, SHAPE_BLOCK, SHAPE_WEDGE},
 };
 use std::collections::{BTreeMap, VecDeque};
 
@@ -649,7 +649,8 @@ impl LooseWorld {
     pub fn static_mass(&self, index: usize, size: [f32; 3]) -> Result<f32, String> {
         let (properties, _) = self.statics.get(index).ok_or("missing static block")?;
         Ok(match self.static_shapes[index] {
-            Shape::Block => (size[0] * size[1]) * size[2] * properties.density,
+            // Block 00adf1e0 and Wedge 00b0ab80 both take the whole box.
+            Shape::Block | Shape::Wedge => (size[0] * size[1]) * size[2] * properties.density,
             Shape::Ball => self.mass.ball_volume(ball_contact::radius(size)) * properties.density,
         })
     }
@@ -680,6 +681,7 @@ impl LooseWorld {
         let shape = match part.shape {
             SHAPE_BALL => Shape::Ball,
             SHAPE_BLOCK => Shape::Block,
+            SHAPE_WEDGE => Shape::Wedge,
             _ => return Err(format!("{:?}: a Cylinder Part is not ported", part.name)),
         };
         self.prims.push(LoosePrim {
@@ -792,16 +794,23 @@ impl LooseWorld {
         ) -> Result<AssemblyProperties, String> {
             let prim = &world.prims[n];
             let size = prim.size;
-            // Volume (Block 00adf1e0, Ball 00adc148) x density (00b62e8e).
-            let (mass, inertia) = match prim.shape {
-                Shape::Block => {
+            // Volume (Block 00adf1e0, Wedge 00b0ab80, Ball 00adc148) x
+            // density (00b62e8e); the moment (Wedge 00ba4aac is the Block
+            // polynomial) and the Wedge's center of mass 00ba4c20.
+            let (mass, inertia, center) = match prim.shape {
+                Shape::Block | Shape::Wedge => {
                     let mass = (size[0] * size[1]) * size[2] * prim.properties.density;
-                    (mass, world.mass.block_inertia(size, mass)?)
+                    let center = if prim.shape == Shape::Wedge {
+                        crate::poly::wedge_center(size)
+                    } else {
+                        [0.0; 3]
+                    };
+                    (mass, world.mass.block_inertia(size, mass)?, center)
                 }
                 Shape::Ball => {
                     let r = ball_contact::radius(size);
                     let mass = world.mass.ball_volume(r) * prim.properties.density;
-                    (mass, world.mass.ball_inertia(r, mass)?)
+                    (mass, world.mass.ball_inertia(r, mass)?, [0.0; 3])
                 }
             };
             let children = links
@@ -815,6 +824,7 @@ impl LooseWorld {
                     frame: frames[&n].clone(),
                     mass,
                     inertia,
+                    center,
                 },
                 &children,
             )
@@ -1518,7 +1528,11 @@ impl LooseWorld {
     pub fn connector_count(&self) -> usize {
         self.pairs
             .values()
-            .map(|p| p.contact.connectors().len())
+            .map(|p| {
+                (0..p.contact.connectors().len())
+                    .filter(|&i| p.contact.is_live(i))
+                    .count()
+            })
             .sum()
     }
     fn list_mut(&mut self, list: BodyList) -> &mut Vec<usize> {
@@ -1865,7 +1879,18 @@ impl LooseWorld {
         let colliding = pair
             .contact
             .update([&blocks[0], &blocks[1]], in_kernel, tables)?;
-        let events = pair.contact.take_events();
+        self.apply_events(key)?;
+        Ok(colliding)
+    }
+    /// A contact's connector events since the last call, in order: kernel
+    /// inserts (new ids), geometry refreshes, removals and withdrawals.
+    fn apply_events(&mut self, key: (Prim, Prim)) -> Result<(), String> {
+        let events = self
+            .pairs
+            .get_mut(&key)
+            .ok_or("missing contact pair")?
+            .contact
+            .take_events();
         for event in events {
             match event {
                 ContactEvent::Kept { index, reused } => {
@@ -1876,9 +1901,11 @@ impl LooseWorld {
                         self.next_id += 1;
                         let id = self.next_id;
                         let (list, counted) = self.insert(id, prims)?;
-                        let link = &mut self.pairs.get_mut(&key).unwrap().contact.connectors_mut()
-                            [index]
-                            .state;
+                        let contact = &mut self.pairs.get_mut(&key).unwrap().contact;
+                        if list.is_none() {
+                            contact.set_outside(index);
+                        }
+                        let link = &mut contact.connectors_mut()[index].state;
                         link.id = id;
                         link.list = list;
                         link.counted = counted;
@@ -1899,9 +1926,25 @@ impl LooseWorld {
                     self.remove(link.id, &link, prims, &connector.point)?;
                     self.owners.remove(&link.id);
                 }
+                ContactEvent::Withdrawn { index } => {
+                    // a99ff2 on a connector the contact keeps: its impulse
+                    // and spring state stay with it.
+                    let c = &self.pairs[&key].contact.connectors()[index];
+                    let prims = Self::connector_prims(key, c.pair.body_a);
+                    let point = c.point.clone();
+                    let link = c.state.clone();
+                    self.remove(link.id, &link, prims, &point)?;
+                    self.owners.remove(&link.id);
+                    let state = &mut self.pairs.get_mut(&key).unwrap().contact.connectors_mut()
+                        [index]
+                        .state;
+                    state.id = 0;
+                    state.list = None;
+                    state.counted.clear();
+                }
             }
         }
-        Ok(colliding)
+        Ok(())
     }
     /// The Torso/Head touch test of HumanoidState c0192c -> c02209: each contact of
     /// the collider with a loose Part runs vtable +0x24 (ae26a6: extents,
@@ -1940,7 +1983,10 @@ impl LooseWorld {
                 [block, &other]
             };
             let pair = self.pairs.get_mut(&key).ok_or("missing contact pair")?;
-            if pair.contact.compute_is_colliding(blocks) {
+            let colliding = pair.contact.compute_is_colliding(blocks);
+            // A PolyContact rebuilt its connectors.
+            self.apply_events(key)?;
+            if colliding {
                 return Ok(true);
             }
         }

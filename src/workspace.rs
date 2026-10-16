@@ -26,6 +26,10 @@ pub const SURFACE_INLET: u32 = 4;
 pub const SHAPE_BALL: u32 = 0;
 pub const SHAPE_BLOCK: u32 = 1;
 pub const SHAPE_CYLINDER: u32 = 2;
+/// A WedgePart. `shape` holds the Primitive part type (vtable +0xa4,
+/// addPartImpl 010d1850), which matches Part.Shape for Ball, Block and
+/// Cylinder and is 4 for a Wedge.
+pub const SHAPE_WEDGE: u32 = 4;
 /// NormalId order used by the surfaces array: Right, Top, Back, Left, Bottom, Front.
 pub const FACE_NAMES: [&str; 6] = [
     "RightSurface",
@@ -54,8 +58,9 @@ pub struct PartInstance {
     /// PartInstance +0xb5 (vtable +0x12c setter, property descriptor 01d719a4).
     pub locked: bool,
     pub can_collide: bool,
-    /// Part.Shape: `SHAPE_BALL`, `SHAPE_BLOCK` or `SHAPE_CYLINDER`. Set it
-    /// with `set_shape`, which keeps a Ball's size uniform.
+    /// Part.Shape: `SHAPE_BALL`, `SHAPE_BLOCK` or `SHAPE_CYLINDER`, or
+    /// `SHAPE_WEDGE` for a WedgePart. Set it with `set_shape`, which keeps a
+    /// Ball's size uniform.
     pub shape: u32,
     /// Primitive +0xbc.
     pub friction: f32,
