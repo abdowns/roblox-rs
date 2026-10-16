@@ -21,6 +21,18 @@ not a native document):
 - a yellow Part dropped flat from y = 40 and a green one dropped tilted from
   y = 60, landing ahead of the spawn.
 
+East of the spawn (+X, turn right) a showcase of the later features:
+- **Balls** (x 20..44, z -20..-34): a red Ball rolls down an anchored ramp,
+  a yellow one is dropped from y = 30, and a small blue one lands off-center
+  on an anchored grey dome and rolls off. A green 4-stud "Kick" ball sits at
+  (8, 2, -12) for the character to push.
+- **Weld** (x 20, z 8): a red L-shaped pair drops from y = 10 and lands as
+  one piece.
+- **Glue** (x 30, z 8): a blue block hangs glued under an anchored grey one.
+- **Hinges** (z 16): a yellow bar swings on a free Hinge at x 20, a green
+  plate spins on a motor hinge at x 30, and a red Motor arm on a loose tower
+  at x 40 turns 90 degrees.
+
 Every 60 frames the live log gets a `loose_parts` line with each Part's kernel
 list, position and connector counts. The character can stand on loose Parts,
 step up onto low ones and ride them (`audit-part-stand`).
@@ -38,7 +50,7 @@ and Motor6Ds turn the Parts they link (`audit-part-motor`). Ball Parts land,
 roll down a ramp and knock into each other (`audit-part-ball`), and the
 character pushes a loose ball and is stopped by an anchored one
 (`audit-part-ball-push`). Balls are drawn as spheres (`audit-ball-render`).
-The demo place has no joints and no Balls.
+The demo place shows these features too (see the top of this file).
 Contacts come from the native broadphase (`audit-broadphase`). Not ported
 yet: outlines and the Studio camera.
 Manual keys are **not tested**.

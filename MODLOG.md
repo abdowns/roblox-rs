@@ -1,5 +1,24 @@
 # MODLOG
 
+## 2026-10-15 Viewport demo shows the later physics features
+
+**Changed:** `Workspace::loose_parts_demo` (the viewport-baseplate place)
+gains `add_feature_showcase`:
+- Balls: a ramp roll, a drop, a pebble on an anchored dome, and a ball to
+  kick;
+- a Weld, a Glue, a free Hinge, a motor hinge and a Motor, all east of the
+  spawn and off the walking path.
+
+**Why:** The user asked for the viewport/baseplate test to demo every new
+feature.
+
+**Tested how:** `viewport-baseplate-smoke` (exit 0, 120 frames,
+`viewport_final_readback_pass`); the log lists all 16 loose Parts and the
+five `geometry=sphere` draws. Tests and clippy.
+
+**Result:** the place loads and runs. How the showcase looks is **not
+tested** by me (log, don't look). Native parity is **not tested**.
+
 ## 2026-10-15 Poly research notes (no code)
 
 **Changed:** `docs/RESEARCH.md` gains the raw reverse-engineering notes

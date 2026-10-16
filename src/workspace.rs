@@ -238,7 +238,253 @@ impl Workspace {
         workspace
             .parts
             .extend([crate_part, rest, stack, drop, tumble]);
+        workspace.add_feature_showcase();
         workspace
+    }
+    /// The demo's showcase of the later kernel features, east of the spawn
+    /// (+X), away from the walking path:
+    /// - Balls (x 20..44, z -20..-34): "Roll" on an anchored 10 degree
+    ///   "Ramp", "Bounce" dropped from height, "Pebble" dropped off-center on
+    ///   an anchored "Dome", and "Kick" (diameter 4) on the ground for the
+    ///   character to push;
+    /// - a welded "L" ("Base" + "Mast", z 8) that falls as one assembly;
+    /// - "Hung", glued under an anchored "Holder";
+    /// - hinges on anchored blocks (z 16): "Swing" (free Hinge), "Wheel"
+    ///   (motor hinge, constant 0.1) and a Motor arm on a loose "Tower".
+    fn add_feature_showcase(&mut self) {
+        const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let frame = |position: [f32; 3]| CoordinateFrame {
+            position,
+            rotation: IDENTITY,
+        };
+        let add = |workspace: &mut Workspace,
+                   name: &str,
+                   size: [f32; 3],
+                   position: [f32; 3],
+                   anchored: bool,
+                   ball: bool,
+                   color: u32| {
+            let mut part = PartInstance {
+                name: name.into(),
+                anchored,
+                brick_color: color,
+                frame: frame(position),
+                ..Default::default()
+            };
+            if ball {
+                part.set_shape(SHAPE_BALL);
+            }
+            part.set_size(size);
+            workspace.parts.push(part);
+            workspace.parts.len() - 1
+        };
+        let joint = |workspace: &mut Workspace,
+                     name: &str,
+                     kind: u32,
+                     parts: [usize; 2],
+                     c0: CoordinateFrame,
+                     c1: CoordinateFrame| {
+            workspace.joints.push(JointInstance {
+                name: name.into(),
+                kind,
+                part0: parts[0],
+                part1: parts[1],
+                c0,
+                c1,
+                face: [[0.0; 3]; 4],
+                base_angle: 0.0,
+                current_angle: 0.0,
+                desired_angle: 0.0,
+                max_velocity: 0.0,
+            });
+            workspace.joints.len() - 1
+        };
+        // Balls. The ramp's low end (-X) rests on the Baseplate.
+        let (s, c) = 10f32.to_radians().sin_cos();
+        let ramp_center = [34.0, 10.0 * s + 0.5 * c, -20.0];
+        let ramp = add(
+            self,
+            "Ramp",
+            [20.0, 1.0, 10.0],
+            ramp_center,
+            true,
+            false,
+            194,
+        );
+        self.parts[ramp].frame.rotation = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
+        let local = [8.0f32, 1.55, 0.0];
+        let roll = [
+            ramp_center[0] + c * local[0] - s * local[1],
+            ramp_center[1] + s * local[0] + c * local[1],
+            ramp_center[2],
+        ];
+        add(self, "Roll", [2.0; 3], roll, false, true, 21);
+        add(
+            self,
+            "Bounce",
+            [3.0; 3],
+            [24.0, 30.0, -30.0],
+            false,
+            true,
+            24,
+        );
+        add(self, "Dome", [6.0; 3], [40.0, 3.0, -32.0], true, true, 194);
+        add(
+            self,
+            "Pebble",
+            [1.0; 3],
+            [40.5, 12.0, -32.0],
+            false,
+            true,
+            23,
+        );
+        add(self, "Kick", [4.0; 3], [8.0, 2.0, -12.0], false, true, 28);
+        // Weld: an L dropped from 10 studs.
+        let base = add(
+            self,
+            "Base",
+            [4.0, 1.2, 2.0],
+            [20.0, 10.0, 8.0],
+            false,
+            false,
+            21,
+        );
+        let mast = add(
+            self,
+            "Mast",
+            [1.0, 4.0, 1.0],
+            [21.5, 12.6, 8.0],
+            false,
+            false,
+            21,
+        );
+        joint(
+            self,
+            "Weld",
+            joints::WELD,
+            [base, mast],
+            frame([1.5, 2.6, 0.0]),
+            frame([0.0; 3]),
+        );
+        // Glue: z of C0/C1 along -Y, the Holder's bottom face.
+        let holder = add(
+            self,
+            "Holder",
+            [4.0, 1.0, 2.0],
+            [30.0, 10.0, 8.0],
+            true,
+            false,
+            194,
+        );
+        let hung = add(
+            self,
+            "Hung",
+            [4.0, 1.0, 2.0],
+            [30.0, 9.0, 8.0],
+            false,
+            false,
+            23,
+        );
+        let down = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
+        let glue = joint(
+            self,
+            "Glue",
+            joints::GLUE,
+            [holder, hung],
+            CoordinateFrame {
+                position: [0.0, -0.5, 0.0],
+                rotation: down,
+            },
+            CoordinateFrame {
+                position: [0.0, 0.5, 0.0],
+                rotation: down,
+            },
+        );
+        self.joints[glue].face = [
+            [-2.0, -1.0, 0.0],
+            [2.0, -1.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [-2.0, 1.0, 0.0],
+        ];
+        // Hinges (C0 at the anchored block's center, z along +Z).
+        let block = [1.0; 3];
+        let pivot = add(self, "Pivot", block, [20.0, 12.0, 16.0], true, false, 194);
+        let swing = add(
+            self,
+            "Swing",
+            [6.0, 0.4, 1.0],
+            [22.5, 12.0, 17.1],
+            false,
+            false,
+            24,
+        );
+        joint(
+            self,
+            "Hinge",
+            joints::ROTATE,
+            [pivot, swing],
+            frame([0.0; 3]),
+            frame([-2.5, 0.0, -1.1]),
+        );
+        let axle = add(self, "Axle", block, [30.0, 12.0, 16.0], true, false, 194);
+        self.parts[axle].surface_inputs[2] = SurfaceInput {
+            input: crate::kernel_joint::INPUT_CONSTANT,
+            param_a: 0.0,
+            param_b: 0.1,
+        };
+        let wheel = add(
+            self,
+            "Wheel",
+            [4.0, 4.0, 0.4],
+            [30.0, 12.0, 16.8],
+            false,
+            false,
+            28,
+        );
+        joint(
+            self,
+            "MotorHinge",
+            joints::ROTATE_V,
+            [axle, wheel],
+            frame([0.0; 3]),
+            frame([0.0, 0.0, -0.8]),
+        );
+        // Motor: an arm turning on top of a loose tower (z of C0/C1 along +Y).
+        let up = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+        let tower = add(
+            self,
+            "Tower",
+            [2.0, 1.0, 2.0],
+            [40.0, 0.5, 16.0],
+            false,
+            false,
+            194,
+        );
+        let arm = add(
+            self,
+            "Arm",
+            [4.0, 0.4, 0.4],
+            [42.0, 1.2, 16.0],
+            false,
+            false,
+            21,
+        );
+        let motor = joint(
+            self,
+            "Motor",
+            joints::MOTOR,
+            [tower, arm],
+            CoordinateFrame {
+                position: [0.0, 0.5, 0.0],
+                rotation: up,
+            },
+            CoordinateFrame {
+                position: [-2.0, -0.2, 0.0],
+                rotation: up,
+            },
+        );
+        self.joints[motor].desired_angle = std::f32::consts::FRAC_PI_2;
+        self.joints[motor].max_velocity = 0.05;
     }
     /// The World's joint spanning tree (`joints.rs`): every Part in
     /// Workspace order (World::insertPrimitive), then every joint in
