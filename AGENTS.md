@@ -27,6 +27,9 @@ This is a 1:1 rewrite of the 2016 Roblox Studio MacOS client in Rust and built o
   verify from the numbers. Do not try to visually inspect the game.
 - **Tell me how to test it.** After every change, say the exact command to run and
   what I should see. "Done" without a test procedure is not done.
+- **Show it in the demo.** Whenever a change is plausibly demonstrable in the
+  viewport baseplate demo (`viewport-baseplate`, `Workspace::loose_parts_demo`),
+  update the demo to show it off, in the same change or the one right after.
 - **Ask before large refactors.** If you think the architecture is wrong, say so
   and explain, then wait for me.
 
