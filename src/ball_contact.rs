@@ -40,6 +40,7 @@ use crate::{
     },
     g3d::unitize,
     material::Shape,
+    poly::PolyShape,
     poly_contact::{PolyContact, poly_shape},
     scene::CoordinateFrame,
 };
@@ -384,10 +385,9 @@ impl<T: Default> BallContact<T> {
 pub enum PrimContact<T> {
     Block(BlockBlockContact<T>),
     Ball(BallContact<T>),
-    /// PolyPolyContact (`poly_contact`): a Wedge against a Block or Wedge.
+    /// PolyPolyContact (`poly_contact`): a Wedge against a Block or Wedge,
+    /// or BallPolyContact (00add538): a Ball against a Wedge.
     Poly(PolyContact<T>),
-    /// BallPolyContact (00add538), not ported: its step is an error.
-    BallPoly,
 }
 
 impl<T: Default> PrimContact<T> {
@@ -403,7 +403,8 @@ impl<T: Default> PrimContact<T> {
                 Self::Ball(BallContact::new(BallPair::BallBlock { ball: 1 }))
             }
             [Shape::Block, Shape::Block] => Self::Block(BlockBlockContact::default()),
-            [Shape::Ball, Shape::Wedge] | [Shape::Wedge, Shape::Ball] => Self::BallPoly,
+            [Shape::Ball, Shape::Wedge] => Self::Poly(PolyContact::new_ball(0, PolyShape::Wedge)),
+            [Shape::Wedge, Shape::Ball] => Self::Poly(PolyContact::new_ball(1, PolyShape::Wedge)),
             [a, b] => Self::Poly(PolyContact::new([
                 poly_shape(a).expect("poly shape"),
                 poly_shape(b).expect("poly shape"),
@@ -415,7 +416,6 @@ impl<T: Default> PrimContact<T> {
             Self::Block(c) => c.connectors(),
             Self::Ball(c) => c.connectors(),
             Self::Poly(c) => c.connectors(),
-            Self::BallPoly => &[],
         }
     }
     pub fn connectors_mut(&mut self) -> &mut [Connector<T>] {
@@ -423,7 +423,6 @@ impl<T: Default> PrimContact<T> {
             Self::Block(c) => c.connectors_mut(),
             Self::Ball(c) => c.connectors_mut(),
             Self::Poly(c) => c.connectors_mut(),
-            Self::BallPoly => &mut [],
         }
     }
     /// Whether connector `index` is in the kernel. Only a PolyContact keeps
@@ -446,7 +445,6 @@ impl<T: Default> PrimContact<T> {
             Self::Block(c) => c.take_connectors(),
             Self::Ball(c) => c.take_connectors(),
             Self::Poly(c) => c.take_connectors(),
-            Self::BallPoly => Vec::new(),
         }
     }
     pub fn take_events(&mut self) -> Vec<ContactEvent<T>> {
@@ -454,7 +452,6 @@ impl<T: Default> PrimContact<T> {
             Self::Block(c) => std::mem::take(&mut c.events),
             Self::Ball(c) => std::mem::take(&mut c.events),
             Self::Poly(c) => c.take_events(),
-            Self::BallPoly => Vec::new(),
         }
     }
     /// computeIsColliding (vtable +0x28) with no ignored overlap. A
@@ -464,7 +461,6 @@ impl<T: Default> PrimContact<T> {
             Self::Block(c) => c.compute_is_colliding(blocks, 0.0).0,
             Self::Ball(c) => c.compute_is_colliding(blocks, 0.0),
             Self::Poly(c) => c.compute_is_colliding(blocks, 0.0),
-            Self::BallPoly => false,
         }
     }
     /// The contact step (vtable +0x20).
@@ -478,7 +474,6 @@ impl<T: Default> PrimContact<T> {
             Self::Block(c) => c.update(blocks, in_kernel, tables),
             Self::Ball(c) => c.update(blocks, in_kernel),
             Self::Poly(c) => Ok(c.update(blocks, in_kernel)),
-            Self::BallPoly => Err("a Ball against a Wedge (BallPolyContact) is not ported".into()),
         }
     }
     /// Connector geometry refresh (virtual +0x24) for the current frames.
@@ -487,7 +482,6 @@ impl<T: Default> PrimContact<T> {
             Self::Block(c) => c.refresh(blocks),
             Self::Ball(c) => c.refresh(blocks),
             Self::Poly(c) => c.refresh(blocks),
-            Self::BallPoly => {}
         }
     }
     /// Forget the cached features (a fresh contact of the same kind).
@@ -496,7 +490,6 @@ impl<T: Default> PrimContact<T> {
             Self::Block(c) => *c = BlockBlockContact::default(),
             Self::Ball(c) => *c = BallContact::new(c.pair),
             Self::Poly(c) => c.reset(),
-            Self::BallPoly => {}
         }
     }
 }

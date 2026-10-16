@@ -346,8 +346,9 @@ output to expect. Anything not covered by an audit is marked **not tested**.
 
 - Wedge Parts in the physics: a WedgePart (`set_shape(SHAPE_WEDGE)`), loose
   or anchored, has the Wedge mass, center of mass, moment and extents. It
-  collides with Blocks and Wedges through PolyPolyContact (`poly_contact.rs`),
-  and the Humanoid ray query hits its faces. Run
+  collides with Blocks and Wedges through PolyPolyContact and with Balls
+  through BallPolyContact (`poly_contact.rs`), and the Humanoid ray query
+  hits its faces. Run
   `sh tools/cargo.sh run --locked -- audit-part-wedge`. Expect:
   - `part_wedge_load masses=[22.4, 22.4, 2.8] centers_in_body=[[0.0, -0.33333334, 0.6666667], ...]`:
     a 4 x 2 x 4 Plastic Wedge weighs the whole box (x y z x 0.7), with its
@@ -356,22 +357,25 @@ output to expect. Anything not covered by an audit is marked **not tested**.
     and `part=Drop step=56 contacts=[static0/Drop FaceVertex length=-0.1519562]...`:
     FaceVertex connectors from PolyPolyContact (static0 is the Baseplate,
     static1 the anchored Slope);
-  - `part_wedge_result ... lowest=[-0.020267248, -0.019460559, -0.012765029] speeds=[0.0, 0.0, 0.0] drop=[29.997982, 0.9859274, -30.00273] ... slider=[-29.91549, 0.48844653, 24.16576] slider_slope_steps=150 ray=Some((([-33.0, 2.0, 30.0], [0.0, 0.8944272, -0.4472136]), Static(1))) ramp_steps=148 worst_ramp_height_error=0.07017875 walk_end=[5.068154e-5, 5.4002967, -15.872218]`:
+  - `part_wedge_marble_first step=7 contacts=[... [Marble/static1 PolyBallPlane length=-0.00483...]`:
+    a Ball on the anchored slope gets a BallPlane connector;
+  - `part_wedge_result ... lowest=[-0.020275969, -0.019395053, -0.0157507] speeds=[0.0, 0.0, 0.0] drop=[29.997843, 0.98619145, -30.002726] ... slider=[-29.915707, 0.48694745, 24.166956] slider_slope_steps=150 ray=Some((([-33.0, 2.0, 30.0], [0.0, 0.8944272, -0.4472136]), Static(1))) ramp_steps=148 worst_ramp_height_error=0.07017875 walk_end=[5.068154e-5, 5.4002967, -15.872218] marble_slope_steps=107 marble_end=[-33.0, 0.9841863, -36.22281]`:
     - a dropped Wedge rests flat on the Baseplate, 0.02 studs in;
     - an upside-down Wedge tumbles and comes to rest on its slope;
     - a block set on a 27 degree anchored slope slides off its low end;
     - a ray hits the slope with the slope's normal;
     - the character walks up a 14 degree Wedge ramp, its root 3 studs over
       the slope (within 0.07);
+    - a Ball rolls down the slope and off onto the Baseplate;
   - `part_wedge_sleep ... [Drop final=SleepingDeeply ...] [Flip final=SleepingDeeply ...] [Slider final=SleepingDeeply ...]`;
-  - `part_wedge_pass rested=true flat=true slid=true hit=true climbed=true native_differential=not_tested`.
+  - `part_wedge_pass rested=true flat=true slid=true hit=true climbed=true rolled=true native_differential=not_tested`.
 
   Unit tests: `sh tools/cargo.sh test --locked poly` (mesh topology, the
-  face tests, the ray hit test, and three contact cases). Not tested: the
+  face tests, the ray hit test, three Poly contact cases, and a Ball
+  against a Wedge's face, edge and corner). Not tested: the
   character's Torso or Head touching a Wedge (in the audit they never do),
   a Wedge welded into a multi-Part assembly, and Wedge against Wedge.
   Not ported:
-  - Ball against Wedge (BallPolyContact): the step fails with an error;
   - CornerWedge and Cylinder.
 
   Native parity is **not tested**.

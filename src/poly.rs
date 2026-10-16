@@ -144,6 +144,12 @@ impl Line {
             direction: direction(mul(&f.rotation, self.direction)),
         }
     }
+    /// G3D::Line::closestPoint 01254d30: point + direction t, with
+    /// t = (p - point) . direction.
+    pub fn closest_point(&self, p: [f32; 3]) -> [f32; 3] {
+        let t = dot(sub(p, self.point), self.direction);
+        std::array::from_fn(|a| self.direction[a] * t + self.point[a])
+    }
     /// Line::intersection(Plane) 01254c28: Vector3::inf when parallel.
     pub fn intersection(&self, plane: &Plane) -> [f32; 3] {
         let rate = dot(self.direction, plane.normal);
@@ -378,6 +384,15 @@ impl Mesh {
         let end = self.vertices[self.edge_vertex(e, Some(face), 1)].position;
         let start = self.vertices[self.edge_vertex(e, Some(face), 0)].position;
         direction(sub(end, start))
+    }
+    /// The unit direction of edge `e` from its first vertex (00d200a0 with
+    /// no face).
+    pub fn edge_axis(&self, e: usize) -> [f32; 3] {
+        let edge = &self.edges[e];
+        direction(sub(
+            self.vertices[edge.vertices[1]].position,
+            self.vertices[edge.vertices[0]].position,
+        ))
     }
     /// The side plane of the face's edge k (00d1fe1e): through the edge,
     /// facing out of the face.

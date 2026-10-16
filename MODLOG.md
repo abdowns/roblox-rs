@@ -1,5 +1,40 @@
 # MODLOG
 
+## 2026-10-15 Fix: viewport-baseplate crash (BallPolyContact)
+
+**Changed:**
+- `PolyContact::new_ball` and `ball_connectors`: BallPolyContact (00add538,
+  findPolyConnectors 00add542). It brings the BallPlane, BallEdge and
+  BallVertex connectors (00aa99b2, 00aa9c2a, 00aa9ea4) as new
+  `PairKind`s and `PolyFeature`s.
+- `PrimContact::BallPoly` (the stub that returned an error) is gone. A Ball
+  against a Wedge is now a `PrimContact::Poly`.
+- `poly::Line::closest_point` (01254d30) and `Mesh::edge_axis`.
+- `audit-part-wedge` now also rolls a Ball down a Wedge slope.
+
+**Why:** The user reported that `viewport-baseplate` exits after a few
+seconds. The cause: the demo's "Roll" ball rolls off the low (-X) end of
+its ramp, crosses the Baseplate westward along z -20, and reaches the
+Wedges I added in 08fb40b. A Ball against a Wedge was not ported, so the
+step returned "a Ball against a Wedge (BallPolyContact) is not ported" and
+the viewport stopped.
+
+My oversight: the 120-frame smoke run ends before the ball arrives, so I
+called the demo working without having run it long enough.
+
+**Tested how:**
+- `viewport-baseplate` ran 60 seconds with no failure. The Roll ball is
+  deflected by a Wedge and sleeps at (-17.5, 0.99, -32.6).
+- `sh tools/cargo.sh test --locked` (117) and clippy are clean.
+- The new unit test covers BallPlane, BallEdge and BallVertex lengths and
+  normals.
+- `audit-part-wedge` passes. Its Drop/Slider numbers moved in the 4th
+  decimal, because the new Marble shares the kernel passes.
+- The other 20 physics audits are byte-identical to before. The render
+  audits and `viewport-baseplate-smoke` pass.
+
+**Result:** Fixed. Native parity of BallPolyContact is **not tested**.
+
 ## 2026-10-15 Wedge rendering and the Wedge demo
 
 **Changed:**

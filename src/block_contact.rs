@@ -152,6 +152,13 @@ pub enum PairKind {
     FaceEdge,
     /// EdgeEdgeConnector (type 7): edge `id_a` of A and edge `id_b` of B.
     PolyEdgeEdge,
+    /// BallPolyContact's BallPlaneConnector (type 11): A is the ball, `id_b`
+    /// a face of the Poly B.
+    PolyBallPlane,
+    /// BallEdgeConnector (type 10): `id_b` an edge of B.
+    PolyBallEdge,
+    /// BallVertexConnector (type 9): `id_b` a vertex of B.
+    PolyBallVertex,
 }
 
 /// GeoPair fields the native constructor leaves uninitialized (pool memory).
@@ -224,7 +231,10 @@ impl GeoPair {
             | PairKind::BallPlane
             | PairKind::FaceVertex
             | PairKind::FaceEdge
-            | PairKind::PolyEdgeEdge => false,
+            | PairKind::PolyEdgeEdge
+            | PairKind::PolyBallPlane
+            | PairKind::PolyBallEdge
+            | PairKind::PolyBallVertex => false,
         }
     }
     /// GeoPair::computeContactPoint (ae5f1a).
@@ -241,9 +251,12 @@ impl GeoPair {
             PairKind::BallVertex | PairKind::BallEdge | PairKind::BallPlane => {
                 crate::ball_contact::ball_block_point(self, a, b)
             }
-            PairKind::FaceVertex | PairKind::FaceEdge | PairKind::PolyEdgeEdge => {
-                crate::poly_contact::compute(self, a, b)
-            }
+            PairKind::FaceVertex
+            | PairKind::FaceEdge
+            | PairKind::PolyEdgeEdge
+            | PairKind::PolyBallPlane
+            | PairKind::PolyBallEdge
+            | PairKind::PolyBallVertex => crate::poly_contact::compute(self, a, b),
         }
     }
     /// aa1d78.

@@ -60,6 +60,22 @@ pub enum PolyFeature {
     },
     /// EdgeEdgeConnector: an edge of each body (+0x118, +0x134).
     EdgeEdge { edge_a: Line, edge_b: Line },
+    /// BallPlaneConnector: the radius (+0x118), a point of the Poly's face
+    /// (+0x11c) and its normal (+0x128), in the Poly's frame.
+    BallPlane {
+        radius: f32,
+        point: [f32; 3],
+        normal: [f32; 3],
+    },
+    /// BallEdgeConnector: the radius, the edge's first vertex and its
+    /// direction.
+    BallEdge {
+        radius: f32,
+        point: [f32; 3],
+        direction: [f32; 3],
+    },
+    /// BallVertexConnector: the radius and the vertex.
+    BallVertex { radius: f32, vertex: [f32; 3] },
 }
 
 /// The connector geometry update (vtable +0x24) of a Poly connector.
@@ -138,12 +154,184 @@ pub fn compute(pair: &GeoPair, a: &CoordinateFrame, b: &CoordinateFrame) -> Cont
                 },
             }
         }
+        // 00aa99b2. A is the ball, B the Poly.
+        Some(PolyFeature::BallPlane {
+            radius,
+            point,
+            normal,
+        }) => {
+            let n = mul(&b.rotation, *normal).map(|v| -v);
+            let p = to_world(b, *point);
+            let c = a.position;
+            let s = dot(sub(p, c), n);
+            let offset = n.map(|v| v * s);
+            ContactPoint {
+                normal: n,
+                length: dot(offset, offset).sqrt() - radius,
+                position: std::array::from_fn(|i| c[i] + offset[i]),
+            }
+        }
+        // 00aa9c2a.
+        Some(PolyFeature::BallEdge {
+            radius,
+            point,
+            direction,
+        }) => {
+            let axis = mul(&b.rotation, *direction);
+            let c = a.position;
+            let d = sub(to_world(b, *point), c);
+            let along = dot(d, axis);
+            let mut n: [f32; 3] = std::array::from_fn(|i| d[i] - axis[i] * along);
+            let position = std::array::from_fn(|i| n[i] + c[i]);
+            let length = unitize(&mut n, 1e-6);
+            ContactPoint {
+                normal: n,
+                length: length - radius,
+                position,
+            }
+        }
+        // 00aa9ea4.
+        Some(PolyFeature::BallVertex { radius, vertex }) => {
+            let p = to_world(b, *vertex);
+            let mut n = sub(p, a.position);
+            let length = unitize(&mut n, 1e-6);
+            ContactPoint {
+                normal: n,
+                length: length - radius,
+                position: p,
+            }
+        }
         None => ContactPoint {
             normal: [0.0; 3],
             length: 0.0,
             position: [0.0; 3],
         },
     }
+}
+
+/// BallPolyContact::findPolyConnectors 00add542 (ball native body 0, the
+/// Poly body 1): the Poly face the ball's center is furthest outside
+/// (00add796), then a BallPlane connector when the center is behind it or
+/// over the face (Face::inside), else the nearest edge of that face whose
+/// span holds the center (00adda14, 00b3507c) for a BallEdge, else the
+/// nearer end of the face edge whose line is nearest (00addc50, 00addd4e)
+/// for a BallVertex. Nothing when the feature is further than the radius.
+fn ball_connectors(
+    ball: &Block,
+    poly: &Block,
+    shape: PolyShape,
+) -> Option<(PairKind, usize, PolyFeature)> {
+    let mesh = Mesh::new(shape, poly.size);
+    let radius = crate::ball_contact::radius(ball.size);
+    let p = mul_transpose(
+        &poly.frame.rotation,
+        sub(ball.frame.position, poly.frame.position),
+    );
+    let mut distance = f32::MIN;
+    let mut face = None;
+    for (i, f) in mesh.faces.iter().enumerate() {
+        let d = dot(f.plane.normal, p) - f.plane.distance;
+        if distance <= d && d != distance {
+            distance = d;
+            face = Some(i);
+        }
+    }
+    let face = face?;
+    if radius < distance {
+        return None;
+    }
+    let plane = |face: usize| {
+        let f = &mesh.faces[face];
+        let v = mesh.edge_vertex(f.edges[0], Some(face), 0);
+        (
+            PairKind::PolyBallPlane,
+            face,
+            PolyFeature::BallPlane {
+                radius,
+                point: mesh.vertices[v].position,
+                normal: f.plane.normal,
+            },
+        )
+    };
+    if distance <= 0.0 || mesh.inside(face, p) {
+        return Some(plane(face));
+    }
+    let ends = |e: usize| {
+        let edge = &mesh.edges[e];
+        (
+            mesh.vertices[edge.vertices[0]].position,
+            mesh.vertices[edge.vertices[1]].position,
+        )
+    };
+    let line_distance = |e: usize| {
+        let (v0, v1) = ends(e);
+        let q = Line::from_two_points(v0, v1).closest_point(p);
+        let d = sub(q, p);
+        dot(d, d).sqrt()
+    };
+    // 00adda14.
+    let mut best = f32::MAX;
+    let mut found = None;
+    for &e in &mesh.faces[face].edges {
+        let d = line_distance(e);
+        if d < best {
+            // 00b3507c: the center is between the edge's end planes.
+            let (v0, v1) = ends(e);
+            let axis = sub(v1, v0);
+            if 0.0 <= dot(sub(p, v0), axis) && dot(axis, sub(p, v1)) <= 0.0 {
+                best = d;
+                found = Some(e);
+            }
+        }
+    }
+    if let Some(e) = found {
+        if radius < best {
+            return None;
+        }
+        let (v0, _) = ends(e);
+        return Some((
+            PairKind::PolyBallEdge,
+            e,
+            PolyFeature::BallEdge {
+                radius,
+                point: v0,
+                direction: mesh.edge_axis(e),
+            },
+        ));
+    }
+    // 00addc50, then 00addd4e.
+    let mut best = f32::MAX;
+    let mut nearest = None;
+    for &e in &mesh.faces[face].edges {
+        let d = line_distance(e);
+        if d < best {
+            best = d;
+            nearest = Some(e);
+        }
+    }
+    let edge = &mesh.edges[nearest?];
+    let mut best = f32::MAX;
+    let mut vertex = None;
+    for &v in &edge.vertices {
+        let d = sub(p, mesh.vertices[v].position);
+        let d = dot(d, d).sqrt();
+        if d < best {
+            best = d;
+            vertex = Some(v);
+        }
+    }
+    let vertex = vertex?;
+    if radius < best {
+        return None;
+    }
+    Some((
+        PairKind::PolyBallVertex,
+        vertex,
+        PolyFeature::BallVertex {
+            radius,
+            vertex: mesh.vertices[vertex].position,
+        },
+    ))
 }
 
 /// The cached separating pair (+0xd4). `a` and `b` are the pair's first
@@ -524,6 +712,8 @@ fn generate_faces(
 pub struct PolyContact<T> {
     /// Native order.
     shapes: [PolyShape; 2],
+    /// BallPolyContact: native body 0 is a Ball (`shapes[0]` unused).
+    ball: bool,
     order: [usize; 2],
     answer: Option<Separation>,
     connectors: Vec<Connector<T>>,
@@ -550,7 +740,23 @@ impl<T: Default> PolyContact<T> {
         };
         Self {
             shapes: [shapes[order[0]], shapes[order[1]]],
+            ball: false,
             order,
+            answer: None,
+            connectors: Vec::new(),
+            in_kernel: Vec::new(),
+            events: Vec::new(),
+        }
+    }
+    /// A BallPolyContact (00add538): the Ball is the caller's primitive
+    /// `ball` (0 or 1), the other a Poly of `shape`. It shares
+    /// PolyContact's step, collision test and rebuild (the same vtable
+    /// slots) and finds its connectors with 00add542.
+    pub fn new_ball(ball: usize, shape: PolyShape) -> Self {
+        Self {
+            shapes: [PolyShape::Block, shape],
+            ball: true,
+            order: if ball == 0 { [0, 1] } else { [1, 0] },
             answer: None,
             connectors: Vec::new(),
             in_kernel: Vec::new(),
@@ -596,6 +802,14 @@ impl<T: Default> PolyContact<T> {
     /// findPolyConnectors 00b52c2a with the pair search 00b52d2e.
     fn find_connectors(&mut self, blocks: [&Block; 2]) -> Vec<GeoPair> {
         let native = [blocks[self.order[0]], blocks[self.order[1]]];
+        if self.ball {
+            return ball_connectors(native[0], native[1], self.shapes[1])
+                .map(|(kind, id, feature)| {
+                    poly_pair(kind, self.order[0], self.order[1], 0, id, feature)
+                })
+                .into_iter()
+                .collect();
+        }
         let meshes: [Mesh; 2] = std::array::from_fn(|i| Mesh::new(self.shapes[i], native[i].size));
         let bodies = Bodies {
             frames: [&native[0].frame, &native[1].frame],
@@ -774,6 +988,52 @@ mod tests {
             },
             size,
         }
+    }
+
+    #[test]
+    fn ball_against_wedge_finds_plane_edge_and_vertex() {
+        // An 8x4x8 Wedge at the origin: slope y = z / 2, normal (0, 2, -1)/sqrt 5.
+        let wedge = block([0.0; 3], [8.0, 4.0, 8.0]);
+        let root5 = 5f32.sqrt();
+        let n = [0.0, 2.0 / root5, -1.0 / root5];
+        let cases = [
+            // Diameter 2, sunk 0.05 into the slope.
+            (n.map(|v| v * 0.95), PairKind::PolyBallPlane, -0.05),
+            // Past the top back edge (y 2, z 4): 0.6 out along y and z.
+            (
+                [0.0, 2.6, 4.6],
+                PairKind::PolyBallEdge,
+                0.72f32.sqrt() - 1.0,
+            ),
+            // Past the corner (4, 2, 4).
+            (
+                [4.5, 2.5, 4.5],
+                PairKind::PolyBallVertex,
+                0.75f32.sqrt() - 1.0,
+            ),
+        ];
+        for (center, kind, length) in cases {
+            let ball = block(center, [2.0; 3]);
+            let mut contact = PolyContact::<()>::new_ball(0, PolyShape::Wedge);
+            assert!(contact.update([&ball, &wedge], true), "{kind:?}");
+            let c = contact.connectors();
+            assert_eq!(c.len(), 1, "{c:?}");
+            assert_eq!(c[0].pair.kind, kind);
+            assert_eq!((c[0].pair.body_a, c[0].pair.body_b), (0, 1));
+            assert!((c[0].point.length - length).abs() < 1e-5, "{c:?}");
+            // The normal points from the ball into the Wedge.
+            let into = sub(c[0].point.position, center);
+            assert!(dot(into, c[0].point.normal) > 0.0, "{c:?}");
+        }
+        // The Wedge first in the caller's order: the ball is still body A.
+        let ball = block(n.map(|v| v * 0.95), [2.0; 3]);
+        let mut contact = PolyContact::<()>::new_ball(1, PolyShape::Wedge);
+        assert!(contact.update([&wedge, &ball], true));
+        assert_eq!(contact.connectors()[0].pair.body_a, 1);
+        // Clear of it: nothing.
+        let ball = block(n.map(|v| v * 1.5), [2.0; 3]);
+        let mut contact = PolyContact::<()>::new_ball(0, PolyShape::Wedge);
+        assert!(!contact.update([&ball, &wedge], true));
     }
 
     #[test]

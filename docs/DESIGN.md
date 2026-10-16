@@ -1204,11 +1204,23 @@ Block against Block keeps BlockBlockContact.
   - the slope as face 5;
   - the side triangles drawn as strips that narrow, with one edge stepping
     down the slope.
+- **Ball against Wedge (BallPolyContact 00add538).** Its vtable differs
+  from PolyPolyContact's only in the destructors and findPolyConnectors
+  (00add542), so `PolyContact::new_ball` reuses the PolyContact step,
+  collision test and rebuild. The ball is native body 0. The search:
+  - Take the ball's center in the Wedge's frame, and the face it is
+    furthest outside of.
+  - Nothing if that is more than the radius.
+  - A BallPlane connector if the center is behind the face or over it.
+  - Else a BallEdge on the nearest edge of that face whose span holds the
+    center.
+  - Else a BallVertex on the nearer end of the face edge whose line is
+    nearest.
+  - BallEdge and BallVertex are dropped when further than the radius.
 - **Static Wedges.** The Torso/Head touch test runs a fresh PolyContact
   test against a static Wedge. A static Block still uses the box-overlap
   stand-in.
 - **Not ported.**
-  - Ball against Wedge (BallPolyContact 00add538): the step returns an error.
   - CornerWedge and Cylinder are refused.
 
 ## Unanchored Parts (loose.rs)

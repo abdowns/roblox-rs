@@ -1782,6 +1782,8 @@ pub fn audit_part_ball(bundle: &Bundle) -> Result<String, String> {
 ///   settles somewhere on the Baseplate;
 /// - "Slider" (2 x 1 x 2), a block set on the slope of "Slope" (an
 ///   anchored 8 x 4 x 8 Wedge), slides down it towards -Z;
+/// - "Marble" (a Ball, diameter 2) set on the same slope rolls down it
+///   (BallPolyContact 00add538);
 /// - a ray straight down onto the Slope's slope (Mesh hitTest 00b340c0);
 /// - then the character walks one second towards -Z up "Ramp", an anchored
 ///   8 x 4 x 16 Wedge turned to rise towards -Z (14 degrees), on the
@@ -1878,6 +1880,16 @@ pub fn audit_part_wedge(bundle: &Bundle) -> Result<String, String> {
         true,
     );
     let ramp_floor = |z: f32| ((-6.0 - z) / 4.0).clamp(0.0, 4.0);
+    {
+        let mut marble = PartInstance {
+            name: "Marble".into(),
+            frame: at([-33.0, on_slope[1] + c * 1.05, on_slope[2] + s * 1.05]),
+            ..Default::default()
+        };
+        marble.set_shape(crate::workspace::SHAPE_BALL);
+        marble.set_size([2.0; 3]);
+        workspace.parts.push(marble);
+    }
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
     let ramp_index = fixture
         .world
@@ -1896,6 +1908,7 @@ pub fn audit_part_wedge(bundle: &Bundle) -> Result<String, String> {
     };
     let names = ["Drop", "Flip", "Slider"];
     let prims = [prim(names[0])?, prim(names[1])?, prim(names[2])?];
+    let marble = prim("Marble")?;
     let assemblies = names.map(|name| loose.parts.iter().position(|p| p.name == name));
     let assemblies = [
         assemblies[0].ok_or("missing assembly Drop")?,
@@ -1926,6 +1939,7 @@ pub fn audit_part_wedge(bundle: &Bundle) -> Result<String, String> {
     };
     let mut first_contact = [None; 3];
     let mut slider_slope_steps = 0u32;
+    let mut marble_slope_steps = 0u32;
     for step in 0..900u32 {
         fixture.step_animated(&mut rig, [0.0; 3])?;
         let loose = &fixture.world.loose;
@@ -1946,6 +1960,18 @@ pub fn audit_part_wedge(bundle: &Bundle) -> Result<String, String> {
         // The Slope is static1 (the Baseplate is static0).
         if loose.contact_report().contains("static1/Slider") {
             slider_slope_steps += 1;
+        }
+        let report_now = loose.contact_report();
+        if report_now.contains("Marble/static1 PolyBallPlane") {
+            marble_slope_steps += 1;
+            if marble_slope_steps == 1 {
+                writeln!(
+                    report,
+                    "part_wedge_marble_first step={} contacts={report_now}",
+                    step + 1
+                )
+                .unwrap();
+            }
         }
         let frame = step + 1;
         if frame % 150 == 0 {
@@ -2011,12 +2037,13 @@ pub fn audit_part_wedge(bundle: &Bundle) -> Result<String, String> {
     });
     let drop = loose.prim_frame(prims[0])?;
     let slider = loose.prim_frame(prims[2])?;
+    let marble_end = loose.prim_frame(marble)?.position;
     let ray = fixture
         .world
         .raycast([-33.0, 20.0, 30.0], [0.0, -1.0, 0.0], 100.0);
     writeln!(
         report,
-        "part_wedge_result first_contact={first_contact:?} lowest={lows:?} speeds={speeds:?} drop={:?} drop_up={:?} slider={:?} slider_slope_steps={slider_slope_steps} ray={ray:?} ramp_steps={ramp_steps} worst_ramp_height_error={worst_height} walk_end={walk_end:?}",
+        "part_wedge_result first_contact={first_contact:?} lowest={lows:?} speeds={speeds:?} drop={:?} drop_up={:?} slider={:?} slider_slope_steps={slider_slope_steps} ray={ray:?} ramp_steps={ramp_steps} worst_ramp_height_error={worst_height} walk_end={walk_end:?} marble_slope_steps={marble_slope_steps} marble_end={marble_end:?}",
         drop.position,
         [drop.rotation[0][1], drop.rotation[1][1], drop.rotation[2][1]],
         slider.position,
@@ -2041,14 +2068,19 @@ pub fn audit_part_wedge(bundle: &Bundle) -> Result<String, String> {
     });
     // The root stays 3 studs over the slope under it, and ends high on it.
     let climbed = ramp_steps > 0 && worst_height < 0.2 && walk_end[1] > 5.0;
-    if !(rested && flat && slid && hit && climbed) || first_contact.iter().any(Option::is_none) {
+    // The Marble rolled off the slope's low end and lies on the Baseplate.
+    let rolled =
+        marble_slope_steps > 0 && marble_end[2] < 26.0 && (marble_end[1] - 1.0).abs() < 0.05;
+    if !(rested && flat && slid && hit && climbed && rolled)
+        || first_contact.iter().any(Option::is_none)
+    {
         return Err(format!(
-            "part wedge failed rested={rested} flat={flat} slid={slid} hit={hit} climbed={climbed}\n{report}"
+            "part wedge failed rested={rested} flat={flat} slid={slid} hit={hit} climbed={climbed} rolled={rolled}\n{report}"
         ));
     }
     writeln!(
         report,
-        "part_wedge_pass rested=true flat=true slid=true hit=true climbed=true native_differential=not_tested"
+        "part_wedge_pass rested=true flat=true slid=true hit=true climbed=true rolled=true native_differential=not_tested"
     )
     .unwrap();
     Ok(report)
