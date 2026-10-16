@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.1"
 publish = false
+license = "Apache-2.0"
 description = "Offline research runtime for Roblox Studio macOS 0.255.0.82159"
 
 [dependencies]

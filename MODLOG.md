@@ -1,5 +1,19 @@
 # MODLOG
 
+## 2026-10-15 License: Apache-2.0
+
+**Changed:**
+- Added `LICENSE`, the Apache License 2.0 text from apache.org, and
+  whitelisted it in `.gitignore`.
+- `Cargo.toml` now has `license = "Apache-2.0"`.
+- The README's license section says what the license covers. It also has a
+  trademark and non-affiliation disclaimer.
+
+**Why:** The user chose Apache-2.0.
+
+**Test:** `git ls-files LICENSE` prints `LICENSE`. `sh tools/cargo.sh build
+--locked` still builds.
+
 ## 2026-10-15 Fix: viewport-baseplate crash (BallPolyContact)
 
 **Changed:**

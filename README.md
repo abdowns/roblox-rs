@@ -111,7 +111,18 @@ This project is written by LLM coding agents.
   the original binary.
 - [Bevy](https://bevy.org/) provides the engine foundation.
 
-No license has been chosen for the source yet. Until a `LICENSE` file is added,
-all rights are reserved. roblox-rs distributes no Roblox files or assets. Roblox
-and Roblox Studio are trademarks of Roblox Corporation, and roblox-rs is not
-affiliated with or endorsed by Roblox.
+### License
+
+The roblox-rs source code is licensed under the
+[Apache License, Version 2.0](LICENSE). The license covers only the code in
+this repository.
+
+It grants no rights to Roblox Studio or to any Roblox binaries, assets,
+meshes, scripts or data. roblox-rs distributes none of those files. It reads
+them at runtime from a copy of Studio 0.255.0.82159 that you supply yourself.
+
+### Disclaimer
+
+Roblox and Roblox Studio are trademarks of Roblox Corporation. roblox-rs is an
+independent project. It is not affiliated with, sponsored by or endorsed by
+Roblox Corporation.
