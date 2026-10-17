@@ -1,5 +1,24 @@
 # MODLOG
 
+## 2026-10-17 Dev panel quality level slider
+
+**Changed:** `src/dev/panel.rs`: a "high quality" checkbox and a 0..21
+quality level slider (baseplate viewport only), applied on release.
+`render.rs`: `Viewport::set_quality` rebuilds the materials at a new level
+from the kept demo Workspace. `DEV_QUALITY_SMOKE=N` drives it at frame 60.
+Also `cargo fmt` on the previous commit's code.
+
+**Why:** the user asked for a quality level slider in the dev panel.
+
+**Tested how:** `DEV_QUALITY_SMOKE=21 ... --features dev -- viewport-baseplate-smoke`
+logs the rebuild (`material_gpu_pass ... quality_level=21`),
+`dev_action quality_level=21` and 53 HQ draws on the next frame; clippy
+clean with and without `dev`.
+
+**Not tested:** dragging the slider or toggling the checkbox by hand;
+switching back to low quality (same code path, None level); the one stale
+`high_quality_draws=0` line right after a switch is left as is.
+
 ## 2026-10-17 High-quality materials
 
 **Changed:**

@@ -140,7 +140,17 @@ Builds with the `dev` feature, which adds an egui overlay to every viewport
 "Dev" button in the top right toggles it. It shows fps, frame and CPU
 times, physics steps, draw/decal/index/entity counts, window size, camera
 and character positions and the GPU adapter. Controls: Pause/Resume, Step,
-Reset, Log snapshot, time scale, field of view and TimeOfDay. While the
+Reset, Log snapshot, time scale, field of view, TimeOfDay and, in the
+baseplate viewport, a "high quality" checkbox with a quality level slider
+(0..21; it rebuilds the material techniques when the slider is released and
+logs `dev_action quality_level=N` after `material_gpu_pass ...
+quality_level=N`; unchecked is low quality). Smoke test for the slider:
+`DEV_QUALITY_SMOKE=21 sh tools/cargo.sh run --locked --release --features dev -- viewport-baseplate-smoke`
+switches at frame 60 and prints `material_gpu_pass pipelines=8 bind_groups=39
+draw_calls=59 ... quality_level=21 shading_distance=300 anisotropy=8`,
+`dev_action quality_level=21`, then `material_quality_selection frame=62
+high_quality_draws=53` (the frame-61 line reports 0: it counts the frame
+drawn before the switch). While the
 panel has the mouse, clicks and drags do not reach the camera. The live log
 prints `dev_panel open=true paint_jobs=3 vertices=...` on the first drawn
 frame, `dev_panel open=false ...` / `open=true` on each toggle,

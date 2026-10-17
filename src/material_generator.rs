@@ -459,7 +459,9 @@ pub fn quality_levels(image: &NativeImage) -> Result<Vec<QualityLevel>, String> 
         };
         let shading_distance = f32::from_bits(field(0x10)?);
         let anisotropy = field(0x14)?;
-        if !shading_distance.is_finite() || shading_distance < 0.0 || !(1..=16).contains(&anisotropy)
+        if !shading_distance.is_finite()
+            || shading_distance < 0.0
+            || !(1..=16).contains(&anisotropy)
         {
             return Err(format!("invalid quality level {level}"));
         }

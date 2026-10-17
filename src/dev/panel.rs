@@ -42,6 +42,8 @@ enum Action {
     Reset,
     Snapshot,
     ClearDecals,
+    /// Rebuild the materials at this quality level (None: low quality).
+    Quality(Option<u32>),
 }
 
 /// Create the panel once the window and GPU exist.
@@ -227,6 +229,8 @@ pub(super) fn draw(
     let report = motion::walking_report(world);
     let (walking, motion_active, info) = (control.walking_probe, v.motion_active, gpu.info.clone());
     let mut actions = Vec::new();
+    let has_materials = v.material_workspace.is_some();
+    let (mut high_quality, mut level) = (v.quality.is_some(), v.quality.unwrap_or(21));
     let mut fov = v
         .walking_camera
         .as_ref()
@@ -293,6 +297,22 @@ pub(super) fn draw(
                         }
                         if ui.small_button("place").clicked() {
                             dev.time_of_day = None;
+                        }
+                    });
+                }
+                if has_materials {
+                    ui.horizontal(|ui| {
+                        let toggled = ui.checkbox(&mut high_quality, "high quality").changed();
+                        // Rebuilding loads the material textures: only on
+                        // release, not every frame of a drag.
+                        let slider = ui.add_enabled(
+                            high_quality,
+                            egui::Slider::new(&mut level, 0..=21).text("quality level"),
+                        );
+                        let moved =
+                            slider.drag_stopped() || (slider.changed() && !slider.dragged());
+                        if toggled || moved {
+                            actions.push(Action::Quality(high_quality.then_some(level)));
                         }
                     });
                 }
@@ -407,6 +427,14 @@ pub(super) fn draw(
         let line = decal_tool::clear(v)?;
         v.log_event(format!("dev_decal_smoke_clear {line}"))?;
     }
+    // DEV_QUALITY_SMOKE=N: what the slider does, at frame 60 (log, don't look).
+    if v.frames == 60
+        && let Some(level) = std::env::var("DEV_QUALITY_SMOKE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    {
+        actions.push(Action::Quality(Some(level)));
+    }
     for action in actions {
         match action {
             Action::Reset => {
@@ -425,6 +453,13 @@ pub(super) fn draw(
                 let line = decal_tool::clear(v)?;
                 v.dev.as_mut().unwrap().decals.status = line.clone();
                 v.log_event(line)?;
+            }
+            Action::Quality(quality) => {
+                v.set_quality(quality)?;
+                v.log_event(format!(
+                    "dev_action quality_level={}",
+                    quality.map_or("none".into(), |q| q.to_string())
+                ))?;
             }
         }
     }

@@ -255,12 +255,14 @@ fn draw_bounds(draws: &[Draw]) -> Vec<([f32; 3], [f32; 3])> {
     draws
         .iter()
         .map(|d| {
-            d.vertices.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), v| {
-                (
-                    std::array::from_fn(|i| lo[i].min(v.position[i])),
-                    std::array::from_fn(|i| hi[i].max(v.position[i])),
-                )
-            })
+            d.vertices
+                .iter()
+                .fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), v| {
+                    (
+                        std::array::from_fn(|i| lo[i].min(v.position[i])),
+                        std::array::from_fn(|i| hi[i].max(v.position[i])),
+                    )
+                })
         })
         .collect()
 }
@@ -1337,7 +1339,9 @@ impl Gpu {
             }
         }
         let tex = |key: &str| -> Result<&wgpu::TextureView, String> {
-            views.get(key).ok_or_else(|| format!("missing texture {key}"))
+            views
+                .get(key)
+                .ok_or_else(|| format!("missing texture {key}"))
         };
         let texture_entry = |binding, view| wgpu::BindGroupEntry {
             binding,
@@ -1351,7 +1355,10 @@ impl Gpu {
             self.device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some(label),
-                    contents: &floats.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
+                    contents: &floats
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect::<Vec<_>>(),
                     usage: wgpu::BufferUsages::UNIFORM,
                 })
         };
@@ -1385,7 +1392,9 @@ impl Gpu {
                                         sampler_entry(1, &linear_wrap),
                                         texture_entry(
                                             5,
-                                            environment.as_ref().ok_or("missing environment map")?,
+                                            environment
+                                                .as_ref()
+                                                .ok_or("missing environment map")?,
                                         ),
                                         sampler_entry(6, &linear_clamp),
                                     ]);
@@ -1439,12 +1448,13 @@ impl Gpu {
                                     }
                                 }
                             }
-                            gpu.bindings
-                                .push(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            gpu.bindings.push(self.device.create_bind_group(
+                                &wgpu::BindGroupDescriptor {
                                     label: None,
                                     layout: &layout,
                                     entries: &entries,
-                                }));
+                                },
+                            ));
                             bindings.insert(key, gpu.bindings.len() - 1);
                             gpu.bindings.len() - 1
                         }
@@ -1452,11 +1462,10 @@ impl Gpu {
                     Some((p, b))
                 }
             };
-            let hq_technique = scene.hq.as_ref().and_then(|hq| {
-                hq.techniques
-                    .get(&name)
-                    .map(|t| (hq, t))
-            });
+            let hq_technique = scene
+                .hq
+                .as_ref()
+                .and_then(|hq| hq.techniques.get(&name).map(|t| (hq, t)));
             let hq = match hq_technique {
                 None => None,
                 // DefaultNeonHQFS writes the same color as DefaultNeonFS.
@@ -1467,7 +1476,9 @@ impl Gpu {
                         HqShading::PlasticSurface => {
                             (ShaderKind::PlasticSurfaceHq, "plastic_surface_hq")
                         }
-                        HqShading::Material { wang: false } => (ShaderKind::SurfaceHq, "surface_hq"),
+                        HqShading::Material { wang: false } => {
+                            (ShaderKind::SurfaceHq, "surface_hq")
+                        }
                         HqShading::Material { wang: true } => {
                             (ShaderKind::SurfaceWangHq, "surface_wang_hq")
                         }
@@ -1487,7 +1498,12 @@ impl Gpu {
                             let fade = hq.level.fade_distance();
                             let c = match t.shading {
                                 HqShading::PlasticSurface => [
-                                    [v("TEXTURE_TILING"), v("BUMP_INTENSITY"), v("SPECULAR"), v("GLOSS")],
+                                    [
+                                        v("TEXTURE_TILING"),
+                                        v("BUMP_INTENSITY"),
+                                        v("SPECULAR"),
+                                        v("GLOSS"),
+                                    ],
                                     [0.0; 4],
                                     [0.0; 4],
                                     [0.0; 4],
@@ -1554,14 +1570,18 @@ impl Gpu {
                                     continue;
                                 }
                                 entries.push(texture_entry(binding, view));
-                                entries.push(sampler_entry(binding + 1, native_sampler(texture.sampler)?));
+                                entries.push(sampler_entry(
+                                    binding + 1,
+                                    native_sampler(texture.sampler)?,
+                                ));
                             }
-                            gpu.bindings
-                                .push(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            gpu.bindings.push(self.device.create_bind_group(
+                                &wgpu::BindGroupDescriptor {
                                     label: Some(&t.fragment),
                                     layout: &layout,
                                     entries: &entries,
-                                }));
+                                },
+                            ));
                             bindings.insert(key, gpu.bindings.len() - 1);
                             gpu.bindings.len() - 1
                         }
@@ -1784,7 +1804,9 @@ impl Gpu {
                     // shading distance (squared, point to box).
                     let near = materials.quality.is_some_and(|q| {
                         let (lo, hi) = bounds[draw.draw];
-                        q.high_quality(crate::material_generator::sq_distance_to_box(camera, lo, hi))
+                        q.high_quality(crate::material_generator::sq_distance_to_box(
+                            camera, lo, hi,
+                        ))
                     });
                     high_quality += usize::from(near && draw.hq.is_some());
                     let (selection, range) = (if near { draw.hq } else { draw.lq }, &draw.range);
@@ -3568,11 +3590,47 @@ struct Viewport {
     /// and the last logged count of draws at high quality.
     quality: Option<u32>,
     high_quality_draws: Option<usize>,
+    /// The demo Workspace the materials were built from, kept so the
+    /// quality level can change at runtime (`set_quality`).
+    material_workspace: Option<crate::workspace::Workspace>,
     cursor: Option<[f64; 2]>,
     #[cfg(feature = "dev")]
     dev: Option<dev::DevPanel>,
 }
 impl Viewport {
+    /// Rebuild the Part material techniques at another quality level (None:
+    /// low quality only). Used by the dev panel's quality slider.
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    fn set_quality(&mut self, quality: Option<u32>) -> Result<(), String> {
+        let Some(workspace) = &self.material_workspace else {
+            return Err("no material Workspace in this viewport".into());
+        };
+        let bundle = Bundle::open(&self.bundle_root)?;
+        let scene =
+            crate::material_generator::workspace_materials_quality(&bundle, workspace, quality)?;
+        let textures = crate::sky::SkyTextures::load(&bundle)?;
+        let sky = match &self.walking_sky {
+            Some(sky) => sky.clone(),
+            None => {
+                let profile = crate::lighting::LightingProfile::load(&bundle)?;
+                profile.sky(profile.properties.time_of_day)
+            }
+        };
+        let gpu = self.gpu.as_mut().ok_or("no GPU")?;
+        let lines = gpu.add_materials(
+            &self.app.world().resource::<Extracted>().0,
+            &self.surfaces,
+            &scene,
+            Some((&textures, &sky)),
+        )?;
+        self.materials = Some(scene);
+        self.quality = quality;
+        self.high_quality_draws = None;
+        for line in lines.lines().filter(|l| l.starts_with("material_gpu_pass")) {
+            self.log_event(line.to_string())?;
+        }
+        Ok(())
+    }
     fn log_event(&mut self, event: String) -> Result<(), String> {
         writeln!(self.live_log, "{event}").map_err(|e| e.to_string())?;
         self.live_log.flush().map_err(|e| e.to_string())?;
@@ -4208,6 +4266,7 @@ fn run_viewport_quality(
     };
     install_motion_world(&mut app, bundle, baseplate.then_some(&demo))?;
     let mut materials = None;
+    let mut material_workspace = None;
     let walking_camera_root = if walking && baseplate {
         app.world_mut()
             .resource_mut::<MotionControl>()
@@ -4249,6 +4308,7 @@ fn run_viewport_quality(
         let scene = crate::material_generator::workspace_materials_quality(bundle, &demo, quality)?;
         report.push_str(&scene.report);
         materials = Some(scene);
+        material_workspace = Some(demo.clone());
         let decals = texture::workspace_decals(bundle, &local)?;
         report.push_str(&decals.report);
         for decal in decals.draws {
@@ -4377,6 +4437,7 @@ fn run_viewport_quality(
         materials,
         quality,
         high_quality_draws: None,
+        material_workspace,
         cursor: None,
         #[cfg(feature = "dev")]
         dev: None,
