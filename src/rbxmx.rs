@@ -173,7 +173,9 @@ impl Parser<'_> {
                 self.i += 1;
                 break;
             }
-            let eq = self.find(b"=").ok_or("Unable to parse XML attributes. '=' not found")?;
+            let eq = self
+                .find(b"=")
+                .ok_or("Unable to parse XML attributes. '=' not found")?;
             let name = self.s[self.i..eq].trim_ascii().to_vec();
             let open = self.s[eq..]
                 .iter()
@@ -205,7 +207,9 @@ impl Parser<'_> {
         loop {
             self.next_tag()?;
             if self.starts(b"</") {
-                let end = self.find(b">").ok_or("Expected '>' but got EOF in Xml stream")?;
+                let end = self
+                    .find(b">")
+                    .ok_or("Expected '>' but got EOF in Xml stream")?;
                 self.i = end + 1;
                 return Ok(e);
             }
@@ -414,9 +418,9 @@ fn property(e: &Element) -> Option<Property> {
         }
         // 00ab8ef2: a packed 0xAARRGGBB, or R, G and B elements.
         b"Color3" => match text.parse::<u32>() {
-            Ok(v) => Property::Color3(
-                [v >> 16, v >> 8, v].map(|c| f32::from((c & 0xff) as u8) / 255.0),
-            ),
+            Ok(v) => {
+                Property::Color3([v >> 16, v >> 8, v].map(|c| f32::from((c & 0xff) as u8) / 255.0))
+            }
             Err(_) => Property::Color3([
                 child_float(e, "R")?,
                 child_float(e, "G")?,
@@ -428,7 +432,10 @@ fn property(e: &Element) -> Option<Property> {
             [child_int(e, "XO")?, child_int(e, "YO")?],
         ),
         b"UDim" => Property::UDim(child_float(e, "S")?, child_int(e, "O")?),
-        b"Ray" => Property::Ray(vector3(e.child("origin")?)?, vector3(e.child("direction")?)?),
+        b"Ray" => Property::Ray(
+            vector3(e.child("origin")?)?,
+            vector3(e.child("direction")?)?,
+        ),
         b"Faces" => Property::Faces(child_int(e, "faces")? as u8),
         b"Axes" => Property::Axes(child_int(e, "axes")? as u8),
         b"NumberSequence" => Property::NumberSequence(
@@ -480,9 +487,9 @@ pub fn parse(bytes: &[u8]) -> Result<Model, String> {
         refs: &mut Vec<(usize, String, Vec<u8>)>,
         parent: Option<usize>,
     ) {
-        let mut instance = ModelInstance::new(
-            &String::from_utf8_lossy(e.attribute("class").unwrap_or_default()),
-        );
+        let mut instance = ModelInstance::new(&String::from_utf8_lossy(
+            e.attribute("class").unwrap_or_default(),
+        ));
         instance.referent = e
             .attribute("referent")
             .map(|r| String::from_utf8_lossy(r).into_owned());
@@ -712,7 +719,10 @@ fn property_node(name: &str, value: &Property, referent: &dyn Fn(usize) -> Strin
         }
         Property::Vector2int16(v) => {
             let mut n = Node::new("");
-            n.children = vec![int_node("X", i32::from(v[0])), int_node("Y", i32::from(v[1]))];
+            n.children = vec![
+                int_node("X", i32::from(v[0])),
+                int_node("Y", i32::from(v[1])),
+            ];
             ("Vector2int16", n)
         }
         // 00ab900e: 0xFF000000 | r << 16 | g << 8 | b, as %u.
@@ -762,11 +772,19 @@ fn property_node(name: &str, value: &Property, referent: &dyn Fn(usize) -> Strin
         }
         // 00c5ce95 and 007e79a5.
         Property::NumberSequence(keys) => {
-            let text: String = keys.iter().flatten().map(|v| format_stream(*v) + " ").collect();
+            let text: String = keys
+                .iter()
+                .flatten()
+                .map(|v| format_stream(*v) + " ")
+                .collect();
             ("NumberSequence", Node::text("", text))
         }
         Property::ColorSequence(keys) => {
-            let text: String = keys.iter().flatten().map(|v| format_stream(*v) + " ").collect();
+            let text: String = keys
+                .iter()
+                .flatten()
+                .map(|v| format_stream(*v) + " ")
+                .collect();
             ("ColorSequence", Node::text("", text))
         }
         // 0087248a.
@@ -791,8 +809,15 @@ fn property_node(name: &str, value: &Property, referent: &dyn Fn(usize) -> Strin
                 "CustomPhysics",
                 if custom.is_some() { "true" } else { "false" },
             ));
-            if let Some([density, friction, elasticity, friction_weight, elasticity_weight]) =
-                custom
+            if let Some(
+                [
+                    density,
+                    friction,
+                    elasticity,
+                    friction_weight,
+                    elasticity_weight,
+                ],
+            ) = custom
             {
                 n.children.extend([
                     float_node("Density", *density),
@@ -941,7 +966,9 @@ pub fn write(model: &Model) -> Result<Vec<u8>, String> {
             {
                 return Err(format!("{}.{name}: no instance {t}", instance.class));
             }
-            properties.children.push(property_node(name, value, referent));
+            properties
+                .children
+                .push(property_node(name, value, referent));
         }
         node.children.push(properties);
         for &child in &instance.children {
@@ -952,7 +979,10 @@ pub fn write(model: &Model) -> Result<Vec<u8>, String> {
     let mut root = Node::new("roblox");
     root.attributes = vec![
         ("xmlns:xmime", b"http://www.w3.org/2005/05/xmlmime".to_vec()),
-        ("xmlns:xsi", b"http://www.w3.org/2001/XMLSchema-instance".to_vec()),
+        (
+            "xmlns:xsi",
+            b"http://www.w3.org/2001/XMLSchema-instance".to_vec(),
+        ),
         (
             "xsi:noNamespaceSchemaLocation",
             b"http://www.roblox.com/roblox.xsd".to_vec(),
@@ -1024,9 +1054,11 @@ pub fn rewrite_report(bundle: &crate::bundle::Bundle) -> Result<Vec<(String, boo
         let written = write(&model)?;
         let mut skipped: BTreeMap<String, usize> = BTreeMap::new();
         count_skipped(&bytes, &mut skipped)?;
-        let first_difference = written.iter().zip(&bytes).position(|(a, b)| a != b).or(
-            (written.len() != bytes.len()).then_some(written.len().min(bytes.len())),
-        );
+        let first_difference = written
+            .iter()
+            .zip(&bytes)
+            .position(|(a, b)| a != b)
+            .or((written.len() != bytes.len()).then_some(written.len().min(bytes.len())));
         let context = first_difference.map(|d| {
             let lo = d.saturating_sub(20);
             (
@@ -1105,7 +1137,10 @@ mod tests {
         let raw = b"a<b>&\"'\t\xc3\xa9\x7f\r\n";
         let mut out = Vec::new();
         escape(&mut out, raw);
-        assert_eq!(out, b"a&lt;b&gt;&amp;&quot;&apos;&#9;&#195;&#169;&#127;\r\n".to_vec());
+        assert_eq!(
+            out,
+            b"a&lt;b&gt;&amp;&quot;&apos;&#9;&#195;&#169;&#127;\r\n".to_vec()
+        );
         assert_eq!(decode_entities(&out).unwrap(), raw.to_vec());
         assert_eq!(decode_entities(b"&foo;&nbsp;").unwrap(), b"&foo; ".to_vec());
     }
@@ -1159,7 +1194,10 @@ mod tests {
             .set("T", Property::Ray([1.0, 2.0, 3.0], [0.0, -1.0, 0.0]))
             .set("U", Property::Faces(0b101101))
             .set("V", Property::Axes(0b101))
-            .set("W", Property::NumberSequence(vec![[0.0, 1.0, 0.0], [1.0, 0.5, 0.25]]))
+            .set(
+                "W",
+                Property::NumberSequence(vec![[0.0, 1.0, 0.0], [1.0, 0.5, 0.25]]),
+            )
             .set(
                 "X",
                 Property::ColorSequence(vec![[0.0, 1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 1.0, 0.0]]),

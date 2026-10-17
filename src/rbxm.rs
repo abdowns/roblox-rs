@@ -218,7 +218,11 @@ impl Model {
         let xml = path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("rbxmx") || e.eq_ignore_ascii_case("rbxlx"));
-        let bytes = if xml { self.to_xml()? } else { self.to_binary()? };
+        let bytes = if xml {
+            self.to_xml()?
+        } else {
+            self.to_binary()?
+        };
         std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
     }
     /// The XML format as the native TextXmlWriter writes it (`rbxmx.rs`).
