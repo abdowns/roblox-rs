@@ -229,6 +229,21 @@ the confined runtime logger flushes startup, resize, presented-frame counts and
 timing while the app runs. The frame-limited smoke command exits after 120
 presentations; normal launch stays open until Escape/window close.
 
+## Developer panel boundary
+
+The dev panel is development tooling, not part of the rewrite. It compiles
+only with `--features dev` (optional egui crates) and all of it is in
+`src/dev/panel.rs`. That file is mounted as a private child module of
+`render` (`#[path]`), so it reads and changes `Viewport` fields directly
+instead of widening the public API. render.rs has five cfg-gated hooks:
+the `dev` field and its init, `dev::event` at the top of `window_event`
+(an event the panel uses never reaches the viewport), `dev::before_frame`
+at the start of a redraw, and `dev::draw` after the scene pass. Pause, Step
+and time scale work by moving the viewport's motion clock, so the physics
+stepping code is unchanged. TimeOfDay goes through the same
+`LightingProfile::sky` / `render_lighting` path as the viewport's start-up.
+To remove it, delete `src/dev/`, the hooks and the feature.
+
 ## Physics to render bridge
 
 The private `motion` module adds seven FreeFallBody entities to the character

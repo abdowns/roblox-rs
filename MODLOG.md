@@ -1,5 +1,43 @@
 # MODLOG
 
+## 2026-10-16 Developer panel (`--features dev`)
+
+**Changed:**
+- New cargo feature `dev` with optional egui 0.37 / egui-wgpu / egui-winit
+  (they match the project's wgpu 30 and winit 0.30.13). Without the feature
+  none of it is compiled or linked.
+- New `src/dev/panel.rs`, a child module of `render` (so it reads the
+  viewport's state without new public API). render.rs only gains five
+  `#[cfg(feature = "dev")]` hooks: the field, its init, `dev::event`,
+  `dev::before_frame` and `dev::draw` (an egui pass on top of the scene,
+  `LoadOp::Load`). The surface view is now bound to a local so both passes
+  use it.
+- Stats: fps and frame time (mean/max over 120 frames), CPU frame time,
+  physics step and steps this frame, timestep Hz, simulated seconds, draws,
+  decals, indices, ECS entities, window size and scale, camera and character
+  positions, the walking report and the adapter info.
+- Controls: Pause/Resume, Step (one physics step while paused), Reset,
+  Log snapshot (a `dev_snapshot` line in the live log), time scale
+  0.05x-4x, field of view, and a TimeOfDay slider (with "place" to go back
+  to the place's value) on the walking/baseplate viewports.
+- A "Dev" button in the top right and F1 toggle the panel.
+
+**Why:** the user asked for an optional dev panel with performance stats and
+demo/test controls, kept apart from the product code.
+
+**Tested how:**
+- `run --features dev -- viewport-baseplate-smoke`: 120 frames, logs
+  `dev_panel open=true paint_jobs=3 vertices=2862`, final readback passes.
+  `viewport-smoke` and `viewport-walking-smoke` with the feature also pass
+  and log `dev_panel open=true`.
+- Without the feature: `viewport-baseplate-smoke` passes, 135 tests pass,
+  clippy is clean with and without the feature.
+
+**Not tested:** the clicks and sliders (Pause, Step, Reset, time scale,
+field of view, TimeOfDay), F1, and the Dev button. They need a person at the
+window. The final smoke readback is an offscreen frame, so it never includes
+the panel.
+
 ## 2026-10-16 Decals and Textures on block Parts
 
 **Changed:**

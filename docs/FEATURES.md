@@ -648,6 +648,14 @@ output to expect. Anything not covered by an audit is marked **not tested**.
 - Source-only tests and a whole-Contents fingerprint check: 2,606 files/symlinks
   unchanged after analysis and diagnostic execution.
 
+- **Developer panel** (`--features dev`, not part of the product): an egui
+  overlay on the viewports with performance stats and Pause/Step/Reset/
+  snapshot/time scale/field of view/TimeOfDay controls, toggled by F1 or a
+  "Dev" button. Test: `sh tools/cargo.sh run --locked --features dev --
+  viewport-baseplate-smoke`; expected `dev_panel open=true paint_jobs=3
+  vertices=...` and `viewport_final_readback_pass`. The controls themselves
+  are **not tested** (they need clicks in the window).
+
 ## What does not work / not tested
 
 Window presentation now passes a 120-frame Metal smoke test after the BGRA

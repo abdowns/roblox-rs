@@ -16,6 +16,13 @@ wgpu = { version = "=30.0.1", default-features = false, features = ["std", "meta
 pollster = "=1.0.1"
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
+# Dev panel only (`--features dev`); not part of the product build.
+egui = { version = "=0.37.0", optional = true, default-features = false, features = ["default_fonts"] }
+egui-wgpu = { version = "=0.37.0", optional = true, default-features = false }
+egui-winit = { version = "=0.37.0", optional = true, default-features = false }
+
+[features]
+dev = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 
 [lints.rust]
 unsafe_code = "forbid"

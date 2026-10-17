@@ -96,6 +96,10 @@ macOS is the only tested platform (Apple Silicon, macOS 26). You need
 `tools/cargo.sh` keeps the Cargo cache, temporary files and build output
 inside the project folder. Runtime data loading makes no network requests.
 
+For development there is an optional dev panel with stats and controls:
+`sh tools/cargo.sh run --locked --features dev -- viewport-baseplate` (F1
+toggles it). See [RUNNING](docs/RUNNING.md).
+
 ## Documentation
 
 - [Running the client and audits](docs/RUNNING.md): every viewport and

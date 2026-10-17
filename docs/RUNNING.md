@@ -91,6 +91,25 @@ Expect `workspace_draw name="Baseplate" quads=132 ... color=[0.3882353,
 ...]` and `baseplate_render_pass`. The smoke test opens the window, presses W
 for 120 frames and exits after `viewport_final_readback_pass`.
 
+## Developer panel (optional)
+
+```sh
+sh tools/cargo.sh run --locked --features dev -- viewport-baseplate
+```
+
+Builds with the `dev` feature, which adds an egui overlay to every viewport
+(it is not part of the product build, see `src/dev/panel.rs`). F1 or the
+"Dev" button in the top right toggles it. It shows fps, frame and CPU
+times, physics steps, draw/decal/index/entity counts, window size, camera
+and character positions and the GPU adapter. Controls: Pause/Resume, Step,
+Reset, Log snapshot, time scale, field of view and TimeOfDay. While the
+panel has the mouse, clicks and drags do not reach the camera. The live log
+prints `dev_panel open=true paint_jobs=3 vertices=...` on the first drawn
+frame, `dev_panel open=false ...` / `open=true` on each toggle,
+`dev_action reset walking=true` on Reset and a `dev_snapshot fps ...` line
+on Log snapshot. The frame-limited smokes (`viewport-baseplate-smoke` etc.)
+also run with `--features dev`.
+
 ## Play the experimental walking fixture
 
 ```sh

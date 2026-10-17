@@ -2157,6 +2157,10 @@ pub fn audit_motion(bundle: &Bundle) -> Result<String, String> {
     Ok(report)
 }
 
+#[cfg(feature = "dev")]
+#[path = "dev/panel.rs"]
+mod dev;
+
 struct Viewport {
     app: App,
     bundle_root: PathBuf,
@@ -2182,6 +2186,8 @@ struct Viewport {
     walking_camera: Option<crate::camera_script::ClassicCamera>,
     walking_sky: Option<crate::lighting::SkyParameters>,
     cursor: Option<[f64; 2]>,
+    #[cfg(feature = "dev")]
+    dev: Option<dev::DevPanel>,
 }
 impl Viewport {
     fn log_event(&mut self, event: String) -> Result<(), String> {
@@ -2322,6 +2328,10 @@ impl ApplicationHandler for Viewport {
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
+            return;
+        }
+        #[cfg(feature = "dev")]
+        if dev::event(self, &event) {
             return;
         }
         match event {
@@ -2487,6 +2497,8 @@ impl ApplicationHandler for Viewport {
             }
             WindowEvent::RedrawRequested => {
                 let result = (|| -> Result<(), String> {
+                    #[cfg(feature = "dev")]
+                    dev::before_frame(self);
                     if self.motion_active && self.frames > 0 {
                         if self.frame_limit.is_some()
                             && self.app.world().resource::<MotionControl>().walking_probe
@@ -2624,11 +2636,11 @@ impl ApplicationHandler for Viewport {
                         wgpu::TextureUsages::RENDER_ATTACHMENT,
                     );
                     let mut encoder = gpu.device.create_command_encoder(&Default::default());
-                    gpu.pass(
-                        &mut encoder,
-                        &frame.texture.create_view(&Default::default()),
-                        &depth.create_view(&Default::default()),
-                    );
+                    let view = frame.texture.create_view(&Default::default());
+                    gpu.pass(&mut encoder, &view, &depth.create_view(&Default::default()));
+                    #[cfg(feature = "dev")]
+                    dev::draw(self, &mut encoder, &view)?;
+                    let (gpu, config) = (self.gpu.as_ref().unwrap(), self.config.as_ref().unwrap());
                     gpu.queue.submit([encoder.finish()]);
                     gpu.queue.present(frame);
                     self.frames += 1;
@@ -2911,6 +2923,8 @@ fn run_viewport(
         walking_camera,
         walking_sky,
         cursor: None,
+        #[cfg(feature = "dev")]
+        dev: None,
     };
     EventLoop::new()
         .map_err(|e| e.to_string())?
