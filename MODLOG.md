@@ -1,5 +1,50 @@
 # MODLOG
 
+## 2026-10-17 High-quality materials
+
+**Changed:**
+- `geometry.rs`: `RenderVertex` gains `tangent` (native vertex +0x30) for
+  blocks, wedges and balls; zero for decals and character meshes.
+  `motion.rs` rotates it with the normal.
+- `material_generator.rs`: `quality_levels` (FrameRateManager table, read
+  from its static initializer), `QualityLevel`, `sq_distance_to_box`,
+  `hq_technique` (createRenderMaterial HQ branch and FUN_010bf300 textures
+  and samplers), `shader_entries` / `shader_config` (shaders.json and the
+  CFG_ defines), `workspace_hq` and `workspace_materials_quality`.
+- `render.wgsl`: tangent input, HQ uniform and maps, four HQ fragment
+  entries ported from default.hlsl PIN_HQ / PIN_SURFACE, plastic.hlsl and
+  material.hlsl.
+- `render.rs`: 80-byte vertices; `add_materials` builds HQ pipelines and bind
+  groups; `pass` picks HQ or LQ per draw by distance to the camera;
+  `viewport_baseplate_quality`; new `audit-material-hq-render`.
+- `main.rs`: `--quality-level N` for `viewport-baseplate(-smoke)`.
+
+**Why:** the parent session asked for the high-quality material path,
+off by default, with an audit.
+
+**Tested how:** `audit-material-hq-render` passes (22 quality levels, 22
+techniques against shaders.json, texture formats, tangents unit and
+orthogonal, every textured HQ Part changes most of its pixels vs LQ, Neon
+unchanged, far camera all-LQ and identical to LQ); `test` 143 pass;
+clippy clean with and without `--features dev`; audit-material-render,
+audit-decal-render, audit-ball-render, audit-render, viewport-baseplate-smoke
+and viewport-baseplate-smoke --quality-level 21 pass. The LQ frame of
+audit-material-render has the same rgba_sha256 (ca42f2c5...) as the
+previous commit 2f5c533, so the default path is unchanged.
+
+**Failures on the way:** the first audit run failed because
+SmoothPlastic/SmoothMirror HQ frames equal LQ. That is expected here: the
+only difference is per-pixel vs per-vertex highlight, predicted under one
+8-bit step from the audit camera (0.05), so the audit now logs that
+prediction and requires a change only above 1. The HQ draw counter also
+counted non-material (character) draws; fixed to count HQ-capable draws.
+
+**Not tested:** against the original (pixels or looks); the GBuffer lod 0,
+outlines and edge distances are not ported; character meshes and decals
+stay LQ; distance is to each Part's box, not the FastCluster node's; the
+sphere tangent float order comes from the decompiler, not the disassembly;
+the viewport with `--quality-level` was not looked at.
+
 ## 2026-10-17 CustomPhysicalProperties
 
 **Changed:**

@@ -27,7 +27,8 @@ Early and incomplete. Working today, with an automated audit for each item:
 - **Rendering:** the character, the studded Baseplate, block, Ball and
   Wedge Parts, Decals and tiled Textures on blocks, all 20 Part materials at
   the original's low quality level (textures, Neon, reflective Plastic), the
-  default sky and lighting.
+  high-quality material shaders (normal, specular and detail maps) behind
+  `--quality-level N`, the default sky and lighting.
 - **Model files:** binary .rbxm and XML .rbxmx read and written byte for
   byte as the original writes them. The demo place and the test places are
   .rbxm files in `places/`.
@@ -41,7 +42,7 @@ Not there yet:
 - the remaining joint kinds (VelocityMotor, ManualGlue, surface joints);
 - Cylinders, CornerWedges and the other Part shapes;
 - decals and textures on Balls, Wedges and meshes (blocks have them),
-  shadows, outlines and the high-quality material shaders.
+  shadows and outlines.
 
 Matching the original is not tested pixel for pixel or step for step. See
 [docs/FEATURES.md](docs/FEATURES.md) for the full list and the test for each

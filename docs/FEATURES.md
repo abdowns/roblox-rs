@@ -545,10 +545,54 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   is shifted differently (tiling and layout are the native ones). The
   environment map is built once (the native refreshes it over time) and its
   mips are CPU-averaged. Ice and Aluminum ship 4x4 placeholder diffuse maps in
-  this install, so they draw nearly flat. Not ported: the high-quality
-  techniques (normal, specular and normal-detail maps, tangents), outlines,
-  transparent Parts. Not tested: how it looks
+  this install, so they draw nearly flat. Not ported: outlines,
+  transparent Parts. The high-quality techniques are the next entry. Not tested: how it looks
   against the original (log, don't look).
+
+- High-quality materials (`material_generator::hq_technique`,
+  `quality_levels`, `render.wgsl` `fragment_*_hq`), ported from
+  createRenderMaterial 010bc630's HQ branch, FUN_010bf300 (textures and
+  samplers), RenderNode::updateRenderQueue 0114a1b0 (distance selection),
+  the FrameRateManager quality table and the shipped default.hlsl
+  (PIN_HQ, PIN_SURFACE), plastic.hlsl and material.hlsl. Per-material
+  normal, specular and normal-detail maps from `textures/<name>/`, block,
+  wedge and ball tangents, per-pixel lighting. Off by default (LQ); on with
+  `--quality-level N`:
+  `sh tools/cargo.sh run --locked -- viewport-baseplate --quality-level 21`
+  (shading distance 300; Parts within it draw HQ).
+  Run `sh tools/cargo.sh run --locked --release -- audit-material-hq-render`. Expect:
+  - 22 `quality_table` lines, e.g. `level=5 shading_distance=40 anisotropy=1`,
+    `level=21 shading_distance=300 anisotropy=8` (levels 1..4 have 0);
+  - 22 `hq_technique` lines (20 materials, plus the reflection variants of
+    Plastic and SmoothPlastic), e.g.
+    `material=SmoothPlastic reflection=false fragment=DefaultSmoothPlasticHQFS vertex=DefaultStaticHQVS`,
+    `material=Plastic ... vertex=DefaultStaticSurfaceHQVS programs=["plastic.hlsl[PIN_HQ]", "default.hlsl[PIN_SURFACE PIN_HQ]"]`;
+  - `hq_texture` lines with format and size, e.g.
+    `asset=rbxasset://textures/plastic/normal.dds slot=6 ... format=DXT5 size=128x2048 mips=12`,
+    `asset=rbxasset://textures/wangIndex.dds slot=8 sampler=Sampler { filter: 0, address: 0 } format=L8A8 size=128x128`;
+  - `hq_config` lines with each material's CFG_ values, e.g.
+    `material=Plastic source=plastic.hlsl BUMP_INTENSITY=0.5 GLOSS=9 NORMAL_SHADOW_SCALE=0.1 SPECULAR=0.4 TEXTURE_TILING=1`;
+  - `hq_tangents vertices=842 max_length_error=1.1920929e-7 max_normal_dot=1.527369e-7`;
+  - 24 `hq_render` lines: Neon `changed_vs_lq=0`, Plastic
+    `changed_vs_lq=2674` of 2999, the textured materials most of their
+    pixels (e.g. Cobblestone 2560 of 2752, `max_channel_delta=29`).
+    SmoothPlastic and SmoothMirror print `changed_vs_lq=0` with
+    `predicted_highlight_delta` 0.050 and 0.000: their only HQ difference
+    is the per-pixel highlight, which from this camera is under one 8-bit
+    step (the audit accepts 0 only when the prediction is below 1);
+  - `hq_distance_selection hq_capable_draws=24 near_camera_z=24 near_hq_draws=24 far_camera_z=84 far_hq_draws=0 far_frame_identical_to_lq=true`;
+  - `material_hq_render_pass parts=24 quality_level=5 repeat_identical=true ... native_pixel_parity=not_tested`.
+  Pixel counts are GPU dependent.
+
+  `sh tools/cargo.sh test --locked material_generator` checks the HQ
+  technique names and textures and the distance selection.
+  Not ported: the GBuffer technique (lod 0), outlines and edge distances,
+  HQ for character meshes and decals. Differs from native: distance is
+  measured to each Part's box, not to the FastCluster node's box. Not
+  tested: how it looks against the original, the SmoothPlastic per-pixel
+  highlight on screen (no audit camera catches it above one 8-bit step),
+  and the sphere tangent's float rounding order (taken from the
+  decompiler, not the disassembly).
 
 - Ball Parts are drawn as addSphere's cube sphere (`geometry::workspace_sphere`).
   Run `sh tools/cargo.sh run --locked -- audit-ball-render`. Expect:

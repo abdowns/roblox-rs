@@ -231,14 +231,47 @@ table and the UV layout per face (blocks 010cca80, balls addSphere, wedges) are
 the native ones. Brick and WoodPlanks use the table values directly; the rest
 use ((T + T) - 1) x ((x + y) + z) x 0.5.
 
-The GPU path (`Gpu::add_materials`) re-uploads 68-byte vertices with the
-reflectance attribute and builds one pipeline per Technique and one bind group
+The GPU path (`Gpu::add_materials`) re-uploads 80-byte vertices with the
+reflectance attribute and the tangent and builds one pipeline per Technique and one bind group
 per material. The environment map (EnvMap 010a7310, renderFace 010a8030) is a
 256x256 cube with mips; each face renders the sky without stars from the origin
 with perspective(pi/2, 1, 0.5, 3000). It is built once: the native time-based
 EnvMap::update refresh is **not ported**, and mips use CPU 2x2 averaging (the
-native GPU filter is not recovered). High-quality techniques (normal, specular
-and normal-detail maps, tangents) are **not ported**.
+native GPU filter is not recovered).
+
+### High-quality materials
+
+Each native Material holds techniques by lod: 0 GBuffer (not ported), 1 HQ,
+2 LQ. RenderNode::updateRenderQueue asks for lod 1 when the node's squared
+distance from the camera (point to bounding box) is below the quality
+level's shading distance squared, else lod 2; getBestTechnique returns the
+first technique with lod >= the request. The shading distance and texture
+anisotropy per quality level (0..21) are read at startup from the static
+initializer that fills the FrameRateManager table
+(`material_generator::quality_levels`, by decoding its stores).
+
+The port keeps LQ unless asked: `--quality-level N` on `viewport-baseplate`
+(or `workspace_materials_quality(.., Some(N))`) builds both techniques per
+Part and `Gpu::pass` picks per draw from the camera position, with the
+Part's own box (natively the FastCluster node's box; not ported). Levels
+1..4 have shading distance 0, so they are all-LQ.
+
+`material_generator::hq_technique` follows createRenderMaterial's HQ branch:
+`Default<Name>[Reflection]HQFS` with `DefaultStaticHQVS` for SmoothPlastic
+and Neon and `DefaultStaticSurfaceHQVS` otherwise, and the textures and
+samplers FUN_010bf300 binds (slot 5 diffuse, 6 normal, 7 specular, 8
+normal detail or the Wang index; Plastic has diffuse/normal/normaldetail
+and uses the stud atlas coordinates). The CFG_ constants come from each
+material's shipped .hlsl. `render.wgsl` ports default.hlsl's PIN_HQ and
+PIN_SURFACE paths, plastic.hlsl and material.hlsl (sampleFar, the Wang
+lookup, fade2) as four fragment entries: plastic (SmoothPlastic, per-pixel
+Blinn), plastic surface (Plastic), surface and surface with Wang
+(Cobblestone). Neon's HQ technique is the same program as LQ.
+
+Tangents are the native vertex's +0x30 field: block and wedge faces take a
+rotation column per face, sphere vertices Gram-Schmidt the negated column
+against the normal. Character meshes and decals carry zero tangents (they
+stay on their LQ paths).
 
 ## Humanoid command boundary
 

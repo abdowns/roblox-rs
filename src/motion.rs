@@ -61,6 +61,7 @@ pub(crate) fn pose_draw(local: &Draw, frame: &CoordinateFrame) -> Draw {
         // inverse-scale normals or accumulating transforms in previous vertices.
         let p = source.position;
         let n = source.normal;
+        let tangent = source.tangent;
         target.position = std::array::from_fn(|a| {
             let r = frame.rotation[a];
             frame.position[a] + p[1] * r[1] + p[0] * r[0] + p[2] * r[2]
@@ -68,6 +69,12 @@ pub(crate) fn pose_draw(local: &Draw, frame: &CoordinateFrame) -> Draw {
         target.normal = std::array::from_fn(|a| {
             let r = frame.rotation[a];
             r[2] * n[2] + r[0] * n[0] + n[1] * r[1]
+        });
+        // The tangent turns with the normal (the generator writes it from
+        // the same rotation columns).
+        target.tangent = std::array::from_fn(|a| {
+            let r = frame.rotation[a];
+            r[2] * tangent[2] + r[0] * tangent[0] + tangent[1] * r[1]
         });
     }
     draw
@@ -409,6 +416,7 @@ pub(crate) fn walking_geometry(world: &World) -> Vec<Draw> {
                 uv: [0.0; 2],
                 color,
                 specular: [0.0; 2],
+                tangent: [0.0; 3],
             })
             .collect(),
         indices: vec![0, 1, 2, 0, 2, 3],
@@ -456,6 +464,7 @@ mod tests {
                 uv: [0.25, 0.75],
                 color: [0.5; 4],
                 specular: [0.25, 9.0],
+                tangent: [0.0, 1.0, 0.0],
             }],
             indices: vec![0, 0, 0],
             material: 256,
@@ -468,6 +477,7 @@ mod tests {
         let draw = pose_draw(&local, &frame);
         assert_eq!(draw.vertices[0].position, [14.0, 23.0, 28.0]);
         assert_eq!(draw.vertices[0].normal, [0.0, 0.0, -1.0]);
+        assert_eq!(draw.vertices[0].tangent, [0.0, 1.0, 0.0]);
         assert_eq!(draw.vertices[0].uv, [0.25, 0.75]);
         assert_eq!(draw.vertices[0].color, [0.5; 4]);
         assert_eq!(draw.vertices[0].specular, [0.25, 9.0]);

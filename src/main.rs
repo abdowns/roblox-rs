@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-rbxm|audit-baseplate|audit-part-wall|audit-part-drop|audit-part-weld|audit-part-glue|audit-part-hinge|audit-part-motor|audit-part-ball|audit-part-custom-physics|audit-part-ball-push|audit-part-wedge|audit-ball-render|audit-decal-render|audit-material-render|audit-part-push|audit-part-stand|audit-part-jump|audit-humanoid-slope|audit-broadphase|audit-joints|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\n       studio-2016 rbxm-dump <file.rbxm|.rbxl|.rbxmx>\n       studio-2016 rbxm-convert <input> <output.rbxm|.rbxmx>\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
+            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-rbxm|audit-baseplate|audit-part-wall|audit-part-drop|audit-part-weld|audit-part-glue|audit-part-hinge|audit-part-motor|audit-part-ball|audit-part-custom-physics|audit-part-ball-push|audit-part-wedge|audit-ball-render|audit-decal-render|audit-material-render|audit-material-hq-render|audit-part-push|audit-part-stand|audit-part-jump|audit-humanoid-slope|audit-broadphase|audit-joints|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [--quality-level 0..21] [RobloxStudio directory]\n       studio-2016 rbxm-dump <file.rbxm|.rbxl|.rbxmx>\n       studio-2016 rbxm-convert <input> <output.rbxm|.rbxmx>\nDefault: open the rendered character viewport. Escape closes it.\n--quality-level N (viewport-baseplate[-smoke] only): draw Part materials at FrameRateManager quality level N; Parts within its shading distance use the high-quality technique. Default: low quality only.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
         );
         return ExitCode::SUCCESS;
     }
@@ -52,6 +52,34 @@ fn main() -> ExitCode {
             }
         };
     }
+    // `--quality-level N` may appear anywhere after the command.
+    let mut quality = None;
+    if let Some(at) = args.iter().position(|a| a == "--quality-level") {
+        let level = args
+            .get(at + 1)
+            .and_then(|v| v.to_str())
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v < studio_2016::material_generator::QUALITY_LEVELS);
+        let command = args.first().and_then(|a| a.to_str());
+        match level {
+            Some(level)
+                if matches!(
+                    command,
+                    Some("viewport-baseplate" | "viewport-baseplate-smoke")
+                ) =>
+            {
+                quality = Some(level);
+                args.drain(at..at + 2);
+            }
+            _ => {
+                eprintln!(
+                    "--quality-level takes 0..{} and applies to viewport-baseplate[-smoke]",
+                    studio_2016::material_generator::QUALITY_LEVELS
+                );
+                return ExitCode::from(2);
+            }
+        }
+    }
     if args.is_empty()
         || !matches!(
             args[0].to_str(),
@@ -89,6 +117,7 @@ fn main() -> ExitCode {
                     | "audit-baseplate-render"
                     | "audit-decal-render"
                     | "audit-material-render"
+                    | "audit-material-hq-render"
                     | "audit-walking"
                     | "audit-walking-render"
                     | "viewport-walking"
@@ -115,7 +144,7 @@ fn main() -> ExitCode {
         || args.len() > 2
     {
         eprintln!(
-            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-rbxm|audit-baseplate|audit-part-wall|audit-part-drop|audit-part-weld|audit-part-glue|audit-part-hinge|audit-part-motor|audit-part-ball|audit-part-custom-physics|audit-part-ball-push|audit-part-wedge|audit-ball-render|audit-decal-render|audit-material-render|audit-part-push|audit-part-stand|audit-part-jump|audit-humanoid-slope|audit-broadphase|audit-joints|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [RobloxStudio directory]"
+            "Usage: studio-2016 <audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-rbxm|audit-baseplate|audit-part-wall|audit-part-drop|audit-part-weld|audit-part-glue|audit-part-hinge|audit-part-motor|audit-part-ball|audit-part-custom-physics|audit-part-ball-push|audit-part-wedge|audit-ball-render|audit-decal-render|audit-material-render|audit-material-hq-render|audit-part-push|audit-part-stand|audit-part-jump|audit-humanoid-slope|audit-broadphase|audit-joints|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke> [--quality-level 0..21] [RobloxStudio directory]"
         );
         return ExitCode::from(2);
     }
@@ -161,6 +190,7 @@ fn main() -> ExitCode {
             "audit-ball-render" => render::audit_ball_render(&bundle),
             "audit-decal-render" => render::audit_decal_render(&bundle),
             "audit-material-render" => render::audit_material_render(&bundle),
+            "audit-material-hq-render" => render::audit_material_hq_render(&bundle),
             "audit-part-motor" => walking::audit_part_motor(&bundle),
             "audit-part-push" => walking::audit_part_push(&bundle),
             "audit-part-stand" => walking::audit_part_stand(&bundle),
@@ -173,8 +203,10 @@ fn main() -> ExitCode {
             "audit-walking-render" => render::audit_walking(&bundle),
             "viewport-walking" => render::viewport_walking(&bundle, None),
             "viewport-walking-smoke" => render::viewport_walking(&bundle, Some(120)),
-            "viewport-baseplate" => render::viewport_baseplate(&bundle, None),
-            "viewport-baseplate-smoke" => render::viewport_baseplate(&bundle, Some(120)),
+            "viewport-baseplate" => render::viewport_baseplate_quality(&bundle, None, quality),
+            "viewport-baseplate-smoke" => {
+                render::viewport_baseplate_quality(&bundle, Some(120), quality)
+            }
             "viewport-animation-smoke" => render::viewport_animation_smoke(&bundle),
             "viewport" => render::viewport(&bundle, None),
             "viewport-smoke" => render::viewport(&bundle, Some(120)),

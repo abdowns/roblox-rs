@@ -447,3 +447,51 @@ BallVertex 01c86008: aa9ea4, 9 | BallEdge 01c86068: aa9c2a, 10 | BallPlane 01c86
 - Floor friction: 00a43e10 (custom) = 00a43e7e(+0x10, +0xc, material
   weight, material friction), the same weighting as 00a43f4c.
 - Not found: whether the binary reader (type 0x19) clamps on load.
+
+## High-quality materials (HQ port session, 2026-10-17)
+
+- Technique lod: 0 GBuffer, 1 HQ, 2 LQ. Material::getBestTechnique 011d8130
+  returns the first technique with lod >= the requested one.
+- RenderNode::updateRenderQueue 0114a1b0: lod 0 when the GBuffer setting is
+  on; else lod 1 when the node's squared distance (stored at +0x48 by
+  CullableSceneNode::updateIsCulledByFRM 010a9400, camera point to AABB) is
+  below FrameRateManager::getShadingSqDistance 0129f5b0 (d * d of
+  getShadingDistance 0129f59a); else lod 2.
+- Quality table at 0x02251548: 22 entries, stride 0x3c, filled by the static
+  initializer 0129f87c. +0x10 shading distance: 300, 0, 0, 0, 0, 40, 40,
+  40, 50, 60, 70, 80, 90, 120, 150, 180, 210, 240, 270, 300, 300, 300.
+  +0x14 anisotropy (getTextureAnisotropy 0129f5d8): 1 for levels 0..9, 2
+  for 10..13, 4 for 14..17, 8 for 18..21. Read at runtime by decoding the
+  initializer's stores (`quality_levels`).
+- RenderView::renderPrepareImpl 01199860: FadeDistance_GlowFactor =
+  (max(0.1, shading), 1 / that, outline scale / shading, glow);
+  OutlineBrightness_ShadowInfo.xy = (0, 1) with outlines off, so the
+  outline factor is exactly 1.
+- createRenderMaterial 010bc630 HQ branch: FS "Default" + name +
+  ("Reflection") + "HQFS"; VS "DefaultStatic" + ("HQVS" for 0x110/0x120,
+  else "SurfaceHQVS") (strings 0x191aaac "HQVS", 0x191ab72 "SurfaceHQVS",
+  0x191ab7e "HQGBufferFS"); Technique(program, lod 1); studs at slot 0
+  with sampler (2, 0); then FUN_010bc020 and FUN_010bf300.
+- FUN_010bc020 (every technique): slot 1 lightmap, 2 lookup, 3 shadow map
+  (1, 1), 4 env map (1, 1).
+- FUN_010bf300: Plastic: plastic/diffuse.dds slot 5 (2, 0),
+  plastic/normal.dds 6 (2, 0), plastic/normaldetail.dds 8 (1, 0).
+  SmoothPlastic, Neon: FUN_010bc540 only. Others: <name>/diffuse 5,
+  normal 6, specular 7 (all (2, 0)), normaldetail 8 (2, 0), or the Wang
+  index at 8 (0, 0) for Cobblestone. SamplerState {filter 0 point,
+  1 linear, 2 anisotropic; address 0 wrap, 1 clamp}.
+- Native vertex 0x4c bytes: pos +0, normal +0xc, color +0x18, extra +0x1c,
+  uv +0x20, studs uv +0x28, tangent +0x30, edge distances +0x3c.
+- Tangents: addBlock 010cca80 and the wedge path, per face (+X, -X, +Y,
+  -Y, +Z, -Z): -R2, -R0, R0, R2, -R0, -R0 (rotation columns). addSphere:
+  t = normalize(n (n . a) - a) with a = R2, R0, -R0, -R2, R0, R0 per
+  face; sum order from the decompiler: d = (nz az + ay ny) + ax nx,
+  1 / sqrt((tz^2 + ty^2) + tx^2). Decal vertices write 0.
+- Shipped shader notes: common.h nmapUnpack reads .ag; getWang reads .ba
+  of the 128-texel index; default.hlsl casts the Blinn pow to half.
+  smoothplastic.hlsl is PIN_PLASTIC + default.hlsl, so its HQ program
+  differs from LQ only in per-pixel (vs per-vertex) specular. All HQ DDS
+  files in this install are DXT1 or DXT5; studs.dds and
+  plastic/diffuse.dds are both 128x2048.
+- Not found: the FastCluster node AABB used for the distance (the port uses
+  each Part's box), the GBuffer path, the edge-distance outline inputs.

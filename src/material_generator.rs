@@ -31,6 +31,20 @@
 //! The native geometry seed is `part + (part >> 3)` for the PartInstance's
 //! heap address (addPartImpl 010d1850). An address cannot be reproduced, so
 //! `part_seed` stands in for it with a fixed hash of the Part's index.
+//!
+//! The high-quality technique (`hq_technique`, `workspace_materials_quality`)
+//! is the second one createRenderMaterial adds: "Default" + name +
+//! ("Reflection") + "HQFS" with the vertex program "DefaultStatic" + "HQVS"
+//! (SmoothPlastic, Neon) or "SurfaceHQVS" (the rest), Technique lod 1. Its
+//! textures come from FUN_010bf300 and the slots shared by every technique
+//! from FUN_010bc020. Material::getBestTechnique(lod) (011d8130) returns the
+//! first technique whose lod is at least the requested one, and
+//! RenderNode::updateRenderQueue (0114a1b0) requests lod 1 when the node's
+//! squared camera distance (CullableSceneNode::updateIsCulledByFRM 010a9400,
+//! point-to-AABB) is below FrameRateManager::getShadingSqDistance, else
+//! lod 2, and lod 0 (the GBuffer techniques, not ported) when the GBuffer
+//! setting is on. The shading distance and texture anisotropy per quality
+//! level come from the FrameRateManager table (`quality_levels`).
 use crate::{
     bundle::Bundle,
     dds::{Bc1Dds, Bc3Dds, luminance_alpha},
@@ -40,9 +54,12 @@ use crate::{
     texture::PngTexture,
     workspace::Workspace,
 };
-use iced_x86::Register;
+use iced_x86::{Code, Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fmt::Write};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write,
+};
 
 pub const PLASTIC: u32 = 0x100;
 pub const SMOOTH_PLASTIC: u32 = 0x110;
@@ -244,6 +261,582 @@ impl MaterialTables {
     }
 }
 
+/// The number of FrameRateManager quality levels (table entries).
+pub const QUALITY_LEVELS: u32 = 22;
+/// FrameRateManager's settings table (FrameRateManager ctor 0129dfd6 stores
+/// it at +0x14c): 22 entries of 0x3c bytes, filled by the static
+/// initializer FUN_0129f87c.
+const QUALITY_TABLE: u32 = 0x0225_1548;
+const QUALITY_STRIDE: u32 = 0x3c;
+const QUALITY_INITIALIZER: u32 = 0x0129_f87c;
+
+/// One FrameRateManager quality level: getShadingDistance (0129f59a, entry
+/// +0x10) and getTextureAnisotropy (0129f5d8, entry +0x14). The level is
+/// the table index (FrameRateManager +0x18).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QualityLevel {
+    pub level: u32,
+    pub shading_distance: f32,
+    pub anisotropy: u32,
+}
+
+impl QualityLevel {
+    /// getShadingSqDistance (0129f5b0): the distance squared in floats.
+    pub fn shading_sq_distance(&self) -> f32 {
+        self.shading_distance * self.shading_distance
+    }
+    /// RenderNode::updateRenderQueue's choice for a node at this squared
+    /// distance: lod 1 (high quality) when below the shading distance
+    /// squared, else lod 2.
+    pub fn high_quality(&self, sq_distance: f32) -> bool {
+        sq_distance < self.shading_sq_distance()
+    }
+    /// FadeDistance_GlowFactor.xy as RenderView::renderPrepareImpl (0119a22d)
+    /// sets them: max(0.1, shading distance) and its inverse.
+    pub fn fade_distance(&self) -> [f32; 2] {
+        let d = if 0.1 <= self.shading_distance {
+            self.shading_distance
+        } else {
+            0.1
+        };
+        [d, 1.0 / d]
+    }
+}
+
+/// CullableSceneNode::updateIsCulledByFRM's squared distance from a point
+/// to an axis-aligned box (0 inside), in its order: x, then y, then z.
+pub fn sq_distance_to_box(point: [f32; 3], min: [f32; 3], max: [f32; 3]) -> f32 {
+    let mut d = 0.0f32;
+    for axis in 0..3 {
+        let half = (max[axis] - min[axis]) * 0.5;
+        let offset = point[axis] - (min[axis] + max[axis]) * 0.5;
+        if offset < -half {
+            d += (half + offset) * (half + offset);
+        }
+        if half < offset {
+            d += (offset - half) * (offset - half);
+        }
+    }
+    d
+}
+
+/// The FrameRateManager quality table, read by decoding its static
+/// initializer (FUN_0129f87c). The function is straight-line code: it sets
+/// a PIC base with `CALL next; POP reg`, loads immediates into registers
+/// and stores them (or immediates) to [pic + disp]. CALLs clobber EAX, ECX
+/// and EDX. Each entry's +0x10 (float) and +0x14 (int) must be stored by a
+/// known value exactly once; no other store (unknown values, bytes, XMM)
+/// may overlap them.
+/// The 32-bit register a general register write lands in (AL, AH and AX
+/// belong to EAX), or None for other registers.
+fn full32(r: Register) -> Option<Register> {
+    use Register::*;
+    Some(match r {
+        AL | AH | AX | EAX => EAX,
+        CL | CH | CX | ECX => ECX,
+        DL | DH | DX | EDX => EDX,
+        BL | BH | BX | EBX => EBX,
+        SI | ESI => ESI,
+        DI | EDI => EDI,
+        BP | EBP => EBP,
+        SP | ESP => ESP,
+        _ => return Option::None,
+    })
+}
+
+pub fn quality_levels(image: &NativeImage) -> Result<Vec<QualityLevel>, String> {
+    let mut registers: BTreeMap<Register, u32> = BTreeMap::new();
+    let mut pic: Option<(Register, u32)> = None;
+    let mut call_return = None;
+    let mut stores: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut wide: Vec<(u32, u32)> = Vec::new();
+    let mut ip = QUALITY_INITIALIZER;
+    let mut finished = false;
+    for _ in 0..8192 {
+        let bytes = image.region(ip, 16)?;
+        let i = Decoder::with_ip(32, bytes, u64::from(ip), DecoderOptions::NONE).decode();
+        if i.is_invalid() {
+            return Err(format!("invalid quality initializer instruction {ip:08x}"));
+        }
+        let next = i.next_ip() as u32;
+        let address = |i: &iced_x86::Instruction| -> Option<u32> {
+            let (base, at) = pic?;
+            (i.memory_base() == base && i.memory_index() == Register::None)
+                .then(|| at.wrapping_add(i.memory_displacement32()))
+        };
+        match i.mnemonic() {
+            Mnemonic::Ret => {
+                finished = true;
+                break;
+            }
+            Mnemonic::Call => {
+                if i.op0_kind() == OpKind::NearBranch32 && i.near_branch_target() as u32 == next {
+                    call_return = Some(next);
+                }
+                for r in [Register::EAX, Register::ECX, Register::EDX] {
+                    registers.remove(&r);
+                }
+            }
+            // Reads only.
+            Mnemonic::Push | Mnemonic::Cmp | Mnemonic::Test => {}
+            Mnemonic::Pop if i.op0_kind() == OpKind::Register => {
+                if let Some(at) = call_return.take() {
+                    pic = Some((i.op0_register(), at));
+                }
+                registers.remove(&i.op0_register());
+            }
+            Mnemonic::Mov | Mnemonic::Lea | Mnemonic::Xor
+                if i.op0_kind() == OpKind::Register && full32(i.op0_register()).is_some() =>
+            {
+                let r = full32(i.op0_register()).unwrap();
+                let value = match (i.mnemonic(), i.op1_kind()) {
+                    (Mnemonic::Mov, OpKind::Immediate32) => Some(i.immediate32()),
+                    (Mnemonic::Mov, OpKind::Register) if i.op1_register() == r => None,
+                    (Mnemonic::Mov, OpKind::Register) => registers.get(&i.op1_register()).copied(),
+                    (Mnemonic::Lea, OpKind::Memory) => address(&i),
+                    (Mnemonic::Xor, OpKind::Register) if i.op1_register() == i.op0_register() => {
+                        Some(0)
+                    }
+                    _ => None,
+                };
+                // Partial-register writes (MOV AL, 1) leave the full
+                // register unknown.
+                match value {
+                    Some(v) if i.op0_register() == r => {
+                        registers.insert(r, v);
+                    }
+                    _ => {
+                        registers.remove(&r);
+                    }
+                }
+            }
+            _ if i.op_count() > 0 && i.op0_kind() == OpKind::Memory => {
+                if let Some(at) = address(&i) {
+                    // Dword MOV stores keep their value; any other store
+                    // (bytes, XMM) is recorded as up to 16 written bytes.
+                    let value = match i.code() {
+                        Code::Mov_rm32_imm32 => Some(Some(i.immediate32())),
+                        Code::Mov_rm32_r32 => Some(registers.get(&i.op1_register()).copied()),
+                        _ => None,
+                    };
+                    match value {
+                        Some(Some(v)) => {
+                            if stores.insert(at, v).is_some() {
+                                return Err(format!("quality field {at:08x} stored twice"));
+                            }
+                        }
+                        // Unknown values and other stores only matter if
+                        // they touch a table field (checked below).
+                        Some(None) => wide.push((at, 4)),
+                        None => wide.push((at, 16)),
+                    }
+                }
+            }
+            _ if i.op_count() > 0 && i.op0_kind() == OpKind::Register => {
+                if let Some(r) = full32(i.op0_register()) {
+                    registers.remove(&r);
+                }
+            }
+            _ => {}
+        }
+        ip = next;
+    }
+    if !finished {
+        return Err("quality initializer did not return".into());
+    }
+    let mut levels = Vec::new();
+    for level in 0..QUALITY_LEVELS {
+        let entry = QUALITY_TABLE + level * QUALITY_STRIDE;
+        let field = |offset: u32| -> Result<u32, String> {
+            let at = entry + offset;
+            if wide.iter().any(|&(w, n)| w < at + 4 && at < w + n) {
+                return Err(format!("quality field {at:08x} written by a wide store"));
+            }
+            stores
+                .get(&at)
+                .copied()
+                .ok_or_else(|| format!("quality field {at:08x} not stored"))
+        };
+        let shading_distance = f32::from_bits(field(0x10)?);
+        let anisotropy = field(0x14)?;
+        if !shading_distance.is_finite() || shading_distance < 0.0 || !(1..=16).contains(&anisotropy)
+        {
+            return Err(format!("invalid quality level {level}"));
+        }
+        levels.push(QualityLevel {
+            level,
+            shading_distance,
+            anisotropy,
+        });
+    }
+    Ok(levels)
+}
+
+/// The native SamplerState {filter, address}: filter 0 point, 1 linear,
+/// 2 anisotropic (the quality level's anisotropy); address 0 wrap, 1 clamp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Sampler {
+    pub filter: u32,
+    pub address: u32,
+}
+
+/// A texture a high-quality technique binds: the Technique slot, the
+/// rbxasset path and its file under PlatformContent/pc.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HqTexture {
+    pub slot: u32,
+    pub asset: String,
+    pub path: String,
+    pub sampler: Sampler,
+}
+
+/// Which DefaultPS variant a high-quality technique compiles to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HqShading {
+    /// plastic.hlsl with PIN_HQ: PIN_SURFACE, its own surfaceShader (studs
+    /// and normal map from the plastic atlas, noise from normaldetail).
+    PlasticSurface,
+    /// smoothplastic.hlsl: PIN_PLASTIC with per-pixel specular.
+    Plastic,
+    /// neon.hlsl: the same output as DefaultNeonFS.
+    Neon,
+    /// material.hlsl through the per-material file.
+    Material { wang: bool },
+}
+
+/// createRenderMaterial's high-quality technique for a Part.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HqTechnique {
+    pub material: u32,
+    pub reflection: bool,
+    pub fragment: String,
+    pub vertex: String,
+    pub shading: HqShading,
+    pub textures: Vec<HqTexture>,
+}
+
+const STUDS: &str = "rbxasset://textures/studs.dds";
+const ANISOTROPIC_WRAP: Sampler = Sampler {
+    filter: 2,
+    address: 0,
+};
+
+fn hq_texture(slot: u32, asset: String, sampler: Sampler) -> HqTexture {
+    let path = format!(
+        "Contents/Resources/PlatformContent/pc/{}",
+        asset.trim_start_matches("rbxasset://")
+    );
+    HqTexture {
+        slot,
+        asset,
+        path,
+        sampler,
+    }
+}
+
+/// createRenderMaterial's high-quality technique (010bd05b..010bd2d1):
+/// slot 0 studs.dds (2, 0); then FUN_010bf300: Plastic binds
+/// plastic/diffuse (5), plastic/normal (6) with (2, 0) and
+/// plastic/normaldetail (8) with (1, 0); SmoothPlastic and Neon bind only
+/// the TextureManager fallback at slot 5 (FUN_010bc540, never sampled by
+/// their shaders, not listed); the rest bind <name>/diffuse (5), normal (6),
+/// specular (7) with (2, 0) and normaldetail (8) with (2, 0), or the Wang
+/// index with (0, 0) for Cobblestone. The environment map (slot 4,
+/// linear clamp, FUN_010bc020) is shared with every technique.
+pub fn hq_technique(material: u32, reflectance: f32) -> Result<HqTechnique, String> {
+    let name = render_name(material)?;
+    let reflection = material & !0x10 == PLASTIC && reflectance > 0.015;
+    let surface = !matches!(material, SMOOTH_PLASTIC | NEON);
+    let mut textures = vec![hq_texture(0, STUDS.into(), ANISOTROPIC_WRAP)];
+    let shading = match material {
+        PLASTIC => {
+            for (slot, file, sampler) in [
+                (5, "diffuse", ANISOTROPIC_WRAP),
+                (6, "normal", ANISOTROPIC_WRAP),
+                (
+                    8,
+                    "normaldetail",
+                    Sampler {
+                        filter: 1,
+                        address: 0,
+                    },
+                ),
+            ] {
+                textures.push(hq_texture(
+                    slot,
+                    format!("rbxasset://textures/plastic/{file}.dds"),
+                    sampler,
+                ));
+            }
+            HqShading::PlasticSurface
+        }
+        SMOOTH_PLASTIC => HqShading::Plastic,
+        NEON => HqShading::Neon,
+        _ => {
+            let folder = name.to_lowercase();
+            for (slot, file) in [(5, "diffuse"), (6, "normal"), (7, "specular")] {
+                textures.push(hq_texture(
+                    slot,
+                    format!("rbxasset://textures/{folder}/{file}.dds"),
+                    ANISOTROPIC_WRAP,
+                ));
+            }
+            if material == COBBLESTONE {
+                textures.push(hq_texture(
+                    8,
+                    "rbxasset://textures/wangIndex.dds".into(),
+                    Sampler {
+                        filter: 0,
+                        address: 0,
+                    },
+                ));
+            } else {
+                textures.push(hq_texture(
+                    8,
+                    format!("rbxasset://textures/{folder}/normaldetail.dds"),
+                    ANISOTROPIC_WRAP,
+                ));
+            }
+            HqShading::Material {
+                wang: material == COBBLESTONE,
+            }
+        }
+    };
+    Ok(HqTechnique {
+        material,
+        reflection,
+        fragment: format!(
+            "Default{name}{}HQFS",
+            if reflection { "Reflection" } else { "" }
+        ),
+        vertex: format!(
+            "DefaultStatic{}",
+            if surface { "SurfaceHQVS" } else { "HQVS" }
+        ),
+        shading,
+        textures,
+    })
+}
+
+/// One program in the shipped shaders/shaders.json: its source file and
+/// preprocessor defines.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShaderEntry {
+    pub name: String,
+    pub source: String,
+    pub defines: Vec<String>,
+}
+
+/// The `"key": "value"` string pairs of each `{...}` object in
+/// shaders.json (the file is a flat array of such objects).
+pub fn shader_entries(bundle: &Bundle) -> Result<Vec<ShaderEntry>, String> {
+    let bytes = bundle.read("Contents/Resources/shaders/shaders.json", 4 * 1024 * 1024)?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    for object in text.split('{').skip(1) {
+        let body = object.split('}').next().unwrap_or("");
+        let mut fields = BTreeMap::new();
+        let quoted: Vec<&str> = body.split('"').collect();
+        // key, value at quoted[1], quoted[3]; then quoted[5], quoted[7]...
+        let mut k = 1;
+        while k + 2 < quoted.len() {
+            fields.insert(quoted[k], quoted[k + 2]);
+            k += 4;
+        }
+        let field = |key: &str| fields.get(key).map(|v| v.to_string());
+        if let (Some(name), Some(source)) = (field("name"), field("source")) {
+            entries.push(ShaderEntry {
+                name,
+                source,
+                defines: field("defines")
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect(),
+            });
+        }
+    }
+    if entries.len() < 100 {
+        return Err("shaders.json has too few programs".into());
+    }
+    Ok(entries)
+}
+
+/// The CFG_* constants and flags a material shader source defines.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShaderConfig {
+    pub source: String,
+    pub values: BTreeMap<String, f32>,
+    pub flags: BTreeSet<String>,
+}
+
+impl ShaderConfig {
+    pub fn value(&self, key: &str) -> f32 {
+        self.values.get(key).copied().unwrap_or(0.0)
+    }
+    pub fn flag(&self, key: &str) -> bool {
+        self.flags.contains(key)
+    }
+}
+
+/// `#define CFG_<NAME> [value]` lines of a shipped shader source
+/// (shaders/source/<file>), the per-material constants material.hlsl and
+/// plastic.hlsl read.
+pub fn shader_config(bundle: &Bundle, source: &str) -> Result<ShaderConfig, String> {
+    let bytes = bundle.read(
+        &format!("Contents/Resources/shaders/source/{source}"),
+        1024 * 1024,
+    )?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+    let mut config = ShaderConfig {
+        source: source.into(),
+        ..Default::default()
+    };
+    for line in text.lines() {
+        let mut words = line.split_whitespace();
+        if words.next() != Some("#define") {
+            continue;
+        }
+        let Some(key) = words.next().and_then(|k| k.strip_prefix("CFG_")) else {
+            continue;
+        };
+        match words.next() {
+            Some(value) => {
+                let v: f32 = value
+                    .parse()
+                    .map_err(|_| format!("{source}: CFG_{key} is not a number"))?;
+                config.values.insert(key.into(), v);
+            }
+            None => {
+                config.flags.insert(key.into());
+            }
+        }
+    }
+    Ok(config)
+}
+
+fn load_dds(bundle: &Bundle, path: &str) -> Result<(PngTexture, String), String> {
+    let bytes = bundle.read(path, 16 * 1024 * 1024)?;
+    let texture = match bytes.get(84..88) {
+        Some(b"DXT1") => Bc1Dds::parse(&bytes)?.decode(),
+        Some(b"DXT5") => Bc3Dds::parse(&bytes)?.decode(),
+        _ if path.ends_with("wangIndex.dds") => luminance_alpha(&bytes)?,
+        _ => return Err(format!("{path}: unsupported DDS format")),
+    };
+    let first = &texture.mips[0];
+    let format = match bytes.get(84..88) {
+        Some(b"DXT1") => "DXT1",
+        Some(b"DXT5") => "DXT5",
+        _ => "L8A8",
+    };
+    let line = format!(
+        "format={format} size={}x{} mips={} dds_sha256={:x}",
+        first.width,
+        first.height,
+        texture.mips.len(),
+        Sha256::digest(&bytes)
+    );
+    Ok((texture, line))
+}
+
+/// A Workspace's high-quality techniques at one quality level: per Part the
+/// technique, per material the shader constants, the decoded textures by
+/// path and the shipped shader entries they were checked against.
+pub struct HqScene {
+    pub level: QualityLevel,
+    pub techniques: BTreeMap<String, HqTechnique>,
+    pub configs: BTreeMap<u32, ShaderConfig>,
+    pub textures: BTreeMap<String, PngTexture>,
+    pub report: String,
+}
+
+/// The high-quality technique of every Workspace Part at `level` (an index
+/// into `quality_levels`). Each technique's fragment and vertex programs
+/// must exist in shaders.json with PIN_HQ (createRenderMaterial skips the
+/// technique when ShaderManager::getProgram fails), and its textures load.
+pub fn workspace_hq(
+    bundle: &Bundle,
+    image: &NativeImage,
+    workspace: &Workspace,
+    level: u32,
+) -> Result<HqScene, String> {
+    let levels = quality_levels(image)?;
+    let level = *levels
+        .get(level as usize)
+        .ok_or_else(|| format!("quality level {level} is outside 0..{QUALITY_LEVELS}"))?;
+    let entries = shader_entries(bundle)?;
+    let entry = |name: &str| -> Result<&ShaderEntry, String> {
+        entries
+            .iter()
+            .find(|e| e.name == name)
+            .filter(|e| e.defines.iter().any(|d| d == "PIN_HQ"))
+            .ok_or_else(|| format!("shaders.json has no PIN_HQ program {name}"))
+    };
+    let mut scene = HqScene {
+        level,
+        techniques: BTreeMap::new(),
+        configs: BTreeMap::new(),
+        textures: BTreeMap::new(),
+        report: String::new(),
+    };
+    writeln!(
+        scene.report,
+        "quality_level level={} shading_distance={} anisotropy={} fade_distance={:?}",
+        level.level,
+        level.shading_distance,
+        level.anisotropy,
+        level.fade_distance()
+    )
+    .unwrap();
+    for part in &workspace.parts {
+        let t = hq_technique(part.material, part.reflectance)
+            .map_err(|e| format!("Part {:?}: {e}", part.name))?;
+        let fragment = entry(&t.fragment)?;
+        entry(&t.vertex)?;
+        if !scene.configs.contains_key(&t.material) {
+            let config = shader_config(bundle, &fragment.source)?;
+            let mut values = String::new();
+            for (k, v) in &config.values {
+                write!(values, " {k}={v}").unwrap();
+            }
+            writeln!(
+                scene.report,
+                "hq_config material={} source={}{values} flags={:?}",
+                render_name(t.material)?,
+                config.source,
+                config.flags
+            )
+            .unwrap();
+            scene.configs.insert(t.material, config);
+        }
+        for texture in &t.textures {
+            if scene.textures.contains_key(&texture.path) {
+                continue;
+            }
+            let (decoded, line) = load_dds(bundle, &texture.path)?;
+            writeln!(
+                scene.report,
+                "hq_texture asset={} slot={} sampler={:?} {line}",
+                texture.asset, texture.slot, texture.sampler
+            )
+            .unwrap();
+            scene.textures.insert(texture.path.clone(), decoded);
+        }
+        writeln!(
+            scene.report,
+            "hq_part name={:?} material={} fragment={} vertex={} source={}",
+            part.name,
+            render_name(part.material)?,
+            t.fragment,
+            t.vertex,
+            fragment.source
+        )
+        .unwrap();
+        scene.techniques.insert(part.name.clone(), t);
+    }
+    Ok(scene)
+}
+
 /// The diffuse maps, Wang index and per-draw techniques of a Workspace.
 pub struct MaterialScene {
     pub techniques: BTreeMap<String, Technique>,
@@ -253,6 +846,9 @@ pub struct MaterialScene {
     pub textures: BTreeMap<u32, PngTexture>,
     pub wang: Option<PngTexture>,
     pub glow: f32,
+    /// The high-quality techniques when a quality level was chosen; None
+    /// draws every Part with its low-quality technique.
+    pub hq: Option<HqScene>,
     pub report: String,
 }
 
@@ -302,6 +898,17 @@ pub fn workspace_materials(
     bundle: &Bundle,
     workspace: &Workspace,
 ) -> Result<MaterialScene, String> {
+    workspace_materials_quality(bundle, workspace, None)
+}
+
+/// `workspace_materials` plus, with a quality level, the high-quality
+/// techniques the renderer uses for Parts within that level's shading
+/// distance.
+pub fn workspace_materials_quality(
+    bundle: &Bundle,
+    workspace: &Workspace,
+    quality: Option<u32>,
+) -> Result<MaterialScene, String> {
     let image = NativeImage::load(bundle)?;
     let tables = MaterialTables::load(&image)?;
     let mut scene = MaterialScene {
@@ -310,6 +917,7 @@ pub fn workspace_materials(
         textures: BTreeMap::new(),
         wang: None,
         glow: tables.glow,
+        hq: None,
         report: String::new(),
     };
     for part in &workspace.parts {
@@ -367,6 +975,11 @@ pub fn workspace_materials(
         scene.glow
     )
     .unwrap();
+    if let Some(level) = quality {
+        let hq = workspace_hq(bundle, &image, workspace, level)?;
+        scene.report.push_str(&hq.report);
+        scene.hq = Some(hq);
+    }
     Ok(scene)
 }
 
@@ -419,6 +1032,59 @@ mod tests {
         assert_eq!(vertex_reflectance(1.0), 204.0 / 255.0);
         assert_eq!(vertex_reflectance(5.0), 204.0 / 255.0);
         assert_eq!(vertex_reflectance(0.5), 102.0 / 255.0);
+    }
+    #[test]
+    fn hq_techniques_follow_create_render_material() {
+        let plastic = hq_technique(PLASTIC, 0.0).unwrap();
+        assert_eq!(plastic.fragment, "DefaultPlasticHQFS");
+        assert_eq!(plastic.vertex, "DefaultStaticSurfaceHQVS");
+        assert_eq!(plastic.shading, HqShading::PlasticSurface);
+        assert_eq!(
+            plastic.textures.iter().map(|t| t.slot).collect::<Vec<_>>(),
+            [0, 5, 6, 8]
+        );
+        assert_eq!(plastic.textures[3].sampler.filter, 1);
+        let smooth = hq_technique(SMOOTH_PLASTIC, 0.5).unwrap();
+        assert_eq!(smooth.fragment, "DefaultSmoothPlasticReflectionHQFS");
+        assert_eq!(smooth.vertex, "DefaultStaticHQVS");
+        assert_eq!(hq_technique(NEON, 1.0).unwrap().fragment, "DefaultNeonHQFS");
+        let cobblestone = hq_technique(COBBLESTONE, 1.0).unwrap();
+        assert_eq!(cobblestone.fragment, "DefaultCobblestoneHQFS");
+        assert_eq!(
+            cobblestone.textures[4].asset,
+            "rbxasset://textures/wangIndex.dds"
+        );
+        assert_eq!(cobblestone.textures[4].sampler.filter, 0);
+        let planks = hq_technique(WOOD_PLANKS, 0.0).unwrap();
+        assert_eq!(
+            planks.textures[3].path,
+            "Contents/Resources/PlatformContent/pc/textures/woodplanks/specular.dds"
+        );
+        assert!(hq_technique(0x530, 0.0).is_err());
+    }
+    #[test]
+    fn shading_distance_selects_like_render_node() {
+        let level = QualityLevel {
+            level: 5,
+            shading_distance: 40.0,
+            anisotropy: 1,
+        };
+        assert!(level.high_quality(1599.0));
+        assert!(!level.high_quality(1600.0));
+        let off = QualityLevel {
+            shading_distance: 0.0,
+            ..level
+        };
+        assert!(!off.high_quality(0.0));
+        assert_eq!(off.fade_distance(), [0.1, 10.0]);
+        assert_eq!(
+            sq_distance_to_box([0.0, 0.0, 10.0], [-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]),
+            81.0
+        );
+        assert_eq!(
+            sq_distance_to_box([0.5, 0.0, 0.0], [-1.0; 3], [1.0; 3]),
+            0.0
+        );
     }
     #[test]
     fn seeds_are_stable_and_spread() {

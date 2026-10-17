@@ -224,17 +224,45 @@ struct Gpu {
     /// Vertex reflectance per Workspace Part (`add_materials`).
     reflectance: std::collections::BTreeMap<String, f32>,
     materials: Option<MaterialGpu>,
+    /// Each range's world-space vertex box (min, max), refreshed by
+    /// `update_geometry`; the high-quality selection measures to it.
+    bounds: std::cell::RefCell<Vec<([f32; 3], [f32; 3])>>,
 }
-/// An index range and its technique: None draws with the Plastic stud pass,
-/// Some((pipeline, bindings)) with a material technique.
-type MaterialDraw = (Option<(usize, usize)>, std::ops::Range<u32>);
-/// The non-Plastic low-quality techniques (material_generator.rs).
+/// An index range and its techniques. `lq` None draws with the Plastic stud
+/// pass, Some((pipeline, bindings)) with a material technique; `hq` is the
+/// high-quality technique used when the camera is within the shading
+/// distance of the range's box (`ranges` index `draw`).
+#[derive(Clone, PartialEq)]
+struct MaterialDraw {
+    lq: Option<(usize, usize)>,
+    hq: Option<(usize, usize)>,
+    range: std::ops::Range<u32>,
+    draw: usize,
+}
+/// The material techniques (material_generator.rs).
 struct MaterialGpu {
     pipelines: Vec<wgpu::RenderPipeline>,
     globals: Vec<wgpu::BindGroup>,
     bindings: Vec<wgpu::BindGroup>,
     /// Index ranges in draw order.
     draws: Vec<MaterialDraw>,
+    /// The chosen quality level; None draws everything at low quality.
+    quality: Option<crate::material_generator::QualityLevel>,
+}
+
+/// Each draw's world-space vertex box.
+fn draw_bounds(draws: &[Draw]) -> Vec<([f32; 3], [f32; 3])> {
+    draws
+        .iter()
+        .map(|d| {
+            d.vertices.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), v| {
+                (
+                    std::array::from_fn(|i| lo[i].min(v.position[i])),
+                    std::array::from_fn(|i| hi[i].max(v.position[i])),
+                )
+            })
+        })
+        .collect()
 }
 struct SkyGpu {
     opaque: wgpu::RenderPipeline,
@@ -269,6 +297,10 @@ enum ShaderKind {
     LowQuality,
     LowQualityWang,
     Neon,
+    PlasticHq,
+    PlasticSurfaceHq,
+    SurfaceHq,
+    SurfaceWangHq,
 }
 struct DecalGpu {
     pipeline: wgpu::RenderPipeline,
@@ -283,8 +315,9 @@ struct GpuTextureDraw {
     count: u32,
 }
 
-/// Position, normal, material uv, color, specular, stud uv, reflectance.
-const VERTEX_STRIDE: u64 = 68;
+/// Position, normal, material uv, color, specular, stud uv, reflectance,
+/// tangent.
+const VERTEX_STRIDE: u64 = 80;
 
 fn pipeline(
     device: &wgpu::Device,
@@ -293,7 +326,7 @@ fn pipeline(
     kind: ShaderKind,
 ) -> wgpu::RenderPipeline {
     let decal = kind == ShaderKind::Decal;
-    let attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2,3=>Float32x4,4=>Float32x2,5=>Float32x2,6=>Float32];
+    let attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2,3=>Float32x4,4=>Float32x2,5=>Float32x2,6=>Float32,7=>Float32x3];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(if decal {
             "recovered decal pass"
@@ -341,6 +374,10 @@ fn pipeline(
                 ShaderKind::LowQuality => "fragment_low_quality",
                 ShaderKind::LowQualityWang => "fragment_low_quality_wang",
                 ShaderKind::Neon => "fragment_neon",
+                ShaderKind::PlasticHq => "fragment_plastic_hq",
+                ShaderKind::PlasticSurfaceHq => "fragment_plastic_surface_hq",
+                ShaderKind::SurfaceHq => "fragment_surface_hq",
+                ShaderKind::SurfaceWangHq => "fragment_surface_wang_hq",
             }),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -451,6 +488,7 @@ impl Gpu {
                 ranges,
                 reflectance: Default::default(),
                 materials: None,
+                bounds: std::cell::RefCell::new(draw_bounds(draws)),
             },
             adapter,
         ))
@@ -684,6 +722,7 @@ impl Gpu {
             }
             decal_vertices.push(vertices);
         }
+        *self.bounds.borrow_mut() = draw_bounds(draws);
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         self.queue.write_buffer(&self.vertices, 0, &vertices);
         for (gpu, vertices) in uploaded.iter().zip(decal_vertices) {
@@ -1140,14 +1179,16 @@ impl Gpu {
         ))
     }
 
-    /// The low-quality material techniques (material_generator.rs) for the
-    /// draws `scene` names: LowQMaterialFS / LowQMaterialWangFS with the
-    /// material's diffuse map (Linear/Wrap, slot 5) and the Wang index
+    /// The material techniques (material_generator.rs) for the draws
+    /// `scene` names. Low quality: LowQMaterialFS / LowQMaterialWangFS with
+    /// the material's diffuse map (Linear/Wrap, slot 5) and the Wang index
     /// (Point/Wrap, slot 8), DefaultNeonFS with the glow factor, and
     /// Default<Plastic>ReflectionFS with the stud atlas and the environment
-    /// map (built from `sky`). Plain Plastic draws keep the stud pass. Also
-    /// re-uploads the vertices with each Part's reflectance. Call after
-    /// `add_studs`.
+    /// map (built from `sky`). Plain Plastic draws keep the stud pass. With
+    /// `scene.hq`, every Workspace draw also gets its high-quality technique
+    /// (`hq_technique`), chosen per frame by the camera distance in `pass`.
+    /// Also re-uploads the vertices with each Part's reflectance. Call
+    /// after `add_studs`.
     fn add_materials(
         &mut self,
         draws: &[Draw],
@@ -1155,7 +1196,7 @@ impl Gpu {
         scene: &crate::material_generator::MaterialScene,
         sky: Option<(&crate::sky::SkyTextures, &crate::lighting::SkyParameters)>,
     ) -> Result<String, String> {
-        use crate::material_generator::Technique;
+        use crate::material_generator::{HqShading, Technique};
         if self.studs.is_none() {
             return Err("material techniques need the stud pass first".into());
         }
@@ -1173,13 +1214,14 @@ impl Gpu {
                 contents: &vertices,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             });
+        *self.bounds.borrow_mut() = draw_bounds(draws);
         let shader = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(SHADER)),
             });
-        let sampler = |label, address, filter, mipmap| {
+        let sampler = |label, address, filter, mipmap, anisotropy| {
             self.device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some(label),
                 address_mode_u: address,
@@ -1188,6 +1230,7 @@ impl Gpu {
                 mag_filter: filter,
                 min_filter: filter,
                 mipmap_filter: mipmap,
+                anisotropy_clamp: anisotropy,
                 ..Default::default()
             })
         };
@@ -1196,34 +1239,125 @@ impl Gpu {
             wgpu::AddressMode::Repeat,
             wgpu::FilterMode::Linear,
             wgpu::MipmapFilterMode::Linear,
+            1,
         );
         let point_wrap = sampler(
             "wang index point wrap",
             wgpu::AddressMode::Repeat,
             wgpu::FilterMode::Nearest,
             wgpu::MipmapFilterMode::Nearest,
+            1,
         );
         let linear_clamp = sampler(
             "envmap linear clamp",
             wgpu::AddressMode::ClampToEdge,
             wgpu::FilterMode::Linear,
             wgpu::MipmapFilterMode::Linear,
+            1,
         );
+        // SamplerState filter 2: trilinear with the quality level's
+        // anisotropy (getTextureAnisotropy 0129f5d8).
+        let anisotropic_wrap = sampler(
+            "high-quality anisotropic wrap",
+            wgpu::AddressMode::Repeat,
+            wgpu::FilterMode::Linear,
+            wgpu::MipmapFilterMode::Linear,
+            scene.hq.as_ref().map_or(1, |hq| hq.level.anisotropy as u16),
+        );
+        let native_sampler = |s: crate::material_generator::Sampler| match (s.filter, s.address) {
+            (0, 0) => Ok(&point_wrap),
+            (1, 0) => Ok(&linear_wrap),
+            (2, 0) => Ok(&anisotropic_wrap),
+            _ => Err(format!("unsupported native sampler {s:?}")),
+        };
         let mut gpu = MaterialGpu {
             pipelines: Vec::new(),
             globals: Vec::new(),
             bindings: Vec::new(),
             draws: Vec::new(),
+            quality: scene.hq.as_ref().map(|hq| hq.level),
         };
         let mut pipelines: std::collections::BTreeMap<&str, usize> = Default::default();
         let mut bindings: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut views: std::collections::BTreeMap<String, wgpu::TextureView> = Default::default();
         let mut environment: Option<wgpu::TextureView> = None;
-        let mut studs_view: Option<wgpu::TextureView> = None;
         let mut report = String::new();
-        let mut wang_view: Option<wgpu::TextureView> = None;
-        for (name, material, range) in self.ranges.clone() {
+        let mut pipeline_index = |gpu: &mut MaterialGpu, entry: &'static str, kind| {
+            *pipelines.entry(entry).or_insert_with(|| {
+                let pipeline = pipeline(&self.device, &shader, self.format, kind);
+                gpu.globals
+                    .push(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: None,
+                        layout: &pipeline.get_bind_group_layout(0),
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.uniform.as_entire_binding(),
+                        }],
+                    }));
+                gpu.pipelines.push(pipeline);
+                gpu.pipelines.len() - 1
+            })
+        };
+        // Textures are uploaded once per key (a path, or a fixed name).
+        let mut view = |key: &str, data: &PngTexture| -> Result<(), String> {
+            if !views.contains_key(key) {
+                let v = self.upload_2d(data, key)?;
+                views.insert(key.to_string(), v);
+            }
+            Ok(())
+        };
+        let needs_environment = scene.hq.is_some()
+            || self.ranges.iter().any(|(name, material, _)| {
+                matches!(
+                    scene.technique(name, *material),
+                    Ok(Technique::Plastic {
+                        reflection: true,
+                        ..
+                    })
+                )
+            });
+        if needs_environment {
+            let (textures, sky) = sky.ok_or(
+                "Plastic Reflectance and high quality need the Sky for the environment map",
+            )?;
+            let (v, lines) = self.environment_map(textures, sky)?;
+            report.push_str(&lines);
+            environment = Some(v);
+        }
+        view("stud atlas", &surfaces.atlas)?;
+        if let Some(wang) = &scene.wang {
+            view("wangIndex", wang)?;
+        }
+        for (material, texture) in &scene.textures {
+            view(&format!("material diffuse {material:#x}"), texture)?;
+        }
+        if let Some(hq) = &scene.hq {
+            for (path, texture) in &hq.textures {
+                view(path, texture)?;
+            }
+        }
+        let tex = |key: &str| -> Result<&wgpu::TextureView, String> {
+            views.get(key).ok_or_else(|| format!("missing texture {key}"))
+        };
+        let texture_entry = |binding, view| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::TextureView(view),
+        };
+        let sampler_entry = |binding, sampler| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::Sampler(sampler),
+        };
+        let uniform = |label, floats: &[f32]| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(label),
+                    contents: &floats.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                })
+        };
+        for (draw_index, (name, material, range)) in self.ranges.clone().into_iter().enumerate() {
             let technique = scene.technique(&name, material)?;
-            let selection = match &technique {
+            let lq = match &technique {
                 Technique::Plastic {
                     reflection: false, ..
                 } => None,
@@ -1236,25 +1370,7 @@ impl Gpu {
                         }
                         Technique::LowQuality { .. } => (ShaderKind::LowQuality, "low_quality"),
                     };
-                    let p = match pipelines.get(entry) {
-                        Some(p) => *p,
-                        None => {
-                            let pipeline = pipeline(&self.device, &shader, self.format, kind);
-                            gpu.globals.push(self.device.create_bind_group(
-                                &wgpu::BindGroupDescriptor {
-                                    label: None,
-                                    layout: &pipeline.get_bind_group_layout(0),
-                                    entries: &[wgpu::BindGroupEntry {
-                                        binding: 0,
-                                        resource: self.uniform.as_entire_binding(),
-                                    }],
-                                },
-                            ));
-                            gpu.pipelines.push(pipeline);
-                            pipelines.insert(entry, gpu.pipelines.len() - 1);
-                            gpu.pipelines.len() - 1
-                        }
-                    };
+                    let p = pipeline_index(&mut gpu, entry, kind);
                     let key = format!("{entry}/{material:#x}");
                     let b = match bindings.get(&key) {
                         Some(b) => *b,
@@ -1262,55 +1378,22 @@ impl Gpu {
                             let layout = gpu.pipelines[p].get_bind_group_layout(1);
                             let mut entries = Vec::new();
                             let constants;
-                            let diffuse;
                             match &technique {
                                 Technique::Plastic { .. } => {
-                                    if environment.is_none() {
-                                        let (textures, sky) = sky.ok_or(
-                                            "Plastic Reflectance needs the Sky for the environment map",
-                                        )?;
-                                        let (view, lines) = self.environment_map(textures, sky)?;
-                                        report.push_str(&lines);
-                                        environment = Some(view);
-                                    }
-                                    if studs_view.is_none() {
-                                        studs_view =
-                                            Some(self.upload_2d(&surfaces.atlas, "stud atlas")?);
-                                    }
                                     entries.extend([
-                                        wgpu::BindGroupEntry {
-                                            binding: 0,
-                                            resource: wgpu::BindingResource::TextureView(
-                                                studs_view.as_ref().unwrap(),
-                                            ),
-                                        },
-                                        wgpu::BindGroupEntry {
-                                            binding: 1,
-                                            resource: wgpu::BindingResource::Sampler(&linear_wrap),
-                                        },
-                                        wgpu::BindGroupEntry {
-                                            binding: 5,
-                                            resource: wgpu::BindingResource::TextureView(
-                                                environment.as_ref().unwrap(),
-                                            ),
-                                        },
-                                        wgpu::BindGroupEntry {
-                                            binding: 6,
-                                            resource: wgpu::BindingResource::Sampler(&linear_clamp),
-                                        },
+                                        texture_entry(0, tex("stud atlas")?),
+                                        sampler_entry(1, &linear_wrap),
+                                        texture_entry(
+                                            5,
+                                            environment.as_ref().ok_or("missing environment map")?,
+                                        ),
+                                        sampler_entry(6, &linear_clamp),
                                     ]);
                                 }
                                 Technique::Neon => {
-                                    let floats = [1.0f32, 1.0, 1.0, 1.0, scene.glow, 0.0, 0.0, 0.0];
-                                    constants = self.device.create_buffer_init(
-                                        &wgpu::util::BufferInitDescriptor {
-                                            label: Some("DefaultNeonFS constants"),
-                                            contents: &floats
-                                                .iter()
-                                                .flat_map(|v| v.to_le_bytes())
-                                                .collect::<Vec<_>>(),
-                                            usage: wgpu::BufferUsages::UNIFORM,
-                                        },
+                                    constants = uniform(
+                                        "DefaultNeonFS constants",
+                                        &[1.0, 1.0, 1.0, 1.0, scene.glow, 0.0, 0.0, 0.0],
                                     );
                                     entries.push(wgpu::BindGroupEntry {
                                         binding: 2,
@@ -1323,62 +1406,31 @@ impl Gpu {
                                     wang,
                                     ..
                                 } => {
-                                    let texture = scene
-                                        .textures
-                                        .get(material)
-                                        .ok_or("missing material diffuse map")?;
-                                    diffuse = self.upload_2d(texture, "material diffuse")?;
                                     entries.extend([
-                                        wgpu::BindGroupEntry {
-                                            binding: 0,
-                                            resource: wgpu::BindingResource::TextureView(&diffuse),
-                                        },
-                                        wgpu::BindGroupEntry {
-                                            binding: 1,
-                                            resource: wgpu::BindingResource::Sampler(&linear_wrap),
-                                        },
+                                        texture_entry(
+                                            0,
+                                            tex(&format!("material diffuse {material:#x}"))?,
+                                        ),
+                                        sampler_entry(1, &linear_wrap),
                                     ]);
                                     if *wang {
-                                        if wang_view.is_none() {
-                                            wang_view = Some(self.upload_2d(
-                                                scene.wang.as_ref().ok_or("missing Wang index")?,
-                                                "wangIndex",
-                                            )?);
-                                        }
                                         entries.extend([
-                                            wgpu::BindGroupEntry {
-                                                binding: 3,
-                                                resource: wgpu::BindingResource::TextureView(
-                                                    wang_view.as_ref().unwrap(),
-                                                ),
-                                            },
-                                            wgpu::BindGroupEntry {
-                                                binding: 4,
-                                                resource: wgpu::BindingResource::Sampler(
-                                                    &point_wrap,
-                                                ),
-                                            },
+                                            texture_entry(3, tex("wangIndex")?),
+                                            sampler_entry(4, &point_wrap),
                                         ]);
                                     } else {
-                                        let floats = [
-                                            *far_tiling,
-                                            *far_tiling,
-                                            1.0,
-                                            1.0,
-                                            scene.glow,
-                                            0.0,
-                                            0.0,
-                                            0.0,
-                                        ];
-                                        constants = self.device.create_buffer_init(
-                                            &wgpu::util::BufferInitDescriptor {
-                                                label: Some("LqmatFarTilingFactor"),
-                                                contents: &floats
-                                                    .iter()
-                                                    .flat_map(|v| v.to_le_bytes())
-                                                    .collect::<Vec<_>>(),
-                                                usage: wgpu::BufferUsages::UNIFORM,
-                                            },
+                                        constants = uniform(
+                                            "LqmatFarTilingFactor",
+                                            &[
+                                                *far_tiling,
+                                                *far_tiling,
+                                                1.0,
+                                                1.0,
+                                                scene.glow,
+                                                0.0,
+                                                0.0,
+                                                0.0,
+                                            ],
                                         );
                                         entries.push(wgpu::BindGroupEntry {
                                             binding: 2,
@@ -1387,13 +1439,129 @@ impl Gpu {
                                     }
                                 }
                             }
-                            gpu.bindings.push(self.device.create_bind_group(
-                                &wgpu::BindGroupDescriptor {
+                            gpu.bindings
+                                .push(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                                     label: None,
                                     layout: &layout,
                                     entries: &entries,
+                                }));
+                            bindings.insert(key, gpu.bindings.len() - 1);
+                            gpu.bindings.len() - 1
+                        }
+                    };
+                    Some((p, b))
+                }
+            };
+            let hq_technique = scene.hq.as_ref().and_then(|hq| {
+                hq.techniques
+                    .get(&name)
+                    .map(|t| (hq, t))
+            });
+            let hq = match hq_technique {
+                None => None,
+                // DefaultNeonHQFS writes the same color as DefaultNeonFS.
+                Some((_, t)) if t.shading == HqShading::Neon => lq,
+                Some((hq, t)) => {
+                    let (kind, entry) = match t.shading {
+                        HqShading::Plastic => (ShaderKind::PlasticHq, "plastic_hq"),
+                        HqShading::PlasticSurface => {
+                            (ShaderKind::PlasticSurfaceHq, "plastic_surface_hq")
+                        }
+                        HqShading::Material { wang: false } => (ShaderKind::SurfaceHq, "surface_hq"),
+                        HqShading::Material { wang: true } => {
+                            (ShaderKind::SurfaceWangHq, "surface_wang_hq")
+                        }
+                        HqShading::Neon => unreachable!(),
+                    };
+                    let p = pipeline_index(&mut gpu, entry, kind);
+                    let key = format!("{entry}/{material:#x}/{}", t.reflection);
+                    let b = match bindings.get(&key) {
+                        Some(b) => *b,
+                        None => {
+                            let config = hq
+                                .configs
+                                .get(&t.material)
+                                .ok_or("missing high-quality shader config")?;
+                            let v = |k: &str| config.value(k);
+                            let f = |k: &str| if config.flag(k) { 1.0 } else { 0.0 };
+                            let fade = hq.level.fade_distance();
+                            let c = match t.shading {
+                                HqShading::PlasticSurface => [
+                                    [v("TEXTURE_TILING"), v("BUMP_INTENSITY"), v("SPECULAR"), v("GLOSS")],
+                                    [0.0; 4],
+                                    [0.0; 4],
+                                    [0.0; 4],
+                                ],
+                                _ => [
+                                    [
+                                        v("TEXTURE_TILING"),
+                                        v("DIFFUSE_SCALE"),
+                                        v("SPECULAR_SCALE"),
+                                        v("GLOSS_SCALE"),
+                                    ],
+                                    [
+                                        v("REFLECTION_SCALE"),
+                                        v("NORMAL_SHADOW_SCALE"),
+                                        v("SPECULAR_LOD"),
+                                        v("GLOSS_LOD"),
+                                    ],
+                                    [
+                                        v("NORMAL_DETAIL_TILING"),
+                                        v("NORMAL_DETAIL_SCALE"),
+                                        v("FAR_TILING"),
+                                        v("FAR_DIFFUSE_CUTOFF"),
+                                    ],
+                                    [v("FAR_NORMAL_CUTOFF"), v("FAR_SPECULAR_CUTOFF"), 0.0, 0.0],
+                                ],
+                            };
+                            let mut floats = vec![fade[0], fade[1], 0.0, scene.glow];
+                            for row in c {
+                                floats.extend(row);
+                            }
+                            floats.extend([
+                                f("OPT_DIFFUSE_CONST"),
+                                f("OPT_NORMAL_CONST"),
+                                f("OPT_BLEND_COLOR"),
+                                if t.reflection { 1.0 } else { 0.0 },
+                            ]);
+                            let constants = uniform("high-quality constants", &floats);
+                            let layout = gpu.pipelines[p].get_bind_group_layout(1);
+                            let mut entries = vec![
+                                texture_entry(
+                                    5,
+                                    environment.as_ref().ok_or("missing environment map")?,
+                                ),
+                                sampler_entry(6, &linear_clamp),
+                                wgpu::BindGroupEntry {
+                                    binding: 7,
+                                    resource: constants.as_entire_binding(),
                                 },
-                            ));
+                            ];
+                            for texture in &t.textures {
+                                let (binding, view) = match texture.slot {
+                                    // The stud atlas texture is the one the
+                                    // stud pass already decoded.
+                                    0 => (0, tex("stud atlas")?),
+                                    5 => (8, tex(&texture.path)?),
+                                    6 => (10, tex(&texture.path)?),
+                                    7 => (12, tex(&texture.path)?),
+                                    8 => (14, tex(&texture.path)?),
+                                    slot => return Err(format!("unexpected texture slot {slot}")),
+                                };
+                                // plastic.hlsl's surface shader never reads
+                                // StudsMap; the others all read every slot.
+                                if binding == 0 && t.shading == HqShading::PlasticSurface {
+                                    continue;
+                                }
+                                entries.push(texture_entry(binding, view));
+                                entries.push(sampler_entry(binding + 1, native_sampler(texture.sampler)?));
+                            }
+                            gpu.bindings
+                                .push(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some(&t.fragment),
+                                    layout: &layout,
+                                    entries: &entries,
+                                }));
                             bindings.insert(key, gpu.bindings.len() - 1);
                             gpu.bindings.len() - 1
                         }
@@ -1403,17 +1571,30 @@ impl Gpu {
             };
             writeln!(
                 report,
-                "material_draw name={name:?} technique={} indices={}..{}",
+                "material_draw name={name:?} technique={} hq_technique={} indices={}..{}",
                 technique.name(),
+                hq_technique.map_or("none", |(_, t)| t.fragment.as_str()),
                 range.start,
                 range.end
             )
             .unwrap();
+            let entry = MaterialDraw {
+                lq,
+                hq: if hq_technique.is_some() { hq } else { lq },
+                range,
+                draw: draw_index,
+            };
+            // Without high quality, consecutive ranges with one technique
+            // share a draw call.
             match gpu.draws.last_mut() {
-                Some((last, previous)) if *last == selection && previous.end == range.start => {
-                    previous.end = range.end;
+                Some(last)
+                    if scene.hq.is_none()
+                        && last.lq == entry.lq
+                        && last.range.end == entry.range.start =>
+                {
+                    last.range.end = entry.range.end;
                 }
-                _ => gpu.draws.push((selection, range)),
+                _ => gpu.draws.push(entry),
             }
         }
         if let Some(error) = pollster::block_on(scope.pop()) {
@@ -1421,11 +1602,15 @@ impl Gpu {
         }
         writeln!(
             report,
-            "material_gpu_pass pipelines={} bind_groups={} draw_calls={} environment_map={}",
+            "material_gpu_pass pipelines={} bind_groups={} draw_calls={} environment_map={} quality_level={}",
             gpu.pipelines.len(),
             gpu.bindings.len(),
             gpu.draws.len(),
-            environment.is_some()
+            environment.is_some(),
+            gpu.quality.map_or("none".to_string(), |q| format!(
+                "{} shading_distance={} anisotropy={}",
+                q.level, q.shading_distance, q.anisotropy
+            ))
         )
         .unwrap();
         self.materials = Some(gpu);
@@ -1548,12 +1733,17 @@ impl Gpu {
             view_formats: &[],
         })
     }
+    /// Draw the frame. `camera` is the camera position the high-quality
+    /// selection measures from; returns how many material draws used their
+    /// high-quality technique.
     fn pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::TextureView,
         depth: &wgpu::TextureView,
-    ) {
+        camera: [f32; 3],
+    ) -> usize {
+        let mut high_quality = 0;
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("static character pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1588,7 +1778,16 @@ impl Gpu {
         match &self.materials {
             None => pass.draw_indexed(0..self.count, 0, 0..1),
             Some(materials) => {
-                for (selection, range) in &materials.draws {
+                let bounds = self.bounds.borrow();
+                for draw in &materials.draws {
+                    // RenderNode::updateRenderQueue: lod 1 below the
+                    // shading distance (squared, point to box).
+                    let near = materials.quality.is_some_and(|q| {
+                        let (lo, hi) = bounds[draw.draw];
+                        q.high_quality(crate::material_generator::sq_distance_to_box(camera, lo, hi))
+                    });
+                    high_quality += usize::from(near && draw.hq.is_some());
+                    let (selection, range) = (if near { draw.hq } else { draw.lq }, &draw.range);
                     match selection {
                         None => {
                             if let Some(studs) = &self.studs {
@@ -1601,9 +1800,9 @@ impl Gpu {
                             }
                         }
                         Some((pipeline, bindings)) => {
-                            pass.set_pipeline(&materials.pipelines[*pipeline]);
-                            pass.set_bind_group(0, &materials.globals[*pipeline], &[]);
-                            pass.set_bind_group(1, &materials.bindings[*bindings], &[]);
+                            pass.set_pipeline(&materials.pipelines[pipeline]);
+                            pass.set_bind_group(0, &materials.globals[pipeline], &[]);
+                            pass.set_bind_group(1, &materials.bindings[bindings], &[]);
                         }
                     }
                     pass.draw_indexed(range.clone(), 0, 0..1);
@@ -1632,6 +1831,7 @@ impl Gpu {
                 pass.draw(0..4, 0..1);
             }
         }
+        high_quality
     }
     /// Copy a rendered RGBA/BGRA target into tightly packed rows.
     fn readback(
@@ -1732,6 +1932,7 @@ impl Gpu {
             &mut encoder,
             &texture.create_view(&Default::default()),
             &depth.create_view(&Default::default()),
+            inputs.frame.position,
         );
         let mut pixels = self.readback(encoder, &texture, width, height)?;
         if self.format == wgpu::TextureFormat::Bgra8Unorm {
@@ -1801,6 +2002,12 @@ fn draw_bytes_with_studs(
                 vertices.extend(f.to_le_bytes());
             }
             vertices.extend(draw_reflectance.to_le_bytes());
+            for f in v.tangent {
+                if !f.is_finite() {
+                    return Err("non-finite tangent".into());
+                }
+                vertices.extend(f.to_le_bytes());
+            }
         }
         for i in &draw.indices {
             if *i as usize >= draw.vertices.len() {
@@ -2203,6 +2410,316 @@ pub fn audit_material_render(bundle: &Bundle) -> Result<String, String> {
     Ok(report)
 }
 
+/// High-quality Part materials (places/audit-material-render, the same
+/// scene as `audit_material_render`). Checks the FrameRateManager quality
+/// table read from its static initializer, each material's high-quality
+/// technique against shaders.json, the Workspace tangents, and then renders
+/// the scene at low quality and at quality level 5 (shading distance 40,
+/// the camera is about 24 studs away): per Part the pixels that change
+/// against low quality (none for Neon, whose high-quality program writes
+/// the same color), and with the camera moved back past the shading
+/// distance the high-quality GPU must draw the low-quality frame exactly.
+/// The largest |per-pixel - per-vertex| Blinn highlight of a set of draws,
+/// times their specular intensity and the brightest lamp channel, in 8-bit
+/// steps. Samples a 17x17 barycentric grid on each lit triangle facing the
+/// camera.
+fn plastic_highlight_delta<'a>(
+    draws: impl Iterator<Item = &'a crate::geometry::Draw>,
+    camera: [f32; 3],
+    lamp_direction: [f32; 3],
+    lamp0: [f32; 3],
+) -> f32 {
+    let v = |a: [f32; 3]| Vec3::from_array(a);
+    let l = -v(lamp_direction).normalize();
+    let highlight = |p: Vec3, n: Vec3, power: f32| {
+        if n.dot(l) <= 0.0 {
+            return 0.0;
+        }
+        let h = (l + (v(camera) - p).normalize()).normalize();
+        h.dot(n).max(0.0).powf(power)
+    };
+    let lamp = lamp0.into_iter().fold(0.0f32, f32::max);
+    let mut largest = 0.0f32;
+    for draw in draws {
+        for tri in draw.indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|i| &draw.vertices[tri[i] as usize]);
+            let n = v(a.normal);
+            if n.dot(v(camera) - v(a.position)) <= 0.0 {
+                continue;
+            }
+            let [ha, hb, hc] =
+                [a, b, c].map(|x| highlight(v(x.position), v(x.normal), x.specular[1]));
+            for i in 0..=16 {
+                for j in 0..=16 - i {
+                    let (u, w) = (i as f32 / 16.0, j as f32 / 16.0);
+                    let p = v(a.position) * (1.0 - u - w) + v(b.position) * u + v(c.position) * w;
+                    let vertex = ha * (1.0 - u - w) + hb * u + hc * w;
+                    let pixel = highlight(p, n, a.specular[1]);
+                    largest = largest.max((pixel - vertex).abs() * a.specular[0] * lamp * 255.0);
+                }
+            }
+        }
+    }
+    largest
+}
+
+pub fn audit_material_hq_render(bundle: &Bundle) -> Result<String, String> {
+    use crate::material_generator::{self, HqShading, RENDER_MATERIALS};
+    use crate::workspace::Workspace;
+    let image = crate::native_data::NativeImage::load(bundle)?;
+    let levels = material_generator::quality_levels(&image)?;
+    let mut report = String::new();
+    for l in &levels {
+        writeln!(
+            report,
+            "quality_table level={} shading_distance={} anisotropy={} fade_distance={:?}",
+            l.level,
+            l.shading_distance,
+            l.anisotropy,
+            l.fade_distance()
+        )
+        .unwrap();
+    }
+    let distances: Vec<f32> = levels.iter().map(|l| l.shading_distance).collect();
+    if distances.len() != 22
+        || distances[0] != 300.0
+        || distances[1..5].iter().any(|d| *d != 0.0)
+        || distances[5] != 40.0
+        || distances[21] != 300.0
+        || distances[5..].windows(2).any(|w| w[1] < w[0])
+        || levels.iter().any(|l| ![1, 2, 4, 8].contains(&l.anisotropy))
+    {
+        return Err(format!("unexpected native quality table\n{report}"));
+    }
+    let entries = material_generator::shader_entries(bundle)?;
+    for (code, name) in RENDER_MATERIALS {
+        let variants: &[f32] = if code & !0x10 == material_generator::PLASTIC {
+            &[0.0, 0.5]
+        } else {
+            &[0.0]
+        };
+        for &reflectance in variants {
+            let t = material_generator::hq_technique(code, reflectance)?;
+            let mut sources = Vec::new();
+            for program in [&t.fragment, &t.vertex] {
+                let entry = entries
+                    .iter()
+                    .find(|e| &e.name == program)
+                    .ok_or_else(|| format!("{program} is not in shaders.json"))?;
+                if !entry.defines.iter().any(|d| d == "PIN_HQ") {
+                    return Err(format!("{program} is not a PIN_HQ program"));
+                }
+                sources.push(format!("{}[{}]", entry.source, entry.defines.join(" ")));
+            }
+            let textures: Vec<String> = t
+                .textures
+                .iter()
+                .map(|x| {
+                    format!(
+                        "{}:{}:f{}a{}",
+                        x.slot,
+                        x.asset.trim_start_matches("rbxasset://textures/"),
+                        x.sampler.filter,
+                        x.sampler.address
+                    )
+                })
+                .collect();
+            writeln!(
+                report,
+                "hq_technique material={name} reflection={} fragment={} vertex={} programs={sources:?} shading={:?} textures={textures:?}",
+                t.reflection, t.fragment, t.vertex, t.shading
+            )
+            .unwrap();
+        }
+    }
+    let workspace = Workspace::place("audit-material-render")?;
+    let scene = RenderScene::character(bundle)?;
+    let mut surfaces = surface::character(bundle, &scene)?;
+    let mut app = scene_app(scene);
+    let (draws, coordinates, _) = crate::geometry::workspace_draws(bundle, &workspace)?;
+    // Tangents: unit length and orthogonal to the normal on every Part.
+    let (mut worst_length, mut worst_dot, mut tangents) = (0.0f32, 0.0f32, 0usize);
+    for draw in &draws {
+        for v in &draw.vertices {
+            let t = v.tangent;
+            let length = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+            let dot = t[0] * v.normal[0] + t[1] * v.normal[1] + t[2] * v.normal[2];
+            worst_length = worst_length.max((length - 1.0).abs());
+            worst_dot = worst_dot.max(dot.abs());
+            tangents += 1;
+        }
+    }
+    writeln!(
+        report,
+        "hq_tangents vertices={tangents} max_length_error={worst_length:e} max_normal_dot={worst_dot:e}"
+    )
+    .unwrap();
+    if worst_length > 1e-5 || worst_dot > 1e-5 {
+        return Err(format!("tangents are not unit and orthogonal\n{report}"));
+    }
+    surfaces.coordinates.extend(coordinates);
+    for draw in draws {
+        app.world_mut().spawn(draw);
+    }
+    app.update();
+    let profile = crate::lighting::LightingProfile::load(bundle)?;
+    let sky = profile.sky(profile.properties.time_of_day);
+    let sky_textures = crate::sky::SkyTextures::load(bundle)?;
+    let mut inputs = RenderInputs::character_probe();
+    inputs.apply_lighting(&profile.render_lighting(&sky));
+    inputs.frame = CoordinateFrame {
+        position: [0.0, 58.0, 24.0],
+        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    };
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let extracted = app.world().resource::<Extracted>().0.clone();
+    let build = |quality: Option<u32>| -> Result<(Gpu, String), String> {
+        let materials =
+            material_generator::workspace_materials_quality(bundle, &workspace, quality)?;
+        let (mut gpu, _) = Gpu::new(&instance, None, wgpu::TextureFormat::Rgba8Unorm, &extracted)?;
+        gpu.add_studs(&extracted, &surfaces)?;
+        let lines = gpu.add_materials(
+            &extracted,
+            &surfaces,
+            &materials,
+            Some((&sky_textures, &sky)),
+        )?;
+        Ok((gpu, materials.report + &lines))
+    };
+    let (low, _) = build(None)?;
+    let (high, high_report) = build(Some(5))?;
+    report.extend(
+        high_report
+            .lines()
+            .filter(|l| {
+                l.starts_with("hq_")
+                    || l.starts_with("quality_level")
+                    || l.starts_with("material_gpu_pass")
+            })
+            .map(|l| format!("{l}\n")),
+    );
+    let (width, height) = (640u32, 480u32);
+    let lq = low.read_frame(width, height, &inputs)?;
+    let hq = high.read_frame(width, height, &inputs)?;
+    if high.read_frame(width, height, &inputs)? != hq {
+        return Err("high-quality repeat readback mismatch".into());
+    }
+    let count_hq = |gpu: &Gpu, inputs: &RenderInputs| {
+        let texture = gpu.texture(8, 8, gpu.format, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let depth = gpu.texture(
+            8,
+            8,
+            wgpu::TextureFormat::Depth32Float,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        let n = gpu.pass(
+            &mut encoder,
+            &texture.create_view(&Default::default()),
+            &depth.create_view(&Default::default()),
+            inputs.frame.position,
+        );
+        gpu.queue.submit([encoder.finish()]);
+        n
+    };
+    let near = count_hq(&high, &inputs);
+    let hq_capable = high
+        .materials
+        .as_ref()
+        .map_or(0, |m| m.draws.iter().filter(|d| d.hq.is_some()).count());
+    let mut failures = Vec::new();
+    let materials = material_generator::workspace_materials_quality(bundle, &workspace, Some(5))?;
+    let hq_scene = materials.hq.as_ref().ok_or("no high-quality scene")?;
+    for part in &workspace.parts {
+        let t = hq_scene
+            .techniques
+            .get(&part.name)
+            .ok_or("Part without a high-quality technique")?;
+        let mut hidden = extracted.clone();
+        for draw in hidden.iter_mut().filter(|d| d.name == part.name) {
+            for v in &mut draw.vertices {
+                v.position = [1e6; 3];
+            }
+        }
+        high.update_geometry(&hidden, &[], &surfaces)?;
+        let without = high.read_frame(width, height, &inputs)?;
+        let (mut pixels, mut changed, mut largest) = (0usize, 0usize, 0u8);
+        for ((h, w), l) in hq
+            .chunks_exact(4)
+            .zip(without.chunks_exact(4))
+            .zip(lq.chunks_exact(4))
+        {
+            if h != w {
+                pixels += 1;
+                if h != l {
+                    changed += 1;
+                    for c in 0..3 {
+                        largest = largest.max(h[c].abs_diff(l[c]));
+                    }
+                }
+            }
+        }
+        // DefaultSmoothPlasticHQFS differs from LQ only in the highlight:
+        // per pixel instead of per vertex. Predict the largest difference
+        // (in 8-bit steps, shadow factor taken as 1) over sample points of
+        // every lit, camera-facing triangle of the part.
+        let predicted = plastic_highlight_delta(
+            extracted.iter().filter(|d| d.name == part.name),
+            inputs.frame.position,
+            inputs.lamp_direction,
+            inputs.lamp0,
+        );
+        writeln!(
+            report,
+            "hq_render name={:?} fragment={} pixels={pixels} changed_vs_lq={changed} max_channel_delta={largest} predicted_highlight_delta={predicted:.3}",
+            part.name, t.fragment
+        )
+        .unwrap();
+        let ok = pixels > 200
+            && match t.shading {
+                HqShading::Neon => changed == 0,
+                // Below one 8-bit step the per-pixel highlight rounds to the
+                // LQ value; only a visible highlight is required to change.
+                HqShading::Plastic => changed > 0 || predicted < 1.0,
+                _ => changed * 2 > pixels,
+            };
+        if !ok {
+            failures.push(part.name.clone());
+        }
+    }
+    high.update_geometry(&extracted, &[], &surfaces)?;
+    if high.read_frame(width, height, &inputs)? != hq {
+        return Err("high-quality restore readback mismatch".into());
+    }
+    // Past the shading distance every node takes lod 2.
+    let mut far = inputs.clone();
+    far.frame.position = [0.0, 58.0, 84.0];
+    let far_hq = high.read_frame(width, height, &far)?;
+    let far_lq = low.read_frame(width, height, &far)?;
+    let far_count = count_hq(&high, &far);
+    writeln!(
+        report,
+        "hq_distance_selection hq_capable_draws={hq_capable} near_camera_z=24 near_hq_draws={near} far_camera_z=84 far_hq_draws={far_count} far_frame_identical_to_lq={}",
+        far_hq == far_lq
+    )
+    .unwrap();
+    if hq_capable == 0 || near != hq_capable || far_count != 0 || far_hq != far_lq {
+        return Err(format!("shading distance selection failed\n{report}"));
+    }
+    if !failures.is_empty() {
+        return Err(format!("high-quality render failed {failures:?}\n{report}"));
+    }
+    writeln!(
+        report,
+        "material_hq_render_pass parts={} quality_level=5 repeat_identical=true lq_rgba_sha256={:x} hq_rgba_sha256={:x} native_pixel_parity=not_tested",
+        workspace.parts.len(),
+        Sha256::digest(&lq),
+        Sha256::digest(&hq)
+    )
+    .unwrap();
+    Ok(report)
+}
+
 pub fn audit(bundle: &Bundle) -> Result<String, String> {
     let start = Instant::now();
     let scene = RenderScene::character(bundle)?;
@@ -2325,6 +2842,7 @@ fn gpu_contract_probe(instance: &wgpu::Instance) -> Result<String, String> {
                 uv: [0.0; 2],
                 color,
                 specular: [0.0, 1.0],
+                tangent: [0.0; 3],
             })
             .collect(),
         indices: vec![0, 1, 2],
@@ -3046,6 +3564,10 @@ struct Viewport {
     walking_sky: Option<crate::lighting::SkyParameters>,
     /// The demo place's material techniques (baseplate viewport only).
     materials: Option<crate::material_generator::MaterialScene>,
+    /// The `--quality-level` the materials use (None: low quality only),
+    /// and the last logged count of draws at high quality.
+    quality: Option<u32>,
+    high_quality_draws: Option<usize>,
     cursor: Option<[f64; 2]>,
     #[cfg(feature = "dev")]
     dev: Option<dev::DevPanel>,
@@ -3518,7 +4040,12 @@ impl ApplicationHandler for Viewport {
                     );
                     let mut encoder = gpu.device.create_command_encoder(&Default::default());
                     let view = frame.texture.create_view(&Default::default());
-                    gpu.pass(&mut encoder, &view, &depth.create_view(&Default::default()));
+                    let high_quality = gpu.pass(
+                        &mut encoder,
+                        &view,
+                        &depth.create_view(&Default::default()),
+                        self.inputs.frame.position,
+                    );
                     #[cfg(feature = "dev")]
                     dev::draw(self, &mut encoder, &view)?;
                     let (gpu, config) = (self.gpu.as_ref().unwrap(), self.config.as_ref().unwrap());
@@ -3557,6 +4084,14 @@ impl ApplicationHandler for Viewport {
                             self.log_event(report)?;
                         }
                     }
+                    if self.quality.is_some() && self.high_quality_draws != Some(high_quality) {
+                        self.high_quality_draws = Some(high_quality);
+                        let p = self.inputs.frame.position;
+                        self.log_event(format!(
+                            "material_quality_selection frame={} high_quality_draws={high_quality} camera=[{:.2}, {:.2}, {:.2}]",
+                            self.frames, p[0], p[1], p[2]
+                        ))?;
+                    }
                     if self.frame_limit.is_some_and(|limit| self.frames >= limit) {
                         if let Some(event) = final_readback {
                             self.log_event(event)?;
@@ -3584,7 +4119,19 @@ pub fn viewport(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, Str
 /// Play Solo in the Studio default place: the character spawns over the
 /// Baseplate and is driven like the walking fixture.
 pub fn viewport_baseplate(bundle: &Bundle, frame_limit: Option<u32>) -> Result<String, String> {
-    run_viewport(bundle, frame_limit, true, false, true, true)
+    viewport_baseplate_quality(bundle, frame_limit, None)
+}
+
+/// `viewport_baseplate` with the Part materials at a FrameRateManager
+/// quality level (0..22): Parts within that level's shading distance of
+/// the camera draw with their high-quality technique. None keeps every
+/// Part at low quality.
+pub fn viewport_baseplate_quality(
+    bundle: &Bundle,
+    frame_limit: Option<u32>,
+    quality: Option<u32>,
+) -> Result<String, String> {
+    run_viewport_quality(bundle, frame_limit, true, false, true, true, quality)
 }
 
 /// Automatic surface smoke with the same bounded free-fall trigger as Space.
@@ -3608,6 +4155,26 @@ fn run_viewport(
     animation: bool,
     walking: bool,
     baseplate: bool,
+) -> Result<String, String> {
+    run_viewport_quality(
+        bundle,
+        frame_limit,
+        auto_motion,
+        animation,
+        walking,
+        baseplate,
+        None,
+    )
+}
+
+fn run_viewport_quality(
+    bundle: &Bundle,
+    frame_limit: Option<u32>,
+    auto_motion: bool,
+    animation: bool,
+    walking: bool,
+    baseplate: bool,
+    quality: Option<u32>,
 ) -> Result<String, String> {
     if frame_limit.is_some_and(|n| n == 0 || n > 10000) {
         return Err("viewport frame limit must be 1..=10000".into());
@@ -3679,7 +4246,7 @@ fn run_viewport(
                 }
             }
         }
-        let scene = crate::material_generator::workspace_materials(bundle, &demo)?;
+        let scene = crate::material_generator::workspace_materials_quality(bundle, &demo, quality)?;
         report.push_str(&scene.report);
         materials = Some(scene);
         let decals = texture::workspace_decals(bundle, &local)?;
@@ -3808,6 +4375,8 @@ fn run_viewport(
         walking_camera,
         walking_sky,
         materials,
+        quality,
+        high_quality_draws: None,
         cursor: None,
         #[cfg(feature = "dev")]
         dev: None,

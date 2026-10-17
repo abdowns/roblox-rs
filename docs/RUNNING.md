@@ -90,6 +90,8 @@ roll down a ramp and knock into each other (`audit-part-ball`), and the
 character pushes a loose ball and is stopped by an anchored one
 (`audit-part-ball-push`). Balls are drawn as spheres (`audit-ball-render`). Decals and tiled Textures on blocks: `audit-decal-render`.
 Part materials (textures, Neon glow, reflection): `audit-material-render`.
+High-quality materials (normal/specular/detail maps, per-pixel lighting):
+`audit-material-hq-render`, and in the viewport with `--quality-level N`.
 CustomPhysicalProperties (density, elasticity, friction): `audit-part-custom-physics`.
 Wedge Parts land, tumble and carry blocks down their slope, and the
 character walks up them (`audit-part-wedge`). They are drawn by the native
@@ -108,6 +110,24 @@ Expect `workspace_draw name="Baseplate" quads=132 ... color=[0.3882353,
 0.37254903, 0.38431373, 1.0]`, `baseplate_render ... landed_torso=[..., 3.0,
 ...]` and `baseplate_render_pass`. The smoke test opens the window, presses W
 for 120 frames and exits after `viewport_final_readback_pass`.
+
+## High-quality materials
+
+```sh
+sh tools/cargo.sh run --locked -- viewport-baseplate --quality-level 21
+sh tools/cargo.sh run --locked -- viewport-baseplate-smoke --quality-level 21
+```
+
+`--quality-level N` (0..21, the native quality levels) turns on the
+high-quality material techniques for Parts closer than the level's shading
+distance (21: 300 studs, 5: 40, 1..4: none). Without it every Part draws at
+low quality as before. Expect `material_gpu_pass pipelines=8 ...
+quality_level=21 shading_distance=300 anisotropy=8` and, whenever the number
+of HQ draws changes, `material_quality_selection frame=1
+high_quality_draws=53 camera=[...]`. On screen (not tested by looking): the
+material wall shows bumpy normal maps, specular highlights and Plastic's
+surface noise; walking away past the shading distance switches Parts back
+to their flat LQ look.
 
 ## Developer panel (optional)
 

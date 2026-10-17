@@ -17,6 +17,38 @@ pub struct RenderVertex {
     pub uv: [f32; 2],
     pub color: [f32; 4],
     pub specular: [f32; 2],
+    /// The native vertex's tangent (offset 0x30 of the 0x4c-byte vertex):
+    /// the high-quality surface shaders build their tangent frame from it.
+    /// Zero where the native geometry writes zero (decals) or where it is
+    /// not recovered (character meshes).
+    pub tangent: [f32; 3],
+}
+
+/// addBlock's (010cca80) and the Wedge generator's (010dc290) per-face
+/// tangent: -R2, -R0, R0, R2, -R0, -R0 for the faces +X, +Y, +Z, -X, -Y, -Z
+/// (columns of the Part rotation, plain negation).
+fn face_tangents(r: &[[f32; 3]; 3]) -> [[f32; 3]; 6] {
+    let column = |c: usize| [r[0][c], r[1][c], r[2][c]];
+    let negate = |v: [f32; 3]| v.map(|x| -x);
+    [
+        negate(column(2)),
+        negate(column(0)),
+        column(0),
+        column(2),
+        negate(column(0)),
+        negate(column(0)),
+    ]
+}
+
+/// addSphere's (010caee0) tangent: the face axis a (R2, R0, -R0, -R2, R0,
+/// R0 for +X..-Z, the negation of the block table) made orthogonal to the
+/// vertex normal n and negated, normalize(n (n . a) - a). The sums follow
+/// the decompiler's order; the disassembly is not checked.
+fn sphere_tangent(n: [f32; 3], a: [f32; 3]) -> [f32; 3] {
+    let d = (n[2] * a[2] + a[1] * n[1]) + a[0] * n[0];
+    let t = [n[0] * d - a[0], n[1] * d - a[1], d * n[2] - a[2]];
+    let inverse = 1.0 / ((t[2] * t[2] + t[1] * t[1]) + t[0] * t[0]).sqrt();
+    [t[0] * inverse, t[1] * inverse, inverse * t[2]]
 }
 
 #[derive(Component, Clone, Debug)]
@@ -148,6 +180,7 @@ fn vertex(
         uv,
         color,
         specular: specular(material)?,
+        tangent: [0.0; 3],
     })
 }
 
@@ -207,8 +240,9 @@ fn block_frame(part: &PartInstance) -> ([[f32; 3]; 8], [[f32; 3]; 6]) {
 /// (side faces) or Z (Top/Bottom), stepping from the face's first edge. Stud
 /// coordinates (types 1-5) run u = width/2 -> 0 and v = row -> row + 0.25 per
 /// full strip; the last strip ends at row + clamp(rest/8, 0, 1) * 0.25.
-/// Tangents and outline edge distances are not produced (the low-quality
-/// shaders do not read them; outlines are disabled). Material UVs are zero;
+/// Tangents are the native per-face ones (`face_tangents`). Outline edge
+/// distances are not produced (outlines are disabled, so no shader reads
+/// them). Material UVs are zero;
 /// `workspace_block_material` writes them. Returns the draw and its stud
 /// coordinates.
 pub fn workspace_block(
@@ -254,6 +288,7 @@ pub fn workspace_block_material(
         return Err("block exceeds the native 0x2000 quad limit".into());
     }
     let (corners, normals) = block_frame(part);
+    let tangents = face_tangents(r);
     let column = |c: usize| [r[0][c], r[1][c], r[2][c]];
     let down = column(1).map(|x| -x);
     let back = column(2).map(|x| -x);
@@ -321,6 +356,7 @@ pub fn workspace_block_material(
                     uv: material.map_or([0.0; 2], |m| m.at(uv[0], uv[1])),
                     color,
                     specular,
+                    tangent: tangents[face],
                 });
                 studs.push(stud);
             }
@@ -423,6 +459,8 @@ pub fn workspace_decal(
             uv,
             color: [1.0, 1.0, 1.0, alpha],
             specular,
+            // addBlock's decal quad writes a zero tangent.
+            tangent: [0.0; 3],
         })
         .collect();
     Ok(Draw {
@@ -451,7 +489,7 @@ pub fn workspace_decal(
 ///   last one), so the studs follow the narrowing face.
 ///
 /// As for blocks, material UVs are zero here (`workspace_wedge_material`
-/// writes them) and tangents are not produced. The float association of the
+/// writes them); tangents use addBlock's table. The float association of the
 /// corner and normal sums follows `workspace_block`; it is not checked
 /// against this function's disassembly.
 pub fn workspace_wedge(
@@ -517,6 +555,7 @@ pub fn workspace_wedge_material(
         v.map(|x| inverse * x)
     };
     let k = size[2] / size[1];
+    let tangents = face_tangents(r);
     let (c0, c1, c2) = (column(0), column(1), column(2));
     let normals = [
         unit(c0.map(|x| 0.0 + x)),
@@ -589,6 +628,7 @@ pub fn workspace_wedge_material(
                         uv: material.map_or([0.0; 2], |m| m.at(uv[0], uv[1])),
                         color,
                         specular,
+                        tangent: tangents[face],
                     });
                     studs.push(stud);
                 }
@@ -728,8 +768,9 @@ fn sphere_side(part: &PartInstance, tiling: [f32; 2]) -> (f32, f32) {
 /// side / (2 tiles) down by side / (2 tiles rows) per vertex, v starts each
 /// strip at frac(strip * side / tiles) / 8 * 0.25 + row and grows by
 /// side * 0.25 / (8 tiles rows) per row (side = the clamped smallest size).
-/// Tangents and outline edge distances are not produced, and material UVs
-/// are zero (`workspace_sphere_material` writes them), as for blocks.
+/// Tangents follow addSphere (`sphere_tangent`); outline edge distances are
+/// not produced, and material UVs are zero (`workspace_sphere_material`
+/// writes them), as for blocks.
 /// Returns the draw and its stud coordinates.
 pub fn workspace_sphere(
     faces: &[[usize; 4]; 6],
@@ -805,6 +846,7 @@ pub fn workspace_sphere_material(
     let specular = specular(part.material)?;
     let r = &part.frame.rotation;
     let t = part.frame.position;
+    let axes = face_tangents(r).map(|v| v.map(|x| -x));
     for face in 0..6 {
         let mut start = corner(faces[face][0]);
         // The half steps are doubled once and added once per vertex or row.
@@ -842,12 +884,14 @@ pub fn workspace_sphere_material(
                     let w: [f32; 3] =
                         std::array::from_fn(|i| (r[i][0] * n[0] + r[i][1] * n[1]) + r[i][2] * n[2]);
                     let length = 1.0 / ((w[0] * w[0] + w[1] * w[1]) + w[2] * w[2]).sqrt();
+                    let normal = w.map(|v| v * length);
                     draw.vertices.push(RenderVertex {
                         position,
-                        normal: w.map(|v| v * length),
+                        normal,
                         uv: material.map_or([0.0; 2], |m| m.at(material_u, material_v)),
                         color,
                         specular,
+                        tangent: sphere_tangent(normal, axes[face]),
                     });
                     studs.push([u, v]);
                     d = std::array::from_fn(|i| d[i] + column_step[i]);
