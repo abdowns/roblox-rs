@@ -1,5 +1,40 @@
 # MODLOG
 
+## 2026-10-16 Workspace load and save (.rbxm)
+
+**Changed:**
+- `Workspace::to_model`, `from_model`, `save` and `load`. Parts become
+  `Part` or `WedgePart` instances and joints become `Weld`, `ManualWeld`,
+  `Snap`, `Glue`, `Rotate`, `RotateP`, `RotateV`, `Motor` or `Motor6D`,
+  each with exactly the properties the 0.255 reflection writes (BasePart
+  00999b11, FormFactorPart/Part 0070b4dc, JointInstance and its subclasses
+  0092aba0).
+- `PartInstance::form_factor` (FormFactorPart +0xb6, `formFactorRaw`,
+  default 1 Brick from the PartInstance ctor), so that a save and a load
+  give back the same Part.
+- Loading applies properties in name order, as the native reader does, so
+  `shape` comes before `size`. It refuses (with an error) what the port
+  cannot simulate: other classes, a starting Velocity or RotVelocity,
+  CustomPhysicalProperties, joints without both Parts, and ManualWeld
+  surfaces.
+
+**Why:** Step 2 of .rbxm support: the demo places can now live in files.
+
+**Tested how:** `sh tools/cargo.sh test --locked workspace`:
+- `the_demo_round_trips_through_a_binary_file`: `loose_parts_demo` →
+  binary → Workspace is equal field by field, and writing it again gives
+  the same bytes;
+- `part_properties_match_a_native_saved_part`: our Part's property names
+  and type bytes equal those of the Part in the native-written
+  `characterR15_2.rbxm`.
+
+**Not tested:**
+- The joint property sets are taken from the descriptor registrations;
+  no native file with joints is in the install.
+- The native load order is not modelled. The native reader creates
+  instances class by class and parents them in post-order; we keep the
+  file's pre-order.
+
 ## 2026-10-16 Binary .rbxm writer (SerializerBinary), full 0.255 type set
 
 **Changed:**

@@ -10,6 +10,7 @@
 //! - SpawnLocation.cpp 009f4706 with Model moveTo 009c1bc6, getLocation
 //!   009703f0, GetPrimaryCFrame 0096e468 and SetPrimaryPartCFrame 0096e582
 //!   (character placement).
+use crate::rbxm::{Model, ModelInstance, Property};
 use crate::{
     joints::{self, JointTree, TreePart},
     kernel_joint::SurfaceInput,
@@ -17,6 +18,7 @@ use crate::{
     scene::{CoordinateFrame, Part},
 };
 use std::fmt::Write;
+use std::path::Path;
 
 /// RBX::SurfaceType values stored at Primitive +0xd2+NormalId.
 pub const SURFACE_SMOOTH: u32 = 0;
@@ -69,6 +71,10 @@ pub struct PartInstance {
     /// Primitive +0xd8 by NormalId: each face's InputType, ParamA and
     /// ParamB (a motor hinge's axle reads its own).
     pub surface_inputs: [SurfaceInput; 6],
+    /// FormFactorPart +0xb6, saved as `formFactorRaw` (0 Symmetric, 1 Brick,
+    /// 2 Plate, 3 Custom). Only kept for saving: the size setter does not
+    /// snap to it.
+    pub form_factor: u32,
 }
 
 impl Default for PartInstance {
@@ -98,6 +104,9 @@ impl Default for PartInstance {
             elasticity: 0.5,
             surfaces,
             surface_inputs: [SurfaceInput::default(); 6],
+            // PartInstance ctor 009828ce: word +0xb6 = 0x101 (FormFactor
+            // Brick, shape Block).
+            form_factor: 1,
         }
     }
 }
@@ -732,6 +741,372 @@ pub fn character_placement(spawn: &CoordinateFrame, primary: &CoordinateFrame) -
     compose(&compose(&placed, &inverse(&moved)), &translation)
 }
 
+/// The JointInstance classes the port simulates, by Joint::JointType.
+const JOINT_CLASSES: [(&str, u32); 9] = [
+    ("Weld", joints::WELD),
+    ("ManualWeld", joints::MANUAL_WELD),
+    ("Snap", joints::SNAP),
+    ("Glue", joints::GLUE),
+    ("Rotate", joints::ROTATE),
+    ("RotateP", joints::ROTATE_P),
+    ("RotateV", joints::ROTATE_V),
+    ("Motor", joints::MOTOR),
+    ("Motor6D", joints::MOTOR_6D),
+];
+/// Surface property name stems by NormalId (`FACE_NAMES` without "Surface").
+const FACE_STEMS: [&str; 6] = ["Right", "Top", "Back", "Left", "Bottom", "Front"];
+/// JointInstance Surface0/Surface1 (0092aba0, functionality 0x0e) read the
+/// kernel joint's faces only for a ManualWeld (+0x98/+0x9c) or joint type 10
+/// (+0x10c/+0x110); every other joint, and a new ManualWeld (00921eec),
+/// gives -1 (NormalId Unknown).
+const NO_SURFACE: u32 = 0xffff_ffff;
+
+impl Workspace {
+    /// The instance tree a native save of these Parts and joints holds:
+    /// one `Part` or `WedgePart` root per Part in Workspace order, then one
+    /// root per joint in Workspace order. Each instance carries every
+    /// property the 0.255 reflection marks XML-writable (functionality bit 8,
+    /// see docs/RESEARCH.md): the 37 Part properties of BasePart 00999b11,
+    /// the surfaces 00a11460 and FormFactorPart/Part 0070b4dc (`shape` only on
+    /// Part), and for joints Name, Part0, Part1, C0, C1, Surface0 and
+    /// Surface1 (0092aba0), with F0..F3 on Glue, BaseAngle on RotateP and
+    /// RotateV, and DesiredAngle and MaxVelocity on Motor and Motor6D
+    /// (CurrentAngle is not written: functionality 0x15).
+    ///
+    /// Joints are roots, not children of their Part0, so that loading the
+    /// file gives back the same Part and joint order (the order is the
+    /// creation order the solver's tie-breaks use).
+    pub fn to_model(&self) -> Result<Model, String> {
+        let mut model = Model::default();
+        for part in &self.parts {
+            let class = match part.shape {
+                SHAPE_WEDGE => "WedgePart",
+                SHAPE_BALL | SHAPE_BLOCK | SHAPE_CYLINDER => "Part",
+                other => return Err(format!("Part {:?}: shape {other} has no class", part.name)),
+            };
+            let mut i = ModelInstance::new(class);
+            i.set("Name", Property::String(part.name.clone()))
+                .set("CFrame", Property::CFrame(part.frame.clone()))
+                .set("size", Property::Vector3(part.size))
+                .set("BrickColor", Property::BrickColor(part.brick_color))
+                .set("Material", Property::Token(part.material))
+                .set("Transparency", Property::Float(part.transparency))
+                .set("Reflectance", Property::Float(part.reflectance))
+                .set("Anchored", Property::Bool(part.anchored))
+                .set("Locked", Property::Bool(part.locked))
+                .set("CanCollide", Property::Bool(part.can_collide))
+                .set("Friction", Property::Float(part.friction))
+                .set("Elasticity", Property::Float(part.elasticity))
+                .set("Velocity", Property::Vector3([0.0; 3]))
+                .set("RotVelocity", Property::Vector3([0.0; 3]))
+                .set(
+                    "CustomPhysicalProperties",
+                    Property::PhysicalProperties(None),
+                )
+                .set("formFactorRaw", Property::Token(part.form_factor));
+            if class == "Part" {
+                i.set("shape", Property::Token(part.shape));
+            }
+            for (face, stem) in FACE_STEMS.iter().enumerate() {
+                let input = &part.surface_inputs[face];
+                i.set(
+                    &format!("{stem}Surface"),
+                    Property::Token(part.surfaces[face]),
+                )
+                .set(&format!("{stem}SurfaceInput"), Property::Token(input.input))
+                .set(&format!("{stem}ParamA"), Property::Float(input.param_a))
+                .set(&format!("{stem}ParamB"), Property::Float(input.param_b));
+            }
+            model.add(i, None);
+        }
+        for joint in &self.joints {
+            let class = JOINT_CLASSES
+                .iter()
+                .find(|(_, kind)| *kind == joint.kind)
+                .map(|(class, _)| *class)
+                .ok_or_else(|| {
+                    format!("joint {:?}: kind {} has no class", joint.name, joint.kind)
+                })?;
+            for part in [joint.part0, joint.part1] {
+                if part >= self.parts.len() {
+                    return Err(format!("joint {:?}: no Part {part}", joint.name));
+                }
+            }
+            let mut i = ModelInstance::new(class);
+            i.set("Name", Property::String(joint.name.clone()))
+                .set("Part0", Property::Ref(Some(joint.part0)))
+                .set("Part1", Property::Ref(Some(joint.part1)))
+                .set("C0", Property::CFrame(joint.c0.clone()))
+                .set("C1", Property::CFrame(joint.c1.clone()))
+                .set("Surface0", Property::Token(NO_SURFACE))
+                .set("Surface1", Property::Token(NO_SURFACE));
+            match joint.kind {
+                joints::GLUE => {
+                    for (k, corner) in joint.face.iter().enumerate() {
+                        i.set(&format!("F{k}"), Property::Vector3(*corner));
+                    }
+                }
+                joints::ROTATE_P | joints::ROTATE_V => {
+                    i.set("BaseAngle", Property::Float(joint.base_angle));
+                }
+                joints::MOTOR | joints::MOTOR_6D => {
+                    i.set("DesiredAngle", Property::Float(joint.desired_angle))
+                        .set("MaxVelocity", Property::Float(joint.max_velocity));
+                }
+                _ => {}
+            }
+            model.add(i, None);
+        }
+        Ok(model)
+    }
+    /// Builds a Workspace from a model or place tree. Every Part and
+    /// WedgePart becomes a Part (in pre-order) and every joint class above a
+    /// joint. Properties are applied in name order as the native reader
+    /// does (one PROP chunk at a time, alphabetically), so `shape` is set
+    /// before `size` and a Ball ends up with (x, x, x). Properties the
+    /// 0.255 classes do not have are skipped, as the native reader skips
+    /// them.
+    ///
+    /// Errors, rather than silently dropping behavior the port does not
+    /// simulate:
+    /// - any other class;
+    /// - a non-zero Velocity or RotVelocity, or custom physical properties;
+    /// - a joint whose Part0 or Part1 is not one of the Parts;
+    /// - a ManualWeld with surfaces set (the port has no surface joints).
+    pub fn from_model(model: &Model) -> Result<Self, String> {
+        let mut order = Vec::new();
+        let mut stack: Vec<usize> = model.roots.iter().rev().copied().collect();
+        while let Some(i) = stack.pop() {
+            order.push(i);
+            stack.extend(model.instances[i].children.iter().rev());
+        }
+        let mut workspace = Workspace::default();
+        let mut part_index = std::collections::BTreeMap::new();
+        for &index in &order {
+            let instance = &model.instances[index];
+            match instance.class.as_str() {
+                "Part" | "WedgePart" => {
+                    part_index.insert(index, workspace.parts.len());
+                    workspace.parts.push(part_from(instance)?);
+                }
+                class if JOINT_CLASSES.iter().any(|(c, _)| *c == class) => {}
+                other => {
+                    return Err(format!(
+                        "{other} {:?}: only Parts, WedgeParts and joints load",
+                        instance.name()
+                    ));
+                }
+            }
+        }
+        for &index in &order {
+            let instance = &model.instances[index];
+            let Some((_, kind)) = JOINT_CLASSES.iter().find(|(c, _)| *c == instance.class) else {
+                continue;
+            };
+            workspace
+                .joints
+                .push(joint_from(instance, *kind, &part_index)?);
+        }
+        Ok(workspace)
+    }
+    /// Reads a .rbxm/.rbxl/.rbxmx file (`from_model`).
+    pub fn load(path: &Path) -> Result<Self, String> {
+        Self::from_model(&Model::read_file(path)?).map_err(|e| format!("{}: {e}", path.display()))
+    }
+    /// Writes a binary .rbxm (`to_model`, `Model::to_binary`).
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        self.to_model()?.write_file(path)
+    }
+}
+
+fn expect<T>(
+    instance: &ModelInstance,
+    name: &str,
+    get: impl Fn(&Property) -> Option<T>,
+) -> Result<Option<T>, String> {
+    match instance.properties.get(name) {
+        None => Ok(None),
+        Some(value) => get(value).map(Some).ok_or_else(|| {
+            format!(
+                "{} {:?}: {name} has type {:#04x}",
+                instance.class,
+                instance.name(),
+                value.type_id()
+            )
+        }),
+    }
+}
+fn as_f32(p: &Property) -> Option<f32> {
+    match p {
+        Property::Float(v) => Some(*v),
+        _ => None,
+    }
+}
+fn as_bool(p: &Property) -> Option<bool> {
+    match p {
+        Property::Bool(v) => Some(*v),
+        _ => None,
+    }
+}
+/// An enum (or, from XML, an int).
+fn as_token(p: &Property) -> Option<u32> {
+    match p {
+        Property::Token(v) => Some(*v),
+        Property::Int(v) => u32::try_from(*v).ok(),
+        _ => None,
+    }
+}
+fn as_vector3(p: &Property) -> Option<[f32; 3]> {
+    match p {
+        Property::Vector3(v) => Some(*v),
+        _ => None,
+    }
+}
+fn as_cframe(p: &Property) -> Option<CoordinateFrame> {
+    match p {
+        Property::CFrame(v) => Some(v.clone()),
+        _ => None,
+    }
+}
+
+fn part_from(instance: &ModelInstance) -> Result<PartInstance, String> {
+    let mut part = PartInstance::default();
+    if instance.class == "WedgePart" {
+        part.name = "Wedge".into();
+        part.set_shape(SHAPE_WEDGE);
+    }
+    let unsupported = |what: &str| format!("Part {:?}: {what} is not ported", instance.name());
+    // BTreeMap order is the native PROP order (Name sortIndex).
+    for (name, value) in &instance.properties {
+        let v = Some(value);
+        let f32_of = |p| expect(instance, name, as_f32).map(|o| o.unwrap_or(p));
+        match name.as_str() {
+            "Name" => match value {
+                Property::String(s) => part.name = s.clone(),
+                _ => return Err(format!("Part Name has type {:#04x}", value.type_id())),
+            },
+            "CFrame" => part.frame = expect(instance, name, as_cframe)?.unwrap(),
+            "size" => part.set_size(expect(instance, name, as_vector3)?.unwrap()),
+            "shape" if instance.class == "Part" => {
+                part.set_shape(expect(instance, name, as_token)?.unwrap())
+            }
+            "formFactorRaw" => part.form_factor = expect(instance, name, as_token)?.unwrap(),
+            "BrickColor" => {
+                part.brick_color = match value {
+                    Property::BrickColor(c) => *c,
+                    other => as_token(other)
+                        .ok_or_else(|| format!("BrickColor has type {:#04x}", other.type_id()))?,
+                }
+            }
+            "Material" => part.material = expect(instance, name, as_token)?.unwrap(),
+            "Transparency" => part.transparency = f32_of(0.0)?,
+            "Reflectance" => part.reflectance = f32_of(0.0)?,
+            "Friction" => part.friction = f32_of(0.0)?,
+            "Elasticity" => part.elasticity = f32_of(0.0)?,
+            "Anchored" => part.anchored = expect(instance, name, as_bool)?.unwrap(),
+            "Locked" => part.locked = expect(instance, name, as_bool)?.unwrap(),
+            "CanCollide" => part.can_collide = expect(instance, name, as_bool)?.unwrap(),
+            "Velocity" | "RotVelocity" => {
+                if expect(instance, name, as_vector3)?.unwrap() != [0.0; 3] {
+                    return Err(unsupported(&format!("a starting {name}")));
+                }
+            }
+            "CustomPhysicalProperties" => {
+                if !matches!(v, Some(Property::PhysicalProperties(None))) {
+                    return Err(unsupported("CustomPhysicalProperties"));
+                }
+            }
+            _ => {
+                let face = FACE_STEMS
+                    .iter()
+                    .position(|stem| name.starts_with(stem) && name.len() > stem.len());
+                let Some(face) = face else { continue };
+                match &name[FACE_STEMS[face].len()..] {
+                    "Surface" => part.surfaces[face] = expect(instance, name, as_token)?.unwrap(),
+                    "SurfaceInput" => {
+                        part.surface_inputs[face].input = expect(instance, name, as_token)?.unwrap()
+                    }
+                    "ParamA" => part.surface_inputs[face].param_a = f32_of(0.0)?,
+                    "ParamB" => part.surface_inputs[face].param_b = f32_of(0.0)?,
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(part)
+}
+
+fn joint_from(
+    instance: &ModelInstance,
+    kind: u32,
+    part_index: &std::collections::BTreeMap<usize, usize>,
+) -> Result<JointInstance, String> {
+    let identity = CoordinateFrame {
+        position: [0.0; 3],
+        rotation: IDENTITY,
+    };
+    let part = |name: &str| -> Result<usize, String> {
+        match instance.reference(name) {
+            Some(Some(i)) => part_index.get(&i).copied().ok_or_else(|| {
+                format!(
+                    "{} {:?}: {name} is not a Part",
+                    instance.class,
+                    instance.name()
+                )
+            }),
+            _ => Err(format!(
+                "{} {:?}: {name} is not set (a joint without both Parts is not ported)",
+                instance.class,
+                instance.name()
+            )),
+        }
+    };
+    let float = |name: &str| expect(instance, name, as_f32).map(|v| v.unwrap_or(0.0));
+    let mut joint = JointInstance {
+        name: match instance.properties.get("Name") {
+            Some(Property::String(s)) => s.clone(),
+            _ => instance.class.clone(),
+        },
+        kind,
+        part0: part("Part0")?,
+        part1: part("Part1")?,
+        c0: expect(instance, "C0", as_cframe)?.unwrap_or(identity.clone()),
+        c1: expect(instance, "C1", as_cframe)?.unwrap_or(identity),
+        face: [[0.0; 3]; 4],
+        base_angle: 0.0,
+        current_angle: 0.0,
+        desired_angle: 0.0,
+        max_velocity: 0.0,
+    };
+    if kind == joints::MANUAL_WELD {
+        for name in ["Surface0", "Surface1"] {
+            if expect(instance, name, as_token)?.is_some_and(|s| s != NO_SURFACE) {
+                return Err(format!(
+                    "ManualWeld {:?}: {name} is set (surface joints are not ported)",
+                    joint.name
+                ));
+            }
+        }
+    }
+    match kind {
+        joints::GLUE => {
+            for k in 0..4 {
+                joint.face[k] = expect(instance, &format!("F{k}"), as_vector3)?.unwrap_or([0.0; 3]);
+            }
+        }
+        joints::ROTATE_P | joints::ROTATE_V => joint.base_angle = float("BaseAngle")?,
+        joints::MOTOR | joints::MOTOR_6D => {
+            joint.desired_angle = float("DesiredAngle")?;
+            joint.max_velocity = float("MaxVelocity")?;
+            // CurrentAngle is read if present (functionality 0x15 reads XML)
+            // but never written.
+            joint.current_angle = float("CurrentAngle")?;
+        }
+        _ => {}
+    }
+    Ok(joint)
+}
+
 /// Native-numbers report for the Studio default world.
 pub fn audit() -> Result<String, String> {
     let mut report = String::new();
@@ -753,6 +1128,60 @@ pub fn audit() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn assert_same(a: &Workspace, b: &Workspace) {
+        assert_eq!(a.parts.len(), b.parts.len());
+        for (x, y) in a.parts.iter().zip(&b.parts) {
+            assert_eq!(x, y);
+        }
+        assert_eq!(a.joints, b.joints);
+    }
+    #[test]
+    fn the_demo_round_trips_through_a_binary_file() {
+        let demo = Workspace::loose_parts_demo();
+        let bytes = demo.to_model().unwrap().to_binary().unwrap();
+        let back = Workspace::from_model(&Model::parse(&bytes).unwrap()).unwrap();
+        assert_same(&demo, &back);
+        // Written again, the bytes are the same.
+        assert_eq!(back.to_model().unwrap().to_binary().unwrap(), bytes);
+    }
+    #[test]
+    fn a_part_has_the_native_property_set() {
+        let model = Workspace::studio_new_document().to_model().unwrap();
+        let names: Vec<&str> = model.instances[0]
+            .properties
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        // characterR15_2.rbxm (native-written) lists these for Part.
+        assert_eq!(
+            names.join(" "),
+            "Anchored BackParamA BackParamB BackSurface BackSurfaceInput BottomParamA \
+             BottomParamB BottomSurface BottomSurfaceInput BrickColor CFrame CanCollide \
+             CustomPhysicalProperties Elasticity Friction FrontParamA FrontParamB \
+             FrontSurface FrontSurfaceInput LeftParamA LeftParamB LeftSurface \
+             LeftSurfaceInput Locked Material Name Reflectance RightParamA RightParamB \
+             RightSurface RightSurfaceInput RotVelocity TopParamA TopParamB TopSurface \
+             TopSurfaceInput Transparency Velocity formFactorRaw shape size"
+        );
+    }
+    #[test]
+    fn part_properties_match_a_native_saved_part() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("RobloxStudio/Contents/Resources/content/fonts/characterR15_2.rbxm");
+        let Ok(native) = Model::read_file(&path) else {
+            eprintln!("skipped: characterR15_2.rbxm not installed");
+            return;
+        };
+        let native = native.instances.iter().find(|i| i.class == "Part").unwrap();
+        let ours = Workspace::studio_new_document().to_model().unwrap();
+        let types = |i: &ModelInstance| -> Vec<(String, u8)> {
+            i.properties
+                .iter()
+                .map(|(k, v)| (k.clone(), v.type_id()))
+                .collect()
+        };
+        assert_eq!(types(&ours.instances[0]), types(native));
+    }
     #[test]
     fn baseplate_matches_native_new_document() {
         let w = Workspace::studio_new_document();

@@ -15,6 +15,14 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   own reader (`sh tools/cargo.sh test --locked rbxm`) but are **not tested**
   against native output. Writing XML is not implemented.
 
+- Workspace files: `Workspace::save` and `Workspace::load` write and read
+  Parts, WedgeParts and the joints the port simulates with the native
+  property sets. Run `sh tools/cargo.sh test --locked workspace`; expect
+  `the_demo_round_trips_through_a_binary_file` and
+  `part_properties_match_a_native_saved_part` to pass. The joint property
+  sets are **not tested** against a native file. Loading refuses other
+  classes and the Part properties the simulation does not use yet.
+
 - Studio default world data: Part defaults, the new-document Baseplate and the
   Play Solo spawn point, recovered from the binary. Run
   `sh tools/cargo.sh run --locked -- audit-workspace`; expect

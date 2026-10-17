@@ -869,6 +869,12 @@ writer emits every property whose descriptor has the XML-write bit (+0x24 bit
 0x10, from functionality bit 8 in the descriptor constructor 00562476); the
 loaders have to fill in all of them.
 
+`Workspace::to_model` and `from_model` are that loader for the classes
+the port simulates (Part, WedgePart and the joints). They write every
+XML-writable property and read in name order. A save puts the Parts first,
+then the joints, all at the top level, so a load gives back the same
+creation order.
+
 ## Studio default world (Workspace, Baseplate, Play Solo spawn)
 
 workspace.rs holds the Workspace contents as plain `PartInstance` values with
