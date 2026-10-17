@@ -551,6 +551,17 @@ impl Workspace {
         }
         Ok(workspace)
     }
+    /// The place `places/<name>.rbxm` (`load`).
+    pub fn place(name: &str) -> Result<Self, String> {
+        Self::load(&place_path(&format!("{name}.rbxm")))
+    }
+    /// The index of the first Part called `name`.
+    pub fn part_index(&self, name: &str) -> Result<usize, String> {
+        self.parts
+            .iter()
+            .position(|p| p.name == name)
+            .ok_or_else(|| format!("no Part {name:?} in the workspace"))
+    }
     /// Reads a .rbxm/.rbxl/.rbxmx file (`from_model`).
     pub fn load(path: &Path) -> Result<Self, String> {
         Self::from_model(&Model::read_file(path)?).map_err(|e| format!("{}: {e}", path.display()))

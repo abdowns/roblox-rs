@@ -1138,7 +1138,7 @@ fn draw_bytes_with_studs(
 /// is moved away; a round silhouette fills about pi/4 of its bounding box, a
 /// block's nearly all of it.
 pub fn audit_ball_render(bundle: &Bundle) -> Result<String, String> {
-    use crate::workspace::{PartInstance, SHAPE_BALL, Workspace};
+    use crate::workspace::Workspace;
     let mut report = crate::geometry::sphere_mesh_report(bundle)?;
     let scene = RenderScene::character(bundle)?;
     let mut surfaces = surface::character(bundle, &scene)?;
@@ -1147,23 +1147,9 @@ pub fn audit_ball_render(bundle: &Bundle) -> Result<String, String> {
     for decal in character_decals.draws {
         app.world_mut().spawn(decal);
     }
-    let mut ball = PartInstance {
-        name: "Ball".into(),
-        ..Default::default()
-    };
-    ball.set_shape(SHAPE_BALL);
-    ball.set_size([4.0; 3]);
-    ball.frame.position = [-4.0, 60.0, 0.0];
-    let mut cube = PartInstance {
-        name: "Cube".into(),
-        ..Default::default()
-    };
-    cube.set_size([4.0; 3]);
-    cube.frame.position = [4.0, 60.0, 0.0];
-    let workspace = Workspace {
-        parts: vec![ball, cube],
-        joints: Vec::new(),
-    };
+    // Two 4-stud Parts and no Baseplate: "Ball" (a Ball) at (-4, 60, 0) and
+    // "Cube" at (4, 60, 0).
+    let workspace = Workspace::place("audit-ball-render")?;
     let (draws, coordinates, draw_report) = crate::geometry::workspace_draws(bundle, &workspace)?;
     report.push_str(&draw_report);
     surfaces.coordinates.extend(coordinates);

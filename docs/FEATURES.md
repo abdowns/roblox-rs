@@ -29,6 +29,9 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   file as text. Run `sh tools/cargo.sh test --locked
   the_demo_place_round_trips`; expect it to pass (loading and saving gives
   the same bytes).
+- The audit places are files too: the 15 Part audits read
+  `places/audit-*.rbxm`. Their outputs are byte-identical to the code-built
+  versions (see MODLOG 2026-10-16).
 
 - Studio default world data: Part defaults, the new-document Baseplate and the
   Play Solo spawn point, recovered from the binary. Run

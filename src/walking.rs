@@ -758,17 +758,10 @@ pub fn audit_part_wall(bundle: &Bundle) -> Result<String, String> {
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    // Explicit test Part: its +Z face is the plane z = -10, across the
-    // walking path (the character faces and walks -Z).
-    let mut wall = crate::workspace::PartInstance {
-        name: "Wall".into(),
-        anchored: true,
-        ..Default::default()
-    };
-    wall.set_size([20.0, 10.0, 2.0]);
-    wall.frame.position = [0.0, 5.0, -11.0];
-    workspace.parts.push(wall);
+    // The Baseplate and an anchored 20 x 10 x 2 "Wall" at (0, 5, -11): its +Z
+    // face is the plane z = -10, across the walking path (the character
+    // faces and walks -Z).
+    let workspace = Workspace::place("audit-part-wall")?;
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
     let mut report = String::new();
     for _ in 0..720u32 {
@@ -841,27 +834,10 @@ pub fn audit_part_drop(bundle: &Bundle) -> Result<String, String> {
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    let part = |name: &str, position: [f32; 3]| {
-        let mut p = crate::workspace::PartInstance {
-            name: name.into(),
-            ..Default::default()
-        };
-        p.frame.position = position;
-        p
-    };
-    let rest = part("Rest", [-20.0, 0.65, -20.0]);
-    let stack = part("Stack", [-19.5, 1.9, -19.8]);
-    let drop = part("Drop", [20.0, 8.0, 0.0]);
-    let mut tumble = part("Tumble", [-12.0, 10.0, 12.0]);
-    // 30 degrees about Z, then 20 degrees about X.
-    let (sz, cz) = 30f32.to_radians().sin_cos();
-    let (sx, cx) = 20f32.to_radians().sin_cos();
-    let rz = [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]];
-    let rx = [[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]];
-    tumble.frame.rotation =
-        std::array::from_fn(|r| std::array::from_fn(|c| (0..3).map(|k| rz[r][k] * rx[k][c]).sum()));
-    workspace.parts.extend([rest, stack, drop, tumble]);
+    // The Baseplate, then four default 4 x 1.2 x 2 Parts: "Rest" at
+    // (-20, 0.65, -20), "Stack" at (-19.5, 1.9, -19.8), "Drop" at (20, 8, 0)
+    // and "Tumble" at (-12, 10, 12), turned 30 degrees about Z then 20 about X.
+    let workspace = Workspace::place("audit-part-drop")?;
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
     let mut report = String::new();
     let count = fixture.world.loose.parts.len();
@@ -951,104 +927,22 @@ pub fn audit_part_drop(bundle: &Bundle) -> Result<String, String> {
 ///   dropped so the child Part lands first and the plank tips onto its
 ///   other end.
 pub fn audit_part_weld(bundle: &Bundle) -> Result<String, String> {
-    use crate::joints::WELD;
-    use crate::workspace::{JointInstance, PartInstance};
     let bytes = bundle.read(
         "Contents/Resources/content/fonts/character3.rbxm",
         16 * 1024 * 1024,
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    let at = |position: [f32; 3]| CoordinateFrame {
-        position,
-        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-    };
-    fn add(
-        workspace: &mut Workspace,
-        name: &str,
-        size: [f32; 3],
-        frame: CoordinateFrame,
-        anchored: bool,
-    ) -> usize {
-        let mut part = PartInstance {
-            name: name.into(),
-            anchored,
-            frame,
-            ..Default::default()
-        };
-        part.set_size(size);
-        workspace.parts.push(part);
-        workspace.parts.len() - 1
-    }
-    let weld = |workspace: &mut Workspace, part0: usize, part1: usize, c0: [f32; 3]| {
-        workspace.joints.push(JointInstance {
-            name: "Weld".into(),
-            kind: WELD,
-            part0,
-            part1,
-            c0: at(c0),
-            c1: at([0.0; 3]),
-            face: [[0.0; 3]; 4],
-            base_angle: 0.0,
-            current_angle: 0.0,
-            desired_angle: 0.0,
-            max_velocity: 0.0,
-        });
-    };
-    let base = add(
-        &mut workspace,
-        "Base",
-        [4.0, 1.2, 2.0],
-        at([20.0, 2.0, 0.0]),
-        false,
-    );
-    let arm = add(
-        &mut workspace,
-        "Arm",
-        [1.0, 4.0, 1.0],
-        at([50.0, 50.0, 50.0]),
-        false,
-    );
-    weld(&mut workspace, base, arm, [1.5, 2.6, 0.0]);
-    let holder = add(
-        &mut workspace,
-        "Holder",
-        [2.0, 2.0, 2.0],
-        at([-20.0, 10.0, 0.0]),
-        true,
-    );
-    let hung = add(
-        &mut workspace,
-        "Hung",
-        [2.0, 2.0, 2.0],
-        at([-20.0, 7.5, 0.0]),
-        false,
-    );
-    let chain = add(
-        &mut workspace,
-        "Chain",
-        [2.0, 2.0, 2.0],
-        at([0.0; 3]),
-        false,
-    );
-    weld(&mut workspace, holder, hung, [0.0, -2.0, 0.0]);
-    weld(&mut workspace, hung, chain, [0.0, -2.0, 0.0]);
-    // 15 degrees about Z: the -x end (the Weight) is lowest.
-    let (sz, cz) = 15f32.to_radians().sin_cos();
-    let tilted = CoordinateFrame {
-        position: [0.0, 10.0, 20.0],
-        rotation: [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]],
-    };
-    let plank = add(&mut workspace, "Plank", [6.0, 1.0, 2.0], tilted, false);
-    let weight = add(
-        &mut workspace,
-        "Weight",
-        [2.0, 2.0, 2.0],
-        at([0.0; 3]),
-        false,
-    );
-    weld(&mut workspace, plank, weight, [-2.0, -1.5, 0.0]);
+    // The Baseplate, then (identity rotations unless noted, joints Welds
+    // with C1 at the identity):
+    // - "Base" 4 x 1.2 x 2 at (20, 2, 0) and "Arm" 1 x 4 x 1 at (50, 50, 50),
+    //   welded with C0 at (1.5, 2.6, 0);
+    // - anchored "Holder" 2 x 2 x 2 at (-20, 10, 0), "Hung" (2 x 2 x 2) at
+    //   (-20, 7.5, 0) and "Chain" (2 x 2 x 2) at the origin, Holder-Hung and
+    //   Hung-Chain welded with C0 at (0, -2, 0);
+    // - "Plank" 6 x 1 x 2 at (0, 10, 20) turned 15 degrees about Z, and
+    //   "Weight" 2 x 2 x 2 at the origin, welded with C0 at (-2, -1.5, 0).
+    let workspace = Workspace::place("audit-part-weld")?;
     let names: Vec<&str> = workspace.parts.iter().map(|p| p.name.as_str()).collect();
     let tree = workspace.joint_tree()?;
     let mut report = tree.describe(&names);
@@ -1203,7 +1097,6 @@ pub fn audit_part_weld(bundle: &Bundle) -> Result<String, String> {
     if !failed.is_empty() {
         return Err(format!("part weld failed {failed:?}\n{report}"));
     }
-    let _ = (weight, chain, arm);
     writeln!(report, "part_weld_pass assemblies=2 snapped=true landed=true grounded_static=2 rested=true asleep=true native_differential=not_tested").unwrap();
     Ok(report)
 }
@@ -1218,132 +1111,25 @@ pub fn audit_part_weld(bundle: &Bundle) -> Result<String, String> {
 ///   its weight is over the face's break force, so breakJoints removes the
 ///   Glue and it drops.
 pub fn audit_part_glue(bundle: &Bundle) -> Result<String, String> {
-    use crate::joints::GLUE;
     use crate::loose::JointEdge;
-    use crate::workspace::{JointInstance, PartInstance};
     let bytes = bundle.read(
         "Contents/Resources/content/fonts/character3.rbxm",
         16 * 1024 * 1024,
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    let at = |position: [f32; 3]| CoordinateFrame {
-        position,
-        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-    };
-    let add = |workspace: &mut Workspace, name: &str, size: [f32; 3], position, anchored| {
-        let mut part = PartInstance {
-            name: name.into(),
-            anchored,
-            frame: at(position),
-            ..Default::default()
-        };
-        part.set_size(size);
-        workspace.parts.push(part);
-        workspace.parts.len() - 1
-    };
-    // C0 and C1 put the face's z axis along the Part0 face normal.
-    let glue = |workspace: &mut Workspace,
-                part0: usize,
-                part1: usize,
-                c0: [f32; 3],
-                c1: [f32; 3],
-                rotation: [[f32; 3]; 3],
-                half: [f32; 2]| {
-        let [a, b] = half;
-        workspace.joints.push(JointInstance {
-            name: format!("Glue{}", workspace.joints.len()),
-            kind: GLUE,
-            part0,
-            part1,
-            c0: CoordinateFrame {
-                position: c0,
-                rotation,
-            },
-            c1: CoordinateFrame {
-                position: c1,
-                rotation,
-            },
-            face: [[-a, -b, 0.0], [a, -b, 0.0], [a, b, 0.0], [-a, b, 0.0]],
-            base_angle: 0.0,
-            current_angle: 0.0,
-            desired_angle: 0.0,
-            max_velocity: 0.0,
-        });
-    };
-    // z along -Y (columns x, z, -y), and z along +X (columns -z, y, x).
-    let down = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
-    let side = [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]];
-    let holder = add(
-        &mut workspace,
-        "Holder",
-        [4.0, 1.0, 2.0],
-        [-20.0, 10.0, 0.0],
-        true,
-    );
-    let hung = add(
-        &mut workspace,
-        "Hung",
-        [4.0, 1.0, 2.0],
-        [-20.0, 9.0, 0.0],
-        false,
-    );
-    glue(
-        &mut workspace,
-        holder,
-        hung,
-        [0.0, -0.5, 0.0],
-        [0.0, 0.5, 0.0],
-        down,
-        [2.0, 1.0],
-    );
-    let left = add(
-        &mut workspace,
-        "Left",
-        [2.0, 1.0, 2.0],
-        [10.0, 2.0, 0.0],
-        false,
-    );
-    let right = add(
-        &mut workspace,
-        "Right",
-        [2.0, 1.0, 2.0],
-        [12.0, 2.0, 0.0],
-        false,
-    );
-    glue(
-        &mut workspace,
-        left,
-        right,
-        [1.0, 0.0, 0.0],
-        [-1.0, 0.0, 0.0],
-        side,
-        [1.0, 0.5],
-    );
-    let beam = add(
-        &mut workspace,
-        "Beam",
-        [2.0, 1.0, 2.0],
-        [30.0, 15.5, 0.0],
-        true,
-    );
-    let heavy = add(
-        &mut workspace,
-        "Heavy",
-        [14.0, 14.0, 14.0],
-        [30.0, 8.0, 0.0],
-        false,
-    );
-    glue(
-        &mut workspace,
-        beam,
-        heavy,
-        [0.0, -0.5, 0.0],
-        [0.0, 7.0, 0.0],
-        down,
-        [0.5, 0.5],
-    );
+    // The Baseplate, then Parts at identity rotations and Glues whose C0 and
+    // C1 put the face's z axis along the Part0 face normal (F0..F3 the face
+    // corners (-a, -b), (a, -b), (a, b), (-a, b)):
+    // - anchored "Holder" 4 x 1 x 2 at (-20, 10, 0) and "Hung" 4 x 1 x 2 at
+    //   (-20, 9, 0); Glue0 C0 (0, -0.5, 0), C1 (0, 0.5, 0), z along -Y, half
+    //   face (2, 1);
+    // - "Left" 2 x 1 x 2 at (10, 2, 0) and "Right" at (12, 2, 0); Glue1 C0
+    //   (1, 0, 0), C1 (-1, 0, 0), z along +X, half face (1, 0.5);
+    // - anchored "Beam" 2 x 1 x 2 at (30, 15.5, 0) and "Heavy" 14 x 14 x 14 at
+    //   (30, 8, 0); Glue2 C0 (0, -0.5, 0), C1 (0, 7, 0), z along -Y, half face
+    //   (0.5, 0.5).
+    let workspace = Workspace::place("audit-part-glue")?;
     let names: Vec<&str> = workspace.parts.iter().map(|p| p.name.as_str()).collect();
     let mut report = workspace.joint_tree()?.describe(&names);
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
@@ -1484,7 +1270,6 @@ pub fn audit_part_glue(bundle: &Bundle) -> Result<String, String> {
     if !failed.is_empty() {
         return Err(format!("part glue failed {failed:?}\n{report}"));
     }
-    let _ = (right, heavy);
     writeln!(
         report,
         "part_glue_pass hung=held pair=kept heavy=broke asleep=true native_differential=not_tested"
@@ -1509,124 +1294,24 @@ pub fn audit_part_glue(bundle: &Bundle) -> Result<String, String> {
 ///   (BallBall against a static ball), half a stud off its top, and rolls
 ///   off it onto the Baseplate.
 pub fn audit_part_ball(bundle: &Bundle) -> Result<String, String> {
-    use crate::workspace::{PartInstance, SHAPE_BALL};
     let bytes = bundle.read(
         "Contents/Resources/content/fonts/character3.rbxm",
         16 * 1024 * 1024,
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let add = |workspace: &mut Workspace,
-               name: &str,
-               ball: bool,
-               size: [f32; 3],
-               frame: CoordinateFrame,
-               anchored: bool| {
-        let mut part = PartInstance {
-            name: name.into(),
-            anchored,
-            frame,
-            ..Default::default()
-        };
-        if ball {
-            part.set_shape(SHAPE_BALL);
-        }
-        part.set_size(size);
-        workspace.parts.push(part);
-    };
-    let at = |position: [f32; 3]| CoordinateFrame {
-        position,
-        rotation: IDENTITY,
-    };
-    // The ramp's low bottom edge rests on the Baseplate top (y = 0).
+    // The Baseplate, then (identity rotations unless noted; Balls marked *):
+    // - *"Drop" 2 at (30, 8, -30);
+    // - anchored "Ramp" 20 x 1 x 10, tilted 10 degrees about Z, its low bottom
+    //   edge on the Baseplate top: center (0, 10 sin 10 + 0.5 cos 10, 45);
+    // - anchored "Stop" 1 x 6 x 10 at (-18, 3, 45);
+    // - *"Roll" 2 at the Ramp's local point (8, 1.55, 0);
+    // - "Crate" 4 x 1.2 x 2 at (-30, 0.6, -30) and *"Rider" 2 at (-30, 4.2, -30);
+    // - *"Bottom" 3 at (25, 1.5, 20) and *"Top" 2 at (25.5, 6, 20);
+    // - anchored *"Dome" 6 at (-25, 3, 15) and *"Pebble" 1 at (-24.5, 8, 15).
+    let workspace = Workspace::place("audit-part-ball")?;
+    // The Ramp's tilt.
     let (s, c) = 10f32.to_radians().sin_cos();
-    let ramp = CoordinateFrame {
-        position: [0.0, 10.0 * s + 0.5 * c, 45.0],
-        rotation: [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]],
-    };
-    let roll_start = ramp.transform_point([8.0, 0.5 + 1.0 + 0.05, 0.0]);
-    add(
-        &mut workspace,
-        "Drop",
-        true,
-        [2.0; 3],
-        at([30.0, 8.0, -30.0]),
-        false,
-    );
-    add(
-        &mut workspace,
-        "Ramp",
-        false,
-        [20.0, 1.0, 10.0],
-        ramp.clone(),
-        true,
-    );
-    add(
-        &mut workspace,
-        "Stop",
-        false,
-        [1.0, 6.0, 10.0],
-        at([-18.0, 3.0, 45.0]),
-        true,
-    );
-    add(
-        &mut workspace,
-        "Roll",
-        true,
-        [2.0; 3],
-        at(roll_start),
-        false,
-    );
-    add(
-        &mut workspace,
-        "Crate",
-        false,
-        [4.0, 1.2, 2.0],
-        at([-30.0, 0.6, -30.0]),
-        false,
-    );
-    add(
-        &mut workspace,
-        "Rider",
-        true,
-        [2.0; 3],
-        at([-30.0, 4.2, -30.0]),
-        false,
-    );
-    add(
-        &mut workspace,
-        "Bottom",
-        true,
-        [3.0; 3],
-        at([25.0, 1.5, 20.0]),
-        false,
-    );
-    add(
-        &mut workspace,
-        "Top",
-        true,
-        [2.0; 3],
-        at([25.5, 6.0, 20.0]),
-        false,
-    );
-    add(
-        &mut workspace,
-        "Dome",
-        true,
-        [6.0; 3],
-        at([-25.0, 3.0, 15.0]),
-        true,
-    );
-    add(
-        &mut workspace,
-        "Pebble",
-        true,
-        [1.0; 3],
-        at([-24.5, 8.0, 15.0]),
-        false,
-    );
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
     let index = |name: &str| {
         fixture
@@ -1791,105 +1476,26 @@ pub fn audit_part_ball(bundle: &Bundle) -> Result<String, String> {
 ///
 /// Each loose Part's lowest vertex should end on the Baseplate top (y 0).
 pub fn audit_part_wedge(bundle: &Bundle) -> Result<String, String> {
-    use crate::workspace::{PartInstance, SHAPE_WEDGE};
     let bytes = bundle.read(
         "Contents/Resources/content/fonts/character3.rbxm",
         16 * 1024 * 1024,
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    let add = |workspace: &mut Workspace,
-               name: &str,
-               wedge: bool,
-               size: [f32; 3],
-               frame: CoordinateFrame,
-               anchored: bool| {
-        let mut part = PartInstance {
-            name: name.into(),
-            anchored,
-            frame,
-            ..Default::default()
-        };
-        if wedge {
-            part.set_shape(SHAPE_WEDGE);
-        }
-        part.set_size(size);
-        workspace.parts.push(part);
-    };
-    let at = |position: [f32; 3]| CoordinateFrame {
-        position,
-        rotation: IDENTITY,
-    };
-    // The slope of an 8 x 4 x 8 Wedge rises along +Z with normal
-    // (0, 2, -1) / sqrt 5; the Slider's up axis is that normal.
+    // The Baseplate, then (Wedges marked *, identity rotations unless noted):
+    // - *"Drop" 4 x 2 x 4 at (30, 6, -30);
+    // - *"Flip" 4 x 2 x 4 at (30, 6, 30), upside down (180 degrees about Z);
+    // - anchored *"Slope" 8 x 4 x 8 at (-30, 2, 30);
+    // - "Slider" 2 x 1 x 2 on the Slope's slope at local z 2, its up axis the
+    //   slope normal (0, 2, -1) / sqrt 5, 0.05 studs clear;
+    // - anchored *"Ramp" 8 x 4 x 16 at (0, 2, -14), turned 180 degrees about
+    //   Y to rise towards -Z: its low edge at z -6, its high one at z -22;
+    // - "Marble", a Ball of diameter 2, on the slope at x -33, 0.05 clear.
+    let workspace = Workspace::place("audit-part-wedge")?;
+    // The Slope's slope normal (0, c, s) and the Ramp's floor height.
     let root5 = 5f32.sqrt();
     let (c, s) = (2.0 / root5, -1.0 / root5);
-    let slope_center = [-30.0, 2.0, 30.0];
-    let on_slope = [-30.0, slope_center[1] + 1.0, slope_center[2] + 2.0];
-    let lift = 0.5 + 0.05;
-    add(
-        &mut workspace,
-        "Drop",
-        true,
-        [4.0, 2.0, 4.0],
-        at([30.0, 6.0, -30.0]),
-        false,
-    );
-    add(
-        &mut workspace,
-        "Flip",
-        true,
-        [4.0, 2.0, 4.0],
-        CoordinateFrame {
-            position: [30.0, 6.0, 30.0],
-            rotation: [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]],
-        },
-        false,
-    );
-    add(
-        &mut workspace,
-        "Slope",
-        true,
-        [8.0, 4.0, 8.0],
-        at(slope_center),
-        true,
-    );
-    add(
-        &mut workspace,
-        "Slider",
-        false,
-        [2.0, 1.0, 2.0],
-        CoordinateFrame {
-            position: [on_slope[0], on_slope[1] + c * lift, on_slope[2] + s * lift],
-            rotation: [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]],
-        },
-        false,
-    );
-    // Its low edge is at z -6, its high one at z -22 (4 studs up).
-    add(
-        &mut workspace,
-        "Ramp",
-        true,
-        [8.0, 4.0, 16.0],
-        CoordinateFrame {
-            position: [0.0, 2.0, -14.0],
-            rotation: [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]],
-        },
-        true,
-    );
     let ramp_floor = |z: f32| ((-6.0 - z) / 4.0).clamp(0.0, 4.0);
-    {
-        let mut marble = PartInstance {
-            name: "Marble".into(),
-            frame: at([-33.0, on_slope[1] + c * 1.05, on_slope[2] + s * 1.05]),
-            ..Default::default()
-        };
-        marble.set_shape(crate::workspace::SHAPE_BALL);
-        marble.set_size([2.0; 3]);
-        workspace.parts.push(marble);
-    }
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
     let ramp_index = fixture
         .world
@@ -2097,135 +1703,28 @@ pub fn audit_part_wedge(bundle: &Bundle) -> Result<String, String> {
 /// - "Paddle" (4 x 0.4 x 1) on a RotateP about Y whose axle face (Top)
 ///   reads Sin with ParamA 0.5 and ParamB 2: it follows 0.5 sin(2t).
 pub fn audit_part_hinge(bundle: &Bundle) -> Result<String, String> {
-    use crate::joints::{ROTATE, ROTATE_P, ROTATE_V};
-    use crate::kernel_joint::{INPUT_CONSTANT, INPUT_SIN, SurfaceInput};
     use crate::loose::JointEdge;
-    use crate::workspace::{JointInstance, PartInstance};
     let bytes = bundle.read(
         "Contents/Resources/content/fonts/character3.rbxm",
         16 * 1024 * 1024,
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
+    // The Baseplate, then four pairs at identity rotations: an anchored
+    // 1 x 1 x 1 axle block (Part0) and a plank (Part1), hinged with C0 at the
+    // block's center and C1 at the plank point over it (both rotations equal,
+    // z along +Z unless noted):
+    // - "Pivot" at (-20, 12, 10), "Arm" 6 x 0.4 x 1 at (-17.5, 12, 11.1),
+    //   Rotate "Hinge0" C1 (-2.5, 0, -1.1);
+    // - "Hook" at (-30, 12, 10), "Flap" 1 x 4 x 0.4 at (-30, 10, 10.8), Rotate
+    //   "Hinge1" C1 (0, 2, -0.8);
+    // - "Axle" at (-40, 12, 10), BackSurfaceInput Constant with ParamB 0.1,
+    //   "Wheel" 4 x 4 x 0.4 at (-40, 12, 10.8), RotateV "Hinge2" C1 (0, 0, -0.8);
+    // - "Motor" at (-50, 12, 10), TopSurfaceInput Sin with ParamA 0.5 and
+    //   ParamB 2, "Paddle" 4 x 0.4 x 1 at (-48.5, 12.8, 10), RotateP "Hinge3"
+    //   C1 (-1.5, -0.8, 0) with z along +Y.
+    let workspace = Workspace::place("audit-part-hinge")?;
     const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    // z along +Y (columns x, -z, y).
-    let up = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
-    let add = |workspace: &mut Workspace, name: &str, size: [f32; 3], position, anchored| {
-        let mut part = PartInstance {
-            name: name.into(),
-            anchored,
-            frame: CoordinateFrame {
-                position,
-                rotation: IDENTITY,
-            },
-            ..Default::default()
-        };
-        part.set_size(size);
-        workspace.parts.push(part);
-        workspace.parts.len() - 1
-    };
-    let hinge = |workspace: &mut Workspace,
-                 kind: u32,
-                 part0: usize,
-                 part1: usize,
-                 c1: [f32; 3],
-                 rotation: [[f32; 3]; 3]| {
-        workspace.joints.push(JointInstance {
-            name: format!("Hinge{}", workspace.joints.len()),
-            kind,
-            part0,
-            part1,
-            c0: CoordinateFrame {
-                position: [0.0; 3],
-                rotation,
-            },
-            c1: CoordinateFrame {
-                position: c1,
-                rotation,
-            },
-            face: [[0.0; 3]; 4],
-            base_angle: 0.0,
-            current_angle: 0.0,
-            desired_angle: 0.0,
-            max_velocity: 0.0,
-        });
-    };
-    let block = [1.0, 1.0, 1.0];
-    let pivot = add(&mut workspace, "Pivot", block, [-20.0, 12.0, 10.0], true);
-    let arm = add(
-        &mut workspace,
-        "Arm",
-        [6.0, 0.4, 1.0],
-        [-17.5, 12.0, 11.1],
-        false,
-    );
-    hinge(
-        &mut workspace,
-        ROTATE,
-        pivot,
-        arm,
-        [-2.5, 0.0, -1.1],
-        IDENTITY,
-    );
-    let hook = add(&mut workspace, "Hook", block, [-30.0, 12.0, 10.0], true);
-    let flap = add(
-        &mut workspace,
-        "Flap",
-        [1.0, 4.0, 0.4],
-        [-30.0, 10.0, 10.8],
-        false,
-    );
-    hinge(
-        &mut workspace,
-        ROTATE,
-        hook,
-        flap,
-        [0.0, 2.0, -0.8],
-        IDENTITY,
-    );
-    let axle = add(&mut workspace, "Axle", block, [-40.0, 12.0, 10.0], true);
-    workspace.parts[axle].surface_inputs[2] = SurfaceInput {
-        input: INPUT_CONSTANT,
-        ..Default::default()
-    };
-    workspace.parts[axle].surface_inputs[2].param_b = 0.1;
-    let wheel = add(
-        &mut workspace,
-        "Wheel",
-        [4.0, 4.0, 0.4],
-        [-40.0, 12.0, 10.8],
-        false,
-    );
-    hinge(
-        &mut workspace,
-        ROTATE_V,
-        axle,
-        wheel,
-        [0.0, 0.0, -0.8],
-        IDENTITY,
-    );
-    let motor = add(&mut workspace, "Motor", block, [-50.0, 12.0, 10.0], true);
-    workspace.parts[motor].surface_inputs[1] = SurfaceInput {
-        input: INPUT_SIN,
-        param_a: 0.5,
-        param_b: 2.0,
-    };
-    let paddle = add(
-        &mut workspace,
-        "Paddle",
-        [4.0, 0.4, 1.0],
-        [-48.5, 12.8, 10.0],
-        false,
-    );
-    hinge(
-        &mut workspace,
-        ROTATE_P,
-        motor,
-        paddle,
-        [-1.5, -0.8, 0.0],
-        up,
-    );
     let names: Vec<&str> = workspace.parts.iter().map(|p| p.name.as_str()).collect();
     let mut report = workspace.joint_tree()?.describe(&names);
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
@@ -2385,7 +1884,6 @@ pub fn audit_part_hinge(bundle: &Bundle) -> Result<String, String> {
     if !failed.is_empty() {
         return Err(format!("part hinge failed {failed:?}\n{report}"));
     }
-    let _ = (arm, flap, wheel, paddle);
     writeln!(
         report,
         "part_hinge_pass arm=swung flap=asleep wheel_rate={wheel_rate:.3} paddle=follows native_differential=not_tested"
@@ -2403,98 +1901,21 @@ pub fn audit_part_hinge(bundle: &Bundle) -> Result<String, String> {
 /// frame (00b38196), the same way in the world. "Tower3" is "Tower" on a
 /// Motor6D (D6Link) instead.
 pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
-    use crate::joints::{MOTOR, MOTOR_6D};
-    use crate::workspace::{JointInstance, PartInstance};
     let bytes = bundle.read(
         "Contents/Resources/content/fonts/character3.rbxm",
         16 * 1024 * 1024,
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-    // z along +Y (columns x, -z, y).
-    let up = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
-    let add = |workspace: &mut Workspace, name: &str, size: [f32; 3], position| {
-        let mut part = PartInstance {
-            name: name.into(),
-            frame: CoordinateFrame {
-                position,
-                rotation: IDENTITY,
-            },
-            ..Default::default()
-        };
-        part.set_size(size);
-        workspace.parts.push(part);
-        workspace.parts.len() - 1
-    };
-    let base_side = CoordinateFrame {
-        position: [0.0, 0.5, 0.0],
-        rotation: up,
-    };
-    let arm_side = CoordinateFrame {
-        position: [-2.0, -0.2, 0.0],
-        rotation: up,
-    };
+    // The Baseplate, then three towers at identity rotations: a 2 x 1 x 2
+    // base at y 0.5 and a 4 x 0.4 x 0.4 arm at y 1.2, two studs to +X. The
+    // base side of each motor is (0, 0.5, 0) and the arm side (-2, -0.2, 0),
+    // both with z along +Y; DesiredAngle pi/2, MaxVelocity 0.05:
+    // - "Tower" at x -20 and "Arm"; Motor "Motor", Part0 the base;
+    // - "Tower2" at x -30 and "Arm2"; Motor "Motor2", Part0 the arm;
+    // - "Tower3" at x -40 and "Arm3"; Motor6D "Motor6D", Part0 the base.
+    let workspace = Workspace::place("audit-part-motor")?;
     let desired = std::f32::consts::FRAC_PI_2;
-    let motor = |workspace: &mut Workspace, kind, name: &str, part0, part1, c0, c1| {
-        workspace.joints.push(JointInstance {
-            name: name.into(),
-            kind,
-            part0,
-            part1,
-            c0,
-            c1,
-            face: [[0.0; 3]; 4],
-            base_angle: 0.0,
-            current_angle: 0.0,
-            desired_angle: desired,
-            max_velocity: 0.05,
-        });
-    };
-    let base = add(&mut workspace, "Tower", [2.0, 1.0, 2.0], [-20.0, 0.5, 20.0]);
-    let arm = add(&mut workspace, "Arm", [4.0, 0.4, 0.4], [-18.0, 1.2, 20.0]);
-    motor(
-        &mut workspace,
-        MOTOR,
-        "Motor",
-        base,
-        arm,
-        base_side.clone(),
-        arm_side.clone(),
-    );
-    let base2 = add(
-        &mut workspace,
-        "Tower2",
-        [2.0, 1.0, 2.0],
-        [-30.0, 0.5, 20.0],
-    );
-    let arm2 = add(&mut workspace, "Arm2", [4.0, 0.4, 0.4], [-28.0, 1.2, 20.0]);
-    motor(
-        &mut workspace,
-        MOTOR,
-        "Motor2",
-        arm2,
-        base2,
-        arm_side.clone(),
-        base_side.clone(),
-    );
-    let base3 = add(
-        &mut workspace,
-        "Tower3",
-        [2.0, 1.0, 2.0],
-        [-40.0, 0.5, 20.0],
-    );
-    let arm3 = add(&mut workspace, "Arm3", [4.0, 0.4, 0.4], [-38.0, 1.2, 20.0]);
-    motor(
-        &mut workspace,
-        MOTOR_6D,
-        "Motor6D",
-        base3,
-        arm3,
-        base_side,
-        arm_side,
-    );
     let names: Vec<&str> = workspace.parts.iter().map(|p| p.name.as_str()).collect();
     let mut report = workspace.joint_tree()?.describe(&names);
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
@@ -2617,7 +2038,6 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
     if !failed.is_empty() {
         return Err(format!("part motor failed {failed:?}\n{report}"));
     }
-    let _ = (arm, base2, arm3);
     writeln!(
         report,
         "part_motor_pass reached={reached:?} arms_turned=true asleep=true native_differential=not_tested"
@@ -2634,28 +2054,16 @@ pub fn audit_part_motor(bundle: &Bundle) -> Result<String, String> {
 /// - in a second world it walks into "Post", an anchored ball of diameter 4
 ///   (the character/static BallBlock contacts) and cannot pass through it.
 pub fn audit_part_ball_push(bundle: &Bundle) -> Result<String, String> {
-    use crate::workspace::{PartInstance, SHAPE_BALL};
     let bytes = bundle.read(
         "Contents/Resources/content/fonts/character3.rbxm",
         16 * 1024 * 1024,
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
-    let ball = |name: &str, anchored: bool| {
-        let mut part = PartInstance {
-            name: name.into(),
-            anchored,
-            ..Default::default()
-        };
-        part.set_shape(SHAPE_BALL);
-        part.set_size([4.0; 3]);
-        part.frame.position = [0.0, 2.0, -8.0];
-        part
-    };
     let mut report = String::new();
-    // The loose ball.
+    // The loose ball: the Baseplate and "Boulder", a Ball of diameter 4 at
+    // (0, 2, -8).
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    workspace.parts.push(ball("Boulder", false));
+    let workspace = Workspace::place("audit-part-ball-push-boulder")?;
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
     for _ in 0..720u32 {
         fixture.step_animated(&mut rig, [0.0; 3])?;
@@ -2697,10 +2105,10 @@ pub fn audit_part_ball_push(bundle: &Bundle) -> Result<String, String> {
         && fixture.world.max_penetration < 0.5
         && fixture.world.body.frame.rotation[1][1] > 0.99
         && (settled[1] - 2.0).abs() < 0.05;
-    // The anchored ball.
+    // The anchored ball: the Baseplate and "Post", an anchored Ball of
+    // diameter 4 at (0, 2, -8).
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    workspace.parts.push(ball("Post", true));
+    let workspace = Workspace::place("audit-part-ball-push-post")?;
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
     for _ in 0..720u32 {
         fixture.step_animated(&mut rig, [0.0; 3])?;
@@ -2763,14 +2171,8 @@ pub fn audit_part_push(bundle: &Bundle) -> Result<String, String> {
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    let mut crate_part = crate::workspace::PartInstance {
-        name: "Crate".into(),
-        ..Default::default()
-    };
-    crate_part.set_size([4.0, 6.0, 2.0]);
-    crate_part.frame.position = [0.0, 3.05, -8.0];
-    workspace.parts.push(crate_part);
+    // The Baseplate and a 4 x 6 x 2 "Crate" at (0, 3.05, -8).
+    let workspace = Workspace::place("audit-part-push")?;
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
     let mut report = String::new();
     for _ in 0..720u32 {
@@ -2926,18 +2328,9 @@ pub fn audit_part_stand(bundle: &Bundle) -> Result<String, String> {
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    let mut add = |name: &str, size: [f32; 3], position: [f32; 3]| {
-        let mut part = crate::workspace::PartInstance {
-            name: name.into(),
-            ..Default::default()
-        };
-        part.set_size(size);
-        part.frame.position = position;
-        workspace.parts.push(part);
-    };
-    add("Pad", [6.0, 0.3, 6.0], [0.0, 0.15, 0.0]);
-    add("Step", [6.0, 1.0, 6.0], [0.0, 0.5, -12.0]);
+    // The Baseplate, a loose 6 x 0.3 x 6 "Pad" at (0, 0.15, 0) under the
+    // spawn and a loose 6 x 1 x 6 "Step" at (0, 0.5, -12).
+    let workspace = Workspace::place("audit-part-stand")?;
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
     let mut report = String::new();
     let start: Vec<[f32; 3]> = fixture
@@ -3111,16 +2504,13 @@ pub fn audit_part_jump(bundle: &Bundle) -> Result<String, String> {
     for pad in [true, false] {
         let label = if pad { "pad" } else { "baseplate" };
         let mut rig = R6Rig::character(bundle, &scene)?;
-        let mut workspace = Workspace::studio_new_document();
-        if pad {
-            let mut part = crate::workspace::PartInstance {
-                name: "Pad".into(),
-                ..Default::default()
-            };
-            part.set_size([6.0, 0.3, 6.0]);
-            part.frame.position = [0.0, 0.15, 0.0];
-            workspace.parts.push(part);
-        }
+        // The new-document Baseplate, plus a loose 6 x 0.3 x 6 "Pad" at
+        // (0, 0.15, 0) in the pad run.
+        let workspace = if pad {
+            Workspace::place("audit-part-jump-pad")?
+        } else {
+            Workspace::studio_new_document()
+        };
         let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
         let root_mass = 1.0 / fixture.world.body.inverse_mass();
         let pad_mass = fixture
@@ -3270,23 +2660,12 @@ pub fn audit_humanoid_slope(bundle: &Bundle) -> Result<String, String> {
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut report = String::new();
-    let angle = 35.0f32.to_radians();
-    let (s, c) = angle.sin_cos();
     for max_slope in [89.0f32, 30.0] {
         let mut rig = R6Rig::character(bundle, &scene)?;
-        let mut workspace = Workspace::studio_new_document();
-        let mut slope = crate::workspace::PartInstance {
-            name: "Slope".into(),
-            ..Default::default()
-        };
-        slope.set_size([24.0, 2.0, 24.0]);
-        slope.anchored = true;
-        slope.frame = crate::scene::CoordinateFrame {
-            position: [0.0, 6.0, 0.0],
-            // About X: the top face normal is (0, cos, sin), downhill +z.
-            rotation: [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]],
-        };
-        workspace.parts.push(slope);
+        // The Baseplate and an anchored 24 x 2 x 24 "Slope" at (0, 6, 0),
+        // turned 35 degrees about X: its top face normal is
+        // (0, cos 35, sin 35), downhill +z.
+        let workspace = Workspace::place("audit-humanoid-slope")?;
         let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
         let slope_part = FloorPart::Static(fixture.world.statics.blocks.len() - 1);
         fixture.humanoid.properties.max_slope_angle = max_slope;
@@ -3426,20 +2805,10 @@ pub fn audit_broadphase(bundle: &Bundle) -> Result<String, String> {
     )?;
     let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
     let mut rig = R6Rig::character(bundle, &scene)?;
-    let mut workspace = Workspace::studio_new_document();
-    let part = |name: &str, position: [f32; 3]| {
-        let mut p = crate::workspace::PartInstance {
-            name: name.into(),
-            ..Default::default()
-        };
-        p.frame.position = position;
-        p
-    };
-    workspace.parts.extend([
-        part("Rest", [-20.0, 0.65, -20.0]),
-        part("Stack", [-19.5, 1.9, -19.8]),
-        part("Drop", [20.0, 8.0, 0.0]),
-    ]);
+    // The Baseplate and three default 4 x 1.2 x 2 Parts: "Rest" at
+    // (-20, 0.65, -20), "Stack" at (-19.5, 1.9, -19.8) and "Drop" at
+    // (20, 8, 0).
+    let workspace = Workspace::place("audit-broadphase")?;
     let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
     let mut report = String::new();
     let world = &fixture.world;

@@ -1,5 +1,36 @@
 # MODLOG
 
+## 2026-10-16 The audit places are files in places/
+
+**Changed:**
+- The 15 audits that built their Workspace in code now read it from
+  `places/`, with `Workspace::place(name)`:
+  - audit-part-wall, -drop, -weld, -glue, -ball, -wedge, -hinge, -motor,
+    -push and -stand;
+  - audit-part-ball-push (two places: `-boulder` and `-post`);
+  - audit-part-jump (`audit-part-jump-pad`; the Baseplate-only run stays
+    `Workspace::studio_new_document`);
+  - audit-humanoid-slope (one place for both MaxSlopeAngle runs);
+  - audit-broadphase and audit-ball-render.
+- Each file was written with `Workspace::save` from the Workspace the old
+  code built, at the point where the audit used it. A comment above each
+  load says what the place holds. The old builders are in git history at
+  1627cbd.
+- `Workspace::place` and `Workspace::part_index`.
+
+**Why:** The user asked for the code-built places to live in .rbxm files.
+
+**Tested how:** Every one of the 15 audits prints output byte-identical to
+before the change (each run diffed against a run of 1627cbd, minus the
+`evidence_log` line). The audits are deterministic: two runs of the same
+build give the same output.
+
+**Not moved:** The walking fixture (`World::new`, `viewport-walking`,
+`audit-walking`) is not a set of Parts. It is an infinite floor plane and an
+infinite wall half-space (research stand-ins), which a .rbxm cannot hold.
+Making it Parts would change its physics; it stays in code until it is
+replaced.
+
 ## 2026-10-16 The demo place is a file: places/viewport-baseplate.rbxm
 
 **Changed:**
