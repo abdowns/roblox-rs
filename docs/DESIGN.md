@@ -843,6 +843,32 @@ SrcAlpha=3, InvSrcAlpha=4) is inferred from use, not from a symbol; faces use
 mip 0 with a linear/clamp sampler; the star field (drawn when the moon is up)
 and custom Sky instances are not implemented.
 
+## Model files (rbxm.rs)
+
+`rbxm::Model` is a plain instance tree: a list of `ModelInstance`s (class,
+properties by name, children) and the top-level indices. A Ref property
+holds an index into the list. It knows nothing about reflection; the
+loaders that turn it into a World (and back) decide which properties a
+class has.
+
+The binary format is the native SerializerBinary (reader 00e117bb, writer
+00e10866). The writer:
+- puts one INST chunk per class, in class-name order. The native map is
+  keyed by Name::sortIndex, which is the alphabetical rank (Name.cpp:116);
+- then one PROP chunk per class and property, also in name order;
+- then one PRNT chunk listing every instance in post-order;
+- then END.
+
+Referents are positions in a pre-order walk from the roots. All chunks but
+END go through LZ4_compress (00e07889), and `lz4_compress` ports it exactly:
+the output bytes depend on the hash size, the skip strength and the match
+rules, not only on the format. So
+`Model::to_binary` is byte-identical to the native writer whenever the tree
+and the property sets match what native reflection would give. The native
+writer emits every property whose descriptor has the XML-write bit (+0x24 bit
+0x10, from functionality bit 8 in the descriptor constructor 00562476); the
+loaders have to fill in all of them.
+
 ## Studio default world (Workspace, Baseplate, Play Solo spawn)
 
 workspace.rs holds the Workspace contents as plain `PartInstance` values with

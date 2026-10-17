@@ -5,6 +5,16 @@ output to expect. Anything not covered by an audit is marked **not tested**.
 
 ## What works (tested)
 
+- Binary model files (.rbxm/.rbxl, SerializerBinary): reading every 0.255
+  property type and writing the same bytes as the native writer, LZ4
+  included. Run `sh tools/cargo.sh run --locked -- audit-rbxm`; expect two
+  `rbxm_rewrite ... identical=true first_difference=None` lines (7610 and
+  6353 bytes) and `rbxm_pass files=2`. Types that no native file in the
+  install holds (Int, UDim, UDim2, Ray, Faces, Axes, Color3, Vector2, the
+  int16 vectors, the sequences, NumberRange, Rect2D) round-trip through our
+  own reader (`sh tools/cargo.sh test --locked rbxm`) but are **not tested**
+  against native output. Writing XML is not implemented.
+
 - Studio default world data: Part defaults, the new-document Baseplate and the
   Play Solo spawn point, recovered from the binary. Run
   `sh tools/cargo.sh run --locked -- audit-workspace`; expect

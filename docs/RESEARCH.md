@@ -173,3 +173,80 @@ BallVertex 01c86008: aa9ea4, 9 | BallEdge 01c86068: aa9c2a, 10 | BallPlane 01c86
 - BallVertex compute aa9ea4: p = R v + t; position p; normal = p - c; length = unitize(normal, 1e-6) - r.
 - Primitive stiffness 00b6312e: 00a92640(size, geometryType (b62c78 = geometry vt+0xc) == 1). Only the Ball (geometry type 1) takes the Ball path; a Wedge (type 4) takes the Block one. Geometry types 10/11 use size (4,4,4).
 
+## SerializerBinary (rbxm port session, 2026-10-16)
+
+- Load: 00baf78a (SerializerV2::load) and 00bafe64 (loadInstances) check
+  "<roblox!" and call the binary reader 00e1179e/00e117bb; other files go
+  to XML.
+- Reader 00e117bb:
+  - the header is "<roblox!" plus the 6 bytes at 017d17a9
+    (89 ff 0d 0a 1a 0a); version u16 0 ("Unrecognized version %d");
+  - each chunk is name, compressed size, size and 4 reserved bytes;
+    compressed 0 means stored; a size mismatch after LZ4 is
+    "Malformed data";
+  - INST: type index, class, format 0 or 1 (1 adds a byte per instance),
+    count, referents. An instance is only made if its class has
+    ClassDescriptor +0x130 bit 4;
+  - PROP: the property is looked up in the class and read only if the
+    descriptor has +0x24 bit 8 (canXmlRead), by 00e08b14. Unknown
+    properties are skipped;
+  - PRNT: format 0, count, children, parents (-1 means the load root);
+  - END stops; unknown chunks are skipped.
+- Writer 00e10866(stream=ECX, root=EDX, instances, flags):
+  - 00e1293e collects archivable (+0x20) instances of creatable classes in
+    pre-order (ids) and post-order (PRNT);
+  - the class map 00e1382e is keyed by Name sortIndex
+    (`**(desc+4)`), so classes come out alphabetically;
+  - properties: those of class +0x18..+0x1c that pass vtable+8 false and
+    +0x24 bit 0x10 (canXmlWrite), sorted by Name sortIndex (00e13d85
+    introsort, then 00e13ece insertion sort);
+  - the INST format byte is 1 if the first instance is a Service, with one
+    byte per instance (parent == root);
+  - the END chunk holds "</roblox>" with flag 2 (stored).
+- Callers: 00e11780 passes flags 0 (00340782 and the others pass 0).
+  00e1075f (save the children of a root through the filter 00e12ede)
+  also passes 0.
+- Chunk writer 00e12a36: flag 2 means stored. Otherwise LZ4 through the
+  pointer at 01c3de00 (00e07889) or, with flag 1, the one at 01c3de04
+  (00e08a02, presumably HC; never used by the save paths).
+- LZ4_compress 00e07889: isize <= 0x1000a goes to 00e07430 (u16 table
+  [8192], hash >> 19, empty slot = offset 0), else 00e0703b (pointer table
+  [4096], hash >> 20). Both:
+  - first step attempts 0x44 >> 6;
+  - a match needs ref >= ip - 0xffff;
+  - catch-up, then MINMATCH 4 and the match count up to iend-5;
+  - fill table at ip-2, test ip for an immediate next match.
+- Value writer 00e0cb3a, type bytes:
+  - 01 string (Content and ProtectedString too, u32 length + bytes);
+  - 02 bool (byte), 03 int (zigzag 00e103c9), 04 float (00e104d9);
+  - 05 double (8 LE bytes), 06 UDim (floats then ints);
+  - 07 UDim2 (sx, sy floats, ox, oy ints), 08 Ray (24 bytes);
+  - 09 Faces and 0a Axes (a byte each), 0b BrickColor (00e105ce,
+    interleaved raw);
+  - 0c Color3, 0d Vector2, 0e Vector3 (float arrays);
+  - 0f Vector2int16 (raw), 14 Vector3int16 (6 raw bytes);
+  - 10 CFrame (0x11 with flag 4, quaternions): an id byte per value, then
+    the 36-byte matrix if the id is 0, then x[], y[], z[];
+  - 12 enum (00e105ce), 13 Ref (delta referents 00e106bb, -1 for null);
+  - 15 NumberSequence (count + 12-byte keys), 16 ColorSequence (count +
+    20-byte keys), 17 NumberRange (8 bytes), 18 Rect2D (4 float arrays);
+  - 19 PhysicalProperties (a flag byte, then 5 floats if custom);
+  - anything else throws "Unknown property type for property %s".
+- CFrame ids: 006b10dc accepts exact 0/±0/±1 entries with one ±1 per row and
+  column (no handedness check). 006b11a7 returns
+  6*NormalId(col0)+NormalId(col1), and the writer adds 1.
+- Descriptor functionality (the argument to PropDescriptor ctors) maps to
+  +0x24 as `(f<<1)&0x7c | f&1 | 2` (00562476). So bit 4 means XML read and
+  bit 8 means XML write. Examples:
+  - 0x1f is the standard set;
+  - 0x15 is UI/script only, e.g. BasePart Position, Rotation, Size, Color,
+    brickColor and Motor CurrentAngle;
+  - 0x0e is "streaming", e.g. Part `size` and JointInstance
+    Surface0/Surface1.
+- BasePart props 00999b11; JointInstance, Glue, DynamicRotate and Motor
+  props 0092aba0:
+  - Part0 and Part1 (0x1f; `part1` is an alias with 0x10);
+  - Surface0 and Surface1 (0x0e);
+  - C0 and C1;
+  - F0..F3 and BaseAngle;
+  - MaxVelocity and DesiredAngle (0x1f), CurrentAngle (0x15).

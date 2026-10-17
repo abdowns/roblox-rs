@@ -155,6 +155,18 @@ and `viewport_final_readback_pass`.
 presentation progress remain available even before closing the window. No game
 assets leave RobloxStudio. No visual inspection was performed.
 
+## Model files
+
+```sh
+sh tools/cargo.sh run --locked -- audit-rbxm
+```
+
+Expect, for each of the two native binary models in the install
+(`characterR15_2.rbxm`, `humanoidAnimateR15_2.rbxm`), a line
+`rbxm_rewrite file=... bytes=7610 written=7610 identical=true
+first_difference=None instances=67 classes={...}` (6353 bytes and 22
+instances for the second), then `rbxm_pass files=2`. The files are only read.
+
 ## Run the first offline diagnostic
 
 From this project directory:

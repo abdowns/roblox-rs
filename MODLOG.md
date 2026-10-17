@@ -1,5 +1,41 @@
 # MODLOG
 
+## 2026-10-16 Binary .rbxm writer (SerializerBinary), full 0.255 type set
+
+**Changed:**
+- `rbxm::Model::to_binary`, `write_file`, `read_file` and `add`: the native
+  binary writer (00e10866). It writes the header, then INST chunks with
+  classes in Name order, then PROP chunks with properties in Name order, then
+  PRNT (post-order) and END. Referents are pre-order positions (00e1293e).
+- `lz4_compress`: a port of the LZ4_compress built into the binary (00e07889,
+  both the 64K variant 00e07430 and the general one 00e0703b).
+- `Property` gains every type the 0.255 writer knows (00e0cb3a): Bytes,
+  Double, UDim, UDim2, Ray, Faces, Axes, BrickColor, Color3, Vector2,
+  Vector3, Vector2int16, Vector3int16, Ref, NumberSequence, ColorSequence,
+  NumberRange, Rect2D and PhysicalProperties. The reader decodes all of
+  them. The existing variants and accessors are unchanged; `token()` also
+  reads a BrickColor.
+- The reader now checks the header signature and version and the PRNT
+  format, as 00e117bb does. It keeps non-UTF-8 strings as `Bytes`.
+- New command `audit-rbxm`.
+
+**Why:** First step of .rbxm support (the user asked for reading, loading
+and saving, then for the demo places to live in files).
+
+**Tested how:** `audit-rbxm` parses the two binary models the native client
+wrote that ship in the install and writes them again. Both come out
+byte-identical (7610 and 6353 bytes). Tests `every_type_round_trips` and
+`lz4_compress_round_trips` cover the other types and the large-input LZ4
+variant.
+
+**Not tested:**
+- Against native output: Int, UDim, UDim2, Ray, Faces, Axes, Color3,
+  Vector2, Vector2int16, Vector3int16, NumberSequence, ColorSequence,
+  NumberRange and Rect2D. They follow 00e0cb3a but no native file holds them.
+- The LZ4 variant for chunks over 0x1000a bytes.
+- Service (format 1) INST chunks are read but never written.
+- XML writing.
+
 ## 2026-10-15 License: Apache-2.0
 
 **Changed:**
