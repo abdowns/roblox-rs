@@ -75,6 +75,11 @@ pub struct PartInstance {
     /// 2 Plate, 3 Custom). Only kept for saving: the size setter does not
     /// snap to it.
     pub form_factor: u32,
+    /// CustomPhysicalProperties (Primitive +0xc4) as stored in the file:
+    /// [density, friction, elasticity, frictionWeight, elasticityWeight], or
+    /// None to use the material's defaults. Physics clamps the values with
+    /// `material::PhysicalProperties::custom`.
+    pub custom_physical_properties: Option<[f32; 5]>,
 }
 
 impl Default for PartInstance {
@@ -107,6 +112,7 @@ impl Default for PartInstance {
             // PartInstance ctor 009828ce: word +0xb6 = 0x101 (FormFactor
             // Brick, shape Block).
             form_factor: 1,
+            custom_physical_properties: None,
         }
     }
 }
@@ -489,7 +495,7 @@ impl Workspace {
                 .set("RotVelocity", Property::Vector3([0.0; 3]))
                 .set(
                     "CustomPhysicalProperties",
-                    Property::PhysicalProperties(None),
+                    Property::PhysicalProperties(part.custom_physical_properties),
                 )
                 .set("formFactorRaw", Property::Token(part.form_factor));
             if class == "Part" {
@@ -580,7 +586,7 @@ impl Workspace {
     /// Errors, rather than silently dropping behavior the port does not
     /// simulate:
     /// - any other class;
-    /// - a non-zero Velocity or RotVelocity, or custom physical properties;
+    /// - a non-zero Velocity or RotVelocity;
     /// - a joint whose Part0 or Part1 is not one of the Parts;
     /// - a ManualWeld with surfaces set (the port has no surface joints).
     pub fn from_model(model: &Model) -> Result<Self, String> {
@@ -762,11 +768,12 @@ fn part_from(instance: &ModelInstance) -> Result<PartInstance, String> {
                     return Err(unsupported(&format!("a starting {name}")));
                 }
             }
-            "CustomPhysicalProperties" => {
-                if !matches!(v, Some(Property::PhysicalProperties(None))) {
-                    return Err(unsupported("CustomPhysicalProperties"));
+            "CustomPhysicalProperties" => match v {
+                Some(Property::PhysicalProperties(custom)) => {
+                    part.custom_physical_properties = *custom;
                 }
-            }
+                _ => return Err(unsupported("CustomPhysicalProperties")),
+            },
             _ => {
                 let face = FACE_STEMS
                     .iter()
@@ -925,11 +932,24 @@ mod tests {
         assert_eq!(a.decals, b.decals);
     }
     #[test]
+    fn custom_physical_properties_load_and_save() {
+        let demo = Workspace::place("viewport-baseplate").unwrap();
+        let heavy = &demo.parts[demo.part_index("HeavyCrate").unwrap()];
+        assert_eq!(
+            heavy.custom_physical_properties,
+            Some([100.0, 0.3, 0.5, 1.0, 1.0])
+        );
+        let crate_part = &demo.parts[demo.part_index("Crate").unwrap()];
+        assert_eq!(crate_part.custom_physical_properties, None);
+        let again = Workspace::from_model(&demo.to_model().unwrap()).unwrap();
+        assert_eq!(again.parts, demo.parts);
+    }
+    #[test]
     fn the_demo_place_round_trips() {
         let path = place_path(DEMO_PLACE);
         let bytes = std::fs::read(&path).unwrap();
         let demo = Workspace::load(&path).unwrap();
-        assert_eq!(demo.parts.len(), 51);
+        assert_eq!(demo.parts.len(), 53);
         assert_eq!(demo.joints.len(), 5);
         assert_eq!(demo.decals.len(), 3);
         // Saved again, the file is the same.

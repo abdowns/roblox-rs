@@ -198,9 +198,15 @@ impl LoosePrim {
     pub fn can_collide(&self) -> bool {
         self.can_collide
     }
-    /// The Part's material friction weighted against Plastic (00a43f4c).
+    /// The Part's friction weighted against Plastic (00a43f4c, or 00a43e10
+    /// with custom properties).
     pub fn floor_friction(&self) -> f32 {
         self.floor_friction
+    }
+    /// Its physical properties: CustomPhysicalProperties when enabled, else
+    /// the material defaults (00a43dbe).
+    pub fn properties(&self) -> PhysicalProperties {
+        self.properties
     }
     pub fn transparency(&self) -> f32 {
         self.transparency
@@ -677,7 +683,7 @@ impl LooseWorld {
         part: &PartInstance,
         materials: &MaterialProfile,
     ) -> Result<usize, String> {
-        let properties = materials.defaults(part.material)?;
+        let properties = materials.properties(part.material, part.custom_physical_properties)?;
         let shape = match part.shape {
             SHAPE_BALL => Shape::Ball,
             SHAPE_BLOCK => Shape::Block,

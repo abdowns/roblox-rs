@@ -21,7 +21,9 @@ Early and incomplete. Working today, with an automated audit for each item:
   - unanchored Parts that fall, stack, get pushed, carry the character and
     fall asleep at rest, including Ball Parts that roll and Wedge Parts;
   - welded Parts that move as one, glued Parts that break under load,
-    hinges, motor hinges, Motors and Motor6Ds.
+    hinges, motor hinges, Motors and Motor6Ds;
+  - material densities, friction and elasticity, and
+    CustomPhysicalProperties.
 - **Rendering:** the character, the studded Baseplate, block, Ball and
   Wedge Parts, Decals and tiled Textures on blocks, all 20 Part materials at
   the original's low quality level (textures, Neon, reflective Plastic), the

@@ -647,8 +647,9 @@ impl Surroundings<'_> {
             }
         })
     }
-    /// The RunningBase friction factor for a floor Part (00a43f4c against
-    /// Plastic; no Part here has custom physical properties).
+    /// The RunningBase friction factor for a floor Part against Plastic:
+    /// 00a43f4c for a material floor, 00a43e10 for custom properties (the
+    /// same weighting of the floor's friction and friction weight).
     pub fn floor_friction(&self, part: FloorPart) -> Result<f32, String> {
         Ok(match part {
             FloorPart::Fixture => self.statics.fixture_friction,
@@ -810,19 +811,45 @@ impl World {
             match property("CanCollide").and_then(|n| n.text()) {
                 Some("true") if part.shape == 1 => {
                     // Contact params read CustomPhysicalProperties (+0xc4) or
-                    // the material (+0xc8); only the material branch occurs.
+                    // the material (+0xc8), 00a43dbe.
                     let custom = property("CustomPhysicalProperties")
-                        .and_then(|n| n.children().find(|c| c.has_tag_name("CustomPhysics")))
-                        .and_then(|n| n.text());
+                        .ok_or("missing collider CustomPhysicalProperties")?;
+                    let value = |tag: &str| {
+                        custom
+                            .children()
+                            .find(|c| c.has_tag_name(tag))
+                            .and_then(|n| n.text())
+                    };
                     let material: u32 = property("Material")
                         .and_then(|n| n.text())
                         .and_then(|t| t.parse().ok())
                         .ok_or("missing collider material")?;
-                    if custom != Some("false") {
-                        return Err("unsupported custom collider physical properties".into());
-                    }
+                    let custom = match value("CustomPhysics") {
+                        Some("false") => None,
+                        // 00ab7e9e: a missing value takes the reader default.
+                        Some("true") => {
+                            let mut values = [1.0, 0.0, 0.0, 1.0, 1.0];
+                            let tags = [
+                                "Density",
+                                "Friction",
+                                "Elasticity",
+                                "FrictionWeight",
+                                "ElasticityWeight",
+                            ];
+                            for (v, tag) in values.iter_mut().zip(tags) {
+                                if let Some(text) = value(tag) {
+                                    *v = text
+                                        .trim()
+                                        .parse()
+                                        .map_err(|_| format!("invalid collider {tag} {text:?}"))?;
+                                }
+                            }
+                            Some(values)
+                        }
+                        _ => return Err("missing collider CustomPhysics".into()),
+                    };
                     collider_materials.push((
-                        materials.defaults(material)?,
+                        materials.properties(material, custom)?,
                         materials.stiffness(part.size, Shape::Block)?,
                     ));
                     colliders.push((instance.name.clone(), part.size))
@@ -997,7 +1024,9 @@ impl World {
                 );
                 world.broadphase.insert(id, extents, true);
                 entered.push((id, extents));
-                let properties = world.materials.defaults(part.material)?;
+                let properties = world
+                    .materials
+                    .properties(part.material, part.custom_physical_properties)?;
                 let stiffness = world.materials.stiffness(part.size, shape)?;
                 world.loose.add_static_shape(properties, stiffness, shape);
                 let index = world.statics.blocks.len();

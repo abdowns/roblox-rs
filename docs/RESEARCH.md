@@ -428,3 +428,22 @@ BallVertex 01c86008: aa9ea4, 9 | BallEdge 01c86068: aa9c2a, 10 | BallPlane 01c86
   stud coordinates in the second UV set.
 - squish DXT5: alpha uses integer palettes; DXT5 color always takes the
   4-color branch.
+
+## CustomPhysicalProperties (2026-10-17)
+
+- Property registration at 0099a9e4 (string 018af7d7): getter 00981938
+  returns Primitive(+0x8c) +0xc4, the custom record pointer; the setter is
+  a virtual member pointer (0x105 = vtable +0x104), not followed.
+- 00a43dbe Primitive::getPhysicalProperties: if the record's first byte
+  (enabled) is 0, PhysicalProperties(material +0xc8) 00a4331a; else copy
+  the 0x18-byte record. 00a43fb4 / 00a44104 (contact params) inline the
+  same choice for both primitives.
+- Record layout (Lua ctor 0058125c, 5 args density, friction, elasticity,
+  frictionWeight, elasticityWeight): +0 enabled, +4 density clamp
+  [0.01, 100], +8 elasticity [0, 1], +0xc friction [0, 2], +0x10 friction
+  weight [0, 100], +0x14 elasticity weight [0, 100]. The 3-arg form sets
+  both weights to 1; the 1-arg form takes a Material (00a4331a) and is not
+  custom (enabled 0).
+- Floor friction: 00a43e10 (custom) = 00a43e7e(+0x10, +0xc, material
+  weight, material friction), the same weighting as 00a43f4c.
+- Not found: whether the binary reader (type 0x19) clamps on load.

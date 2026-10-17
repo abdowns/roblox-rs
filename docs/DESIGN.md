@@ -178,6 +178,25 @@ edge/tangent geometry or high-quality normal perturbation implied. A synthetic
 texture gives `[32,64,96,255]`; the real atlas changes 5,518 pixels with identical
 repeat output. Full original lighting and visual parity remain **not tested**.
 
+## CustomPhysicalProperties
+
+`PartInstance::custom_physical_properties` keeps the file's value
+(property type 0x19, stored order [density, friction, elasticity,
+frictionWeight, elasticityWeight]; None means the material defaults), so
+places round-trip byte for byte. Physics asks
+`MaterialProfile::properties(material, custom)`, the port of
+Primitive::getPhysicalProperties 00a43dbe: the custom record when it is
+enabled, else the material switch result. Every consumer reads that one
+record: mass (density), Contact params (00a43fb4/00a44104: weighted friction
+and elasticity), and the RunningBase floor friction (00a43e10 for custom,
+00a43f4c for material; the same weighting). `PhysicalProperties::custom`
+applies the five-value ctor clamps from Lua `PhysicalProperties.new`
+(0058125c), identical to the XML reader (00ab7e9e): density [0.01, 100],
+friction [0, 2], elasticity [0, 1], weights [0, 100]. Whether the binary
+reader clamps on load is **not verified**; the port clamps when it builds the
+physics record, which gives the same physics either way. The character's XML
+colliders accept custom properties too.
+
 ## Workspace materials
 
 `material_generator` selects the native low-quality (quality level 2) Technique

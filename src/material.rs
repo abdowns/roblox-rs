@@ -35,6 +35,42 @@ pub struct PhysicalProperties {
     pub elasticity_weight: f32,
 }
 
+impl PhysicalProperties {
+    /// The five-value PhysicalProperties ctor as Lua `PhysicalProperties.new`
+    /// (0058125c) and the XML reader (00ab7e9e) apply it, from the stored
+    /// order [density, friction, elasticity, frictionWeight,
+    /// elasticityWeight]: density to [0.01, 100], friction to [0, 2],
+    /// elasticity to [0, 1], both weights to [0, 100]. A NaN takes the lower
+    /// bound, as the native compare masks do.
+    pub fn custom(values: [f32; 5]) -> Self {
+        let [
+            density,
+            friction,
+            elasticity,
+            friction_weight,
+            elasticity_weight,
+        ] = values;
+        let clamp = |v: f32, max: f32| {
+            if 0.0 < v {
+                if max <= v { max } else { v }
+            } else {
+                0.0
+            }
+        };
+        Self {
+            density: if 0.01 < density {
+                if 100.0 <= density { 100.0 } else { density }
+            } else {
+                0.01
+            },
+            elasticity: clamp(elasticity, 1.0),
+            friction: clamp(friction, 2.0),
+            friction_weight: clamp(friction_weight, 100.0),
+            elasticity_weight: clamp(elasticity_weight, 100.0),
+        }
+    }
+}
+
 /// Contact +0x2c: copied into each new ContactConnector at +0xb0..+0xbc
 /// (00ae5a80); the spring reads +0xb0/+0xb4/+0xb8 (00a93074).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -302,6 +338,22 @@ impl MaterialProfile {
         })
     }
 
+    /// Primitive::getPhysicalProperties 00a43dbe: the custom record when
+    /// CustomPhysicalProperties is enabled (+0xc4, first byte), else the
+    /// material defaults (+0xc8). Contact params (00a43fb4, 00a44104) and the
+    /// RunningBase floor friction (00a43e10 custom, 00a43f4c material) read
+    /// the same fields, so every physics consumer takes this record.
+    pub fn properties(
+        &self,
+        material: u32,
+        custom: Option<[f32; 5]>,
+    ) -> Result<PhysicalProperties, String> {
+        match custom {
+            Some(values) => Ok(PhysicalProperties::custom(values)),
+            None => self.defaults(material),
+        }
+    }
+
     /// The material defaults a Part without CustomPhysicalProperties uses.
     pub fn defaults(&self, material: u32) -> Result<PhysicalProperties, String> {
         self.materials
@@ -552,4 +604,31 @@ pub fn audit(bundle: &Bundle) -> Result<String, String> {
     )
     .unwrap();
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn custom_physical_properties_follow_the_native_clamps() {
+        // Stored order: density, friction, elasticity, frictionWeight,
+        // elasticityWeight (0058125c, 00ab7e9e).
+        let p = PhysicalProperties::custom([500.0, -1.0, 2.0, 300.0, f32::NAN]);
+        assert_eq!(p.density, 100.0);
+        assert_eq!(p.friction, 0.0);
+        assert_eq!(p.elasticity, 1.0);
+        assert_eq!(p.friction_weight, 100.0);
+        assert_eq!(p.elasticity_weight, 0.0);
+        let p = PhysicalProperties::custom([0.001, 1.5, 0.25, 2.0, 3.0]);
+        assert_eq!(
+            p,
+            PhysicalProperties {
+                density: 0.01,
+                elasticity: 0.25,
+                friction: 1.5,
+                friction_weight: 2.0,
+                elasticity_weight: 3.0,
+            }
+        );
+    }
 }

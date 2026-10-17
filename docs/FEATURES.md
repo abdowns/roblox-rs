@@ -59,8 +59,8 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   classes and the Part properties the simulation does not use yet.
 
 - The demo place is a file: `viewport-baseplate` loads
-  `places/viewport-baseplate.rbxm` (51 Parts, 5 joints, 3 decals) and logs
-  `place_loaded ... parts=51 joints=5`. `rbxm-dump <file>` prints any model
+  `places/viewport-baseplate.rbxm` (53 Parts, 5 joints, 3 decals) and logs
+  `place_loaded ... parts=53 joints=5`. `rbxm-dump <file>` prints any model
   file as text. Run `sh tools/cargo.sh test --locked
   the_demo_place_round_trips`; expect it to pass (loading and saving gives
   the same bytes).
@@ -492,6 +492,25 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   is pushed (they are posed from the same body frame as the Crate draw, but
   no audit measures it).
 
+- CustomPhysicalProperties on Parts (`PartInstance::custom_physical_properties`,
+  `MaterialProfile::properties`), ported from 00a43dbe (custom record or
+  material defaults), the contact params 00a43fb4 and the floor friction
+  00a43e10, with the ctor clamps of 0058125c. Loads from and saves to
+  .rbxm/.rbxmx unchanged. Run
+  `sh tools/cargo.sh run --locked -- audit-part-custom-physics`. Expect:
+  - `part_custom_properties name=Bouncy density=0.7 friction=0.3 elasticity=1 friction_weight=1 elasticity_weight=100 mass=2.9321532 ...`;
+  - `part_custom_properties name=Heavy density=100 friction=0 ... mass=800 floor_friction=0.15`
+    (density 500 clamped to 100, friction -1 to 0);
+  - `part_custom_result plain_landed=Some(78) bouncy_landed=Some(78) plain_rebound_y=4.332429 bouncy_rebound_y=11.26228 ... light_mass=5.6 heavy_mass=800 ...`;
+  - `part_custom_pass parts=4 custom=2 bouncy_higher=true clamped_density=100 native_differential=not_tested`.
+
+  `sh tools/cargo.sh test --locked custom_physical_properties` checks the
+  clamps and the demo place's HeavyCrate round trip. Not tested against the
+  original: the bounce heights (the elastic ball rises to 11.26 from a drop
+  at 11, a 2% energy gain from the penalty spring; whether the original
+  gains the same is not verified), and whether the binary reader clamps on
+  load (the port clamps when building the physics record).
+
 - Part materials at the native low quality level (`material_generator`,
   `Gpu::add_materials`), ported from createDefaultMaterial 010c0e00,
   createRenderMaterial 010bc630, getTiling 010c3c40, the UV offset table
@@ -528,7 +547,7 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   mips are CPU-averaged. Ice and Aluminum ship 4x4 placeholder diffuse maps in
   this install, so they draw nearly flat. Not ported: the high-quality
   techniques (normal, specular and normal-detail maps, tangents), outlines,
-  transparent Parts, CustomPhysicalProperties. Not tested: how it looks
+  transparent Parts. Not tested: how it looks
   against the original (log, don't look).
 
 - Ball Parts are drawn as addSphere's cube sphere (`geometry::workspace_sphere`).

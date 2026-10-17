@@ -1278,6 +1278,126 @@ pub fn audit_part_glue(bundle: &Bundle) -> Result<String, String> {
     Ok(report)
 }
 
+/// CustomPhysicalProperties in the kernel (00a43dbe: the custom record
+/// replaces the material defaults in mass, contact params and floor
+/// friction):
+/// - "Plain" (Plastic, elasticity 0.5) and "Bouncy" (custom elasticity 1
+///   with weight 100) are 2-stud balls dropped from y = 11 onto the
+///   Baseplate. Against the Baseplate's Plastic the weighted contact
+///   elasticity is 0.5 for Plain and (100 x 1 + 1 x 0.5) / 101 = 0.995 for
+///   Bouncy, so Bouncy rebounds higher;
+/// - "Light" (Plastic) and "Heavy" (custom density 500, clamped to 100;
+///   friction -1, clamped to 0) are 2-stud blocks: masses 8 x 0.7 = 5.6 and
+///   8 x 100 = 800.
+pub fn audit_part_custom_physics(bundle: &Bundle) -> Result<String, String> {
+    let bytes = bundle.read(
+        "Contents/Resources/content/fonts/character3.rbxm",
+        16 * 1024 * 1024,
+    )?;
+    let scene = Scene::parse(std::str::from_utf8(&bytes).map_err(|e| e.to_string())?)?;
+    let mut rig = R6Rig::character(bundle, &scene)?;
+    let workspace = Workspace::place("audit-part-custom-physics")?;
+    let mut fixture = WalkingFixture::in_workspace(bundle, &scene, &rig, &workspace)?;
+    let mut report = String::new();
+    let loose = &fixture.world.loose;
+    for prim in &loose.prims {
+        let p = prim.properties();
+        let part = &loose.parts[prim.assembly];
+        writeln!(
+            report,
+            "part_custom_properties name={} density={} friction={} elasticity={} friction_weight={} elasticity_weight={} mass={} floor_friction={}",
+            prim.name,
+            p.density,
+            p.friction,
+            p.elasticity,
+            p.friction_weight,
+            p.elasticity_weight,
+            1.0 / part.body.inverse_mass(),
+            prim.floor_friction()
+        )
+        .unwrap();
+    }
+    let index = |name: &str| {
+        fixture
+            .world
+            .loose
+            .parts
+            .iter()
+            .position(|p| p.name == name)
+            .ok_or(format!("missing assembly {name}"))
+    };
+    let (plain, bouncy) = (index("Plain")?, index("Bouncy")?);
+    let (light, heavy) = (index("Light")?, index("Heavy")?);
+    let mass = |i: usize| 1.0 / fixture.world.loose.parts[i].body.inverse_mass();
+    let (light_mass, heavy_mass) = (mass(light), mass(heavy));
+    // Track each ball: the first landing, then the highest point after it.
+    let mut landed = [None::<u32>; 2];
+    let mut rebound = [f32::NEG_INFINITY; 2];
+    let mut falling = [false; 2];
+    for step in 0..720u32 {
+        fixture.step_animated(&mut rig, [0.0; 3])?;
+        let parts = &fixture.world.loose.parts;
+        for (k, i) in [plain, bouncy].into_iter().enumerate() {
+            let body = &parts[i].body;
+            let (y, vy) = (body.frame.position[1], body.velocity[1]);
+            match landed[k] {
+                None if vy > 0.0 => {
+                    landed[k] = Some(step + 1);
+                    falling[k] = false;
+                }
+                Some(_) if !falling[k] => {
+                    rebound[k] = rebound[k].max(y);
+                    if vy < 0.0 {
+                        falling[k] = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if (step + 1) % 120 == 0 {
+            writeln!(
+                report,
+                "part_custom_state step={} plain_y={} bouncy_y={} heavy_y={} light_y={}",
+                step + 1,
+                parts[plain].body.frame.position[1],
+                parts[bouncy].body.frame.position[1],
+                parts[heavy].body.frame.position[1],
+                parts[light].body.frame.position[1],
+            )
+            .unwrap();
+        }
+    }
+    let parts = &fixture.world.loose.parts;
+    let rest = |i: usize| parts[i].body.frame.position[1];
+    writeln!(
+        report,
+        "part_custom_result plain_landed={:?} bouncy_landed={:?} plain_rebound_y={} bouncy_rebound_y={} plain_rest_y={} bouncy_rest_y={} light_mass={light_mass} heavy_mass={heavy_mass} heavy_y={} light_y={}",
+        landed[0],
+        landed[1],
+        rebound[0],
+        rebound[1],
+        rest(plain),
+        rest(bouncy),
+        rest(heavy),
+        rest(light),
+    )
+    .unwrap();
+    let mass_ok = (light_mass - 5.6).abs() < 1e-3 && (heavy_mass - 800.0).abs() < 1e-2;
+    let bounce_ok = landed.iter().all(Option::is_some) && rebound[1] > rebound[0] + 0.5;
+    let rest_ok = [heavy, light].iter().all(|&i| (rest(i) - 1.0).abs() < 0.1);
+    if !(mass_ok && bounce_ok && rest_ok) {
+        return Err(format!(
+            "custom physical properties failed mass_ok={mass_ok} bounce_ok={bounce_ok} rest_ok={rest_ok}\n{report}"
+        ));
+    }
+    writeln!(
+        report,
+        "part_custom_pass parts=4 custom=2 bouncy_higher=true clamped_density=100 native_differential=not_tested"
+    )
+    .unwrap();
+    Ok(report)
+}
+
 /// Ball Parts (Shape = Ball, `ball_contact.rs`) in the kernel:
 /// - "Drop" (diameter 2) falls 7 studs onto the Baseplate (BallBlock against
 ///   a static block) and comes to rest on it;

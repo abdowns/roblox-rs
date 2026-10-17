@@ -1,5 +1,38 @@
 # MODLOG
 
+## 2026-10-17 CustomPhysicalProperties
+
+**Changed:**
+- `PartInstance` gains `custom_physical_properties: Option<[f32; 5]>`
+  (the file's value, stored order). Loading no longer refuses custom
+  properties; saving writes them back.
+- `material.rs`: `PhysicalProperties::custom` (the native five-value ctor
+  clamps) and `MaterialProfile::properties(material, custom)`
+  (Primitive::getPhysicalProperties 00a43dbe).
+- `loose.rs` / `world.rs`: unanchored and anchored Parts, and the
+  character's XML colliders, take that record (mass, contact params, floor
+  friction) instead of the material defaults. New `LoosePrim::properties`.
+- New `audit-part-custom-physics` with `places/audit-part-custom-physics.rbxm`.
+- Demo place: "HeavyCrate" (density 100) next to the Crate and a
+  "BouncyBall" (elasticity 1, weight 100) by the material wall (53 Parts,
+  8042 bytes).
+
+**Why:** the remaining material-related behavior after the material
+rendering step: the user asked for everything related to materials.
+
+**Tested how:** `audit-part-custom-physics` (masses 5.6 and 800, clamped
+density 100, the elastic ball rebounds to 11.26 vs 4.33 for Plastic, blocks
+rest at y 0.98); `test` 141 pass (new clamp and round-trip tests); clippy
+clean; audit-part-drop, push, stand, ball, ball-push, wedge, weld, glue,
+hinge, motor, wall, audit-material, audit-workspace, audit-rbxm,
+audit-walking, audit-baseplate and viewport-baseplate-smoke still pass.
+
+**Not tested:** against the original. The elastic ball gains about 2% height
+per bounce (11.26 from a drop at 11); whether native does the same is not
+verified. Whether the native binary reader clamps on load is not verified
+(the port clamps when building the physics record). Pushing the HeavyCrate
+by hand is not tested.
+
 ## 2026-10-17 Part materials (low quality techniques)
 
 **Changed:**

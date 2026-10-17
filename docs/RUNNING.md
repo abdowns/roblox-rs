@@ -15,12 +15,15 @@ with studs on top, under the default sky. The character spawns with its Head at
 (0, 107, 0), falls about one second with the fall animation, lands and idles.
 The Baseplate and the demo Parts are read from the place file
 `places/viewport-baseplate.rbxm` (the log prints `place_loaded
-path=.../places/viewport-baseplate.rbxm parts=51 joints=5`). Print its
+path=.../places/viewport-baseplate.rbxm parts=53 joints=5`). Print its
 contents with `sh tools/cargo.sh run --locked -- rbxm-dump
 places/viewport-baseplate.rbxm`. Next to the Baseplate are five unanchored
 Parts:
 - a red 4x6x2 "Crate" 8 studs ahead of the spawn: walk forward (W) into it and
   the character pushes it until it tips over;
+- a black "HeavyCrate" of the same size 6 studs to its right, with
+  CustomPhysicalProperties density 100 (mass 4800 against the Crate's 33.6):
+  pushing it is much harder (not tested by hand or audit);
 - two blue Parts resting on each other to the front left;
 - a yellow Part dropped flat from y = 40 and a green one dropped tilted from
   y = 60, landing ahead of the spawn.
@@ -53,8 +56,10 @@ SmoothPlastic, Neon, Wood, WoodPlanks, Marble, Slate, Concrete, Granite, Brick
 on the lower row; Pebble, Cobblestone, Rust, Diamondplate, Aluminum, Metal,
 Grass, Sand, Fabric, Ice on the upper). Left of it a Wood Ball (-26, 2, -40)
 and a Rust Wedge (-31, 2, -40); right of it a reflective Plastic "Mirror"
-(22, 3, -40) showing the sky. The log prints
-`workspace_material_pass parts=51 textures=17 wang=true glow=2.2`,
+(22, 3, -40) showing the sky, and a yellow "BouncyBall" (diameter 3) dropped
+from y = 20 at (-36, -40) with CustomPhysicalProperties elasticity 1 (weight
+100), which keeps bouncing. The log prints
+`workspace_material_pass parts=53 textures=17 wang=true glow=2.2`,
 `envmap_pass size=256 faces=6 mips=9 stars=false` and
 `material_gpu_pass pipelines=4 bind_groups=19 draw_calls=23 environment_map=true`.
 
@@ -85,6 +90,7 @@ roll down a ramp and knock into each other (`audit-part-ball`), and the
 character pushes a loose ball and is stopped by an anchored one
 (`audit-part-ball-push`). Balls are drawn as spheres (`audit-ball-render`). Decals and tiled Textures on blocks: `audit-decal-render`.
 Part materials (textures, Neon glow, reflection): `audit-material-render`.
+CustomPhysicalProperties (density, elasticity, friction): `audit-part-custom-physics`.
 Wedge Parts land, tumble and carry blocks down their slope, and the
 character walks up them (`audit-part-wedge`). They are drawn by the native
 Wedge path (`geometry::workspace_wedge`).
@@ -237,7 +243,7 @@ Expect, for each of the two native binary models in the install
 first_difference=None instances=67 classes={...}` (6353 bytes and 22
 instances for the second). Then three `rbxm_xml_round_trip file=...
 bytes=... xml_bytes=... identical=true` lines, for
-places/viewport-baseplate.rbxm (7944 bytes) and the same two models:
+places/viewport-baseplate.rbxm (8042 bytes) and the same two models:
 binary -> XML -> binary gives the same bytes. Then one `rbxmx_rewrite
 file=... identical=... skipped={} first_difference=... context=...` line
 for each of the 19 XML models, `identical=true` for PhysicsAnalyzer,
