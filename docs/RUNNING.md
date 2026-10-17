@@ -110,6 +110,22 @@ frame, `dev_panel open=false ...` / `open=true` on each toggle,
 on Log snapshot. The frame-limited smokes (`viewport-baseplate-smoke` etc.)
 also run with `--features dev`.
 
+Decal tool (in the panel, baseplate viewport only): "Pick image…" opens a
+file dialog for a PNG or JPEG and shows a preview. Tick "Click a surface to
+apply", then left-click a block Part. The image goes on the face you
+clicked, and the log prints `dev_decal_applied part="..." face=N loose=...
+decals=N changed_pixels=N` one frame later. "Clear (n)" removes them
+(`dev_decal_cleared removed=n ...`). Clicking the character or a non-block
+Part logs `dev_decal_failed reason=...`. Scripted check:
+
+```sh
+DEV_DECAL_SMOKE="$PWD/RobloxStudio/Contents/Resources/content/textures/lua.png,@Stack" sh tools/cargo.sh run --locked --features dev -- viewport-baseplate-smoke
+```
+
+Expected: `dev_decal_applied part="Stack" face=2 loose=true decals=5
+changed_pixels=N` and then `dev_decal_cleared removed=1 decals=4
+changed_pixels=N` with the same N (about 12000; it varies with timing).
+
 ## Play the experimental walking fixture
 
 ```sh

@@ -655,6 +655,12 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   viewport-baseplate-smoke`; expected `dev_panel open=true paint_jobs=3
   vertices=...` and `viewport_final_readback_pass`. The controls themselves
   are **not tested** (they need clicks in the window).
+- **Dev decal tool** (same feature): pick an image, click a block Part's
+  face to apply it as a Decal (follows loose Parts), preview in the panel,
+  clear. Test: the `DEV_DECAL_SMOKE=...,@Stack viewport-baseplate-smoke`
+  command in RUNNING.md; expected `dev_decal_applied ... changed_pixels=N`
+  and `dev_decal_cleared ... changed_pixels=N` (same N). The file dialog
+  and real clicks are **not tested**.
 
 ## What does not work / not tested
 

@@ -1,5 +1,56 @@
 # MODLOG
 
+## 2026-10-16 Dev panel decal tool
+
+**Changed:**
+- New `src/dev/decal_tool.rs` (child of the dev panel; no product code
+  changed). A "decal tool" section in the panel: "Pick image…" opens a
+  native file dialog (new optional dependency `rfd` 0.17.2, dev feature
+  only), shows a 96x96 preview and the size. Then "Click a surface to apply"
+  makes a left click in the viewport put the image on the face under the
+  cursor as a Decal. "Clear (n)" removes the decals the tool added.
+- The click casts a camera ray against the drawn triangles. The nearest hit
+  must be a block Part of the demo place. Its face (NormalId) comes from the
+  hit triangle's normal in the Part-local draw. The quad is
+  `geometry::workspace_decal`. Decals on loose Parts get `LooseDecal` and
+  follow the body.
+- Images are resized to a square power of two (16..512) with a Triangle
+  filter before `PngTexture::from_rgba`. This is dev tooling, not the
+  native resize.
+- GPU order: the extract system's cached query iterates decals in a
+  different order than a fresh query. So the GPU decal list is rebuilt from
+  `ExtractedDecals` on the frame after a change, and that frame takes no
+  physics step (so `update_geometry` doesn't run on a mismatched list).
+  Tool decals carry no marker component, which keeps them in the existing
+  archetypes.
+- Scripted check: `DEV_DECAL_SMOKE=image,@Part` (or `image,fx,fy`) applies
+  the image to that Part at frame 90 and clears it at frame 91.
+
+**Why:** the user asked for a dev-mode tool to pick an image and click a
+surface to apply it as a decal, with a preview in the panel.
+
+**Tested how:**
+- `DEV_DECAL_SMOKE=.../textures/lua.png,@Stack viewport-baseplate-smoke`
+  (dev feature): `dev_decal_applied part="Stack" face=2 loose=true decals=5
+  changed_pixels=12093`, then `dev_decal_cleared removed=1 decals=4
+  changed_pixels=12093` (the clear removes exactly what the apply added),
+  and the 120 frames finish. Also tried: Baseplate (face 1, Top), Tiles
+  (anchored), Rest, Slider and Tumble (face 4, it lies tilted), and an
+  opaque JPEG (dirt.jpg). Off-screen Parts and the character give
+  `dev_decal_failed` ("Part is off screen", "\"Head\" is not a Part").
+- `test --features dev`: 136 pass (new `ray_hits_triangle_in_front_only`).
+  Without the feature: 135. clippy is clean with the feature.
+
+**Not tested:** the file dialog, the preview widget, the checkbox and real
+mouse clicks (they need a person at the window; the scripted check calls the
+same `click` with a computed cursor). Wedges, Balls and Cylinders are
+refused, not supported. Only the baseplate viewport works.
+
+**Dead end:** my first `changed_pixels=0` results on the Crate were not a
+render bug. The Crate was off screen (projected x=2060 in a 1920-wide
+frame) and the unclipped ray still hit it. The scripted check now refuses
+off-screen targets.
+
 ## 2026-10-16 Developer panel (`--features dev`)
 
 **Changed:**

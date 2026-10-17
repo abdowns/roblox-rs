@@ -20,9 +20,10 @@ image = { version = "=0.25.10", default-features = false, features = ["png", "jp
 egui = { version = "=0.37.0", optional = true, default-features = false, features = ["default_fonts"] }
 egui-wgpu = { version = "=0.37.0", optional = true, default-features = false }
 egui-winit = { version = "=0.37.0", optional = true, default-features = false }
+rfd = { version = "=0.17.2", optional = true, default-features = false }
 
 [features]
-dev = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
+dev = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit", "dep:rfd"]
 
 [lints.rust]
 unsafe_code = "forbid"

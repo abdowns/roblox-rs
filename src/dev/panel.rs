@@ -10,6 +10,9 @@ use std::time::Instant;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+#[path = "decal_tool.rs"]
+mod decal_tool;
+
 const HISTORY: usize = 120;
 
 pub(super) struct DevPanel {
@@ -30,11 +33,15 @@ pub(super) struct DevPanel {
     steps_this_frame: u32,
     /// Open state last written to the live log.
     logged_open: Option<bool>,
+    /// Last cursor position in physical pixels.
+    cursor: Option<[f64; 2]>,
+    decals: decal_tool::DecalTool,
 }
 
 enum Action {
     Reset,
     Snapshot,
+    ClearDecals,
 }
 
 /// Create the panel once the window and GPU exist.
@@ -76,6 +83,8 @@ fn panel(v: &mut Viewport) -> Option<&mut DevPanel> {
             last_step: 0,
             steps_this_frame: 0,
             logged_open: None,
+            cursor: None,
+            decals: Default::default(),
         });
     }
     v.dev.as_mut()
@@ -98,9 +107,29 @@ pub(super) fn event(v: &mut Viewport, event: &WindowEvent) -> bool {
         }
         return true;
     }
+    if let WindowEvent::CursorMoved { position, .. } = event {
+        dev.cursor = Some([position.x, position.y]);
+    }
     let response = dev.state.on_window_event(&window, event);
     if response.repaint {
         window.request_redraw();
+    }
+    if let WindowEvent::MouseInput {
+        state: ElementState::Pressed,
+        button: winit::event::MouseButton::Left,
+        ..
+    } = event
+        && !response.consumed
+        && dev.decals.picking
+        && !dev.ctx.egui_wants_pointer_input()
+        && let Some(cursor) = dev.cursor
+    {
+        let line = decal_tool::click(v, cursor)
+            .unwrap_or_else(|e| format!("dev_decal_failed reason={e:?}"));
+        v.dev.as_mut().unwrap().decals.status = line.clone();
+        let _ = v.log_event(line);
+        window.request_redraw();
+        return true;
     }
     response.consumed
 }
@@ -118,6 +147,7 @@ pub(super) fn before_frame(v: &mut Viewport) {
     }
     dev.frame_start = Some(now);
     let (paused, step_once, scale) = (dev.paused, dev.step_once, dev.time_scale);
+    let hold = dev.decals.pending.is_some();
     dev.step_once = false;
     let sky = dev
         .time_of_day
@@ -133,6 +163,11 @@ pub(super) fn before_frame(v: &mut Viewport) {
         }
     } else if scale != 1.0 {
         v.motion_clock = now - now.duration_since(v.motion_clock).mul_f32(scale);
+    }
+    if hold {
+        // No physics step this frame: see decal_tool::upload.
+        v.motion_clock = now;
+        v.motion_remainder = 0.0;
     }
     if let Some((lighting, sky)) = sky {
         v.inputs.apply_lighting(&lighting);
@@ -269,6 +304,13 @@ pub(super) fn draw(
                 egui::CollapsingHeader::new("walking report").show(ui, |ui| {
                     ui.monospace(report.as_deref().unwrap_or("-"));
                 });
+                egui::CollapsingHeader::new("decal tool")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        if dev.decals.ui(ui) {
+                            actions.push(Action::ClearDecals);
+                        }
+                    });
                 egui::CollapsingHeader::new("gpu").show(ui, |ui| {
                     ui.monospace(&info);
                 });
@@ -352,6 +394,19 @@ pub(super) fn draw(
     if let Some(event) = shown {
         v.log_event(event)?;
     }
+    if let Some(line) = decal_tool::upload(v)? {
+        v.dev.as_mut().unwrap().decals.status = line.clone();
+        v.log_event(line)?;
+    }
+    if v.frames == 90
+        && let Some(result) = decal_tool::smoke(v, &v.dev.as_ref().unwrap().ctx.clone())
+    {
+        v.log_event(result.unwrap_or_else(|e| format!("dev_decal_failed reason={e:?}")))?;
+    }
+    if v.frames == 91 && std::env::var_os("DEV_DECAL_SMOKE").is_some() {
+        let line = decal_tool::clear(v)?;
+        v.log_event(format!("dev_decal_smoke_clear {line}"))?;
+    }
     for action in actions {
         match action {
             Action::Reset => {
@@ -366,6 +421,11 @@ pub(super) fn draw(
                 v.log_event(format!("dev_action reset walking={walking}"))?;
             }
             Action::Snapshot => v.log_event(snapshot.clone())?,
+            Action::ClearDecals => {
+                let line = decal_tool::clear(v)?;
+                v.dev.as_mut().unwrap().decals.status = line.clone();
+                v.log_event(line)?;
+            }
         }
     }
     Ok(())

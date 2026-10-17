@@ -243,6 +243,10 @@ and time scale work by moving the viewport's motion clock, so the physics
 stepping code is unchanged. TimeOfDay goes through the same
 `LightingProfile::sky` / `render_lighting` path as the viewport's start-up.
 To remove it, delete `src/dev/`, the hooks and the feature.
+The decal tool (`src/dev/decal_tool.rs`) adds Decal entities at runtime.
+The GPU decal list must stay in the extract system's iteration order, and
+that order differs from a fresh query's. So a change is uploaded on the
+next frame from `ExtractedDecals`, and that frame takes no physics step.
 
 ## Physics to render bridge
 
