@@ -178,7 +178,23 @@ Expect, for each of the two native binary models in the install
 (`characterR15_2.rbxm`, `humanoidAnimateR15_2.rbxm`), a line
 `rbxm_rewrite file=... bytes=7610 written=7610 identical=true
 first_difference=None instances=67 classes={...}` (6353 bytes and 22
-instances for the second), then `rbxm_pass files=2`. The files are only read.
+instances for the second). Then one `rbxmx_rewrite file=... identical=...
+skipped={} first_difference=... context=...` line for each of the 19 XML
+models, `identical=true` for PhysicsAnalyzer, TransformDragger,
+VideoDocumentation, character3, humanoidAnimateLocalKeyframe2,
+humanoidAnimateR15 and humanoidSoundNewLocal, and last
+`rbxm_pass files=2 xml_files=19 xml_identical=7`. TerrainTools.rbxmx differs
+only by its final newline (`first_difference=Some(248755)`). The audit fails
+if one of the seven stops matching. The files are only read.
+
+```sh
+sh tools/cargo.sh run --locked -- rbxm-convert places/viewport-baseplate.rbxm demo.rbxmx
+```
+
+Converts a model file; the output is XML for `.rbxmx`/`.rbxlx` and binary
+otherwise. Prints `rbxm_convert input=... output=demo.rbxmx instances=32`.
+Converting an install file writes game data: keep that output inside
+`RobloxStudio/`.
 
 ## Run the first offline diagnostic
 

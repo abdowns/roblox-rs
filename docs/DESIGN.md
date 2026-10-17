@@ -875,6 +875,28 @@ XML-writable property and read in name order. A save puts the Parts first,
 then the joints, all at the top level, so a load gives back the same
 creation order.
 
+The XML format is in rbxmx.rs. The reader follows TextXmlParser (00bb92c0):
+a hand-written tag scanner, not a conforming XML parser. It reads text up
+to the next '<' and decodes only the entities the native decoder knows
+(`&#N;` is a byte, not a Unicode character), and it keeps CDATA raw, line
+endings included. The writer builds the element tree the property
+descriptors build and prints it the way TextXmlWriter (00bba086) does, so
+tabs, CDATA choice, escaping and number formats match. Each instance keeps
+the `referent` it was read with (`ModelInstance::referent`): natively the
+loader stores it on the Instance and the writer reuses it. New instances
+get a counter-derived "RBX" + 32 hex id where Studio would use a random
+GUID. Properties are written in name order, which is the native order
+(every native file is sorted).
+
+`Property` has Content, ProtectedString and BinaryString next to String so
+an XML file keeps its tags. The binary format has one string type, so
+these come back as String from a binary file. XML writes BrickColor as
+`<int>`, so it comes back as Int. Native Studio resolves both from
+reflection. Until the port has the reflection table, a generic binary <->
+XML conversion keeps every value but can change these types.
+`Workspace::from_model` accepts either, and `to_model` writes the native
+types, so Workspace files convert exactly.
+
 Places made for the port (the viewport demo, and later the audit places)
 are binary .rbxm files in `places/`, written with `Workspace::save` and read
 with `Workspace::load`. To change one: load it, edit the Workspace in code

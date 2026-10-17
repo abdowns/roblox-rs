@@ -11,7 +11,7 @@
 //!   larger ones).
 //!
 //! `Model::to_binary` writes what the native writer writes for the same
-//! tree. The XML reader decodes only the property types the loaders need.
+//! tree. The XML format (TextXmlParser / TextXmlWriter) is in `rbxmx.rs`.
 use crate::scene::CoordinateFrame;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -21,7 +21,9 @@ use std::path::Path;
 /// (the quaternion CFrame, only written with stream flag 4).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Property {
-    /// 0x01: string, Content, ProtectedString (valid UTF-8).
+    /// 0x01: a string (valid UTF-8). The binary format has one string
+    /// type, so Content and ProtectedString values read from a binary file
+    /// are this variant too.
     String(String),
     Bool(bool),
     Int(i32),
@@ -62,13 +64,24 @@ pub enum Property {
     /// 0x19: None for the material default, or the custom values as stored
     /// (density, friction, elasticity, friction weight, elasticity weight).
     PhysicalProperties(Option<[f32; 5]>),
+    /// 0x01 in binary; the XML `Content` tag (an asset URL, empty for
+    /// `<null>`).
+    Content(String),
+    /// 0x01 in binary; the XML `ProtectedString` tag (script Source).
+    ProtectedString(String),
+    /// 0x01 in binary; the XML `BinaryString` tag (base64 in XML).
+    BinaryString(Vec<u8>),
 }
 
 impl Property {
     /// The binary format's type byte (00e0cb3a).
     pub fn type_id(&self) -> u8 {
         match self {
-            Self::String(_) | Self::Bytes(_) => 0x01,
+            Self::String(_)
+            | Self::Bytes(_)
+            | Self::Content(_)
+            | Self::ProtectedString(_)
+            | Self::BinaryString(_) => 0x01,
             Self::Bool(_) => 0x02,
             Self::Int(_) => 0x03,
             Self::Float(_) => 0x04,
@@ -94,6 +107,14 @@ impl Property {
             Self::PhysicalProperties(_) => 0x19,
         }
     }
+    /// The raw bytes of any of the string variants.
+    pub fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::String(s) | Self::Content(s) | Self::ProtectedString(s) => Some(s.as_bytes()),
+            Self::Bytes(b) | Self::BinaryString(b) => Some(b),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,6 +122,10 @@ pub struct ModelInstance {
     pub class: String,
     pub properties: BTreeMap<String, Property>,
     pub children: Vec<usize>,
+    /// The XML `referent` the instance was read with. The native loader
+    /// keeps it on the instance (00bb0cbe) and the XML writer reuses it
+    /// (00bb5ea8), so a read and a write keep the referents.
+    pub referent: Option<String>,
 }
 
 impl ModelInstance {
@@ -111,9 +136,13 @@ impl ModelInstance {
         }
     }
     pub fn name(&self) -> &str {
-        match self.properties.get("Name") {
-            Some(Property::String(s)) => s,
-            _ => "",
+        self.string("Name").unwrap_or("")
+    }
+    /// A String, Content or ProtectedString property.
+    pub fn string(&self, name: &str) -> Option<&str> {
+        match self.properties.get(name)? {
+            Property::String(s) | Property::Content(s) | Property::ProtectedString(s) => Some(s),
+            _ => None,
         }
     }
     pub fn float(&self, name: &str) -> Option<f32> {
@@ -172,7 +201,7 @@ impl Model {
         if bytes.starts_with(b"<roblox!") {
             parse_binary(bytes)
         } else if bytes.starts_with(b"<roblox") {
-            parse_xml(std::str::from_utf8(bytes).map_err(|e| e.to_string())?)
+            crate::rbxmx::parse(bytes)
         } else {
             Err("not a Roblox model".into())
         }
@@ -181,9 +210,19 @@ impl Model {
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         Self::parse(&bytes).map_err(|e| format!("{}: {e}", path.display()))
     }
-    /// Writes the binary format (`to_binary`).
+    /// Writes the XML format (`to_xml`) for a `.rbxmx` or `.rbxlx` path,
+    /// as Studio's save dialog does, and the binary format (`to_binary`)
+    /// for any other.
     pub fn write_file(&self, path: &Path) -> Result<(), String> {
-        std::fs::write(path, self.to_binary()?).map_err(|e| format!("{}: {e}", path.display()))
+        let xml = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("rbxmx") || e.eq_ignore_ascii_case("rbxlx"));
+        let bytes = if xml { self.to_xml()? } else { self.to_binary()? };
+        std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+    }
+    /// The XML format as the native TextXmlWriter writes it (`rbxmx.rs`).
+    pub fn to_xml(&self) -> Result<Vec<u8>, String> {
+        crate::rbxmx::write(self)
     }
     /// Appends an instance under `parent` (a root when None) and returns
     /// its index.
@@ -451,13 +490,13 @@ impl Writer {
         let first = values[0];
         self.u8(first.type_id());
         match first {
-            Property::String(_) | Property::Bytes(_) => {
+            Property::String(_)
+            | Property::Bytes(_)
+            | Property::Content(_)
+            | Property::ProtectedString(_)
+            | Property::BinaryString(_) => {
                 for v in values {
-                    match v {
-                        Property::String(s) => self.string(s.as_bytes()),
-                        Property::Bytes(b) => self.string(b),
-                        _ => unreachable!(),
-                    }
+                    self.string(v.bytes().expect("type 0x01"));
                 }
             }
             Property::Bool(_) => each!(Bool).for_each(|b| self.u8(u8::from(*b))),
@@ -1160,70 +1199,6 @@ fn parse_binary(bytes: &[u8]) -> Result<Model, String> {
     Ok(Model { instances, roots })
 }
 
-fn parse_xml(text: &str) -> Result<Model, String> {
-    let doc = roxmltree::Document::parse(text).map_err(|e| e.to_string())?;
-    let mut model = Model::default();
-    fn number<T: std::str::FromStr>(node: roxmltree::Node, tag: &str) -> Result<T, String> {
-        node.children()
-            .find(|n| n.has_tag_name(tag))
-            .and_then(|n| n.text())
-            .ok_or_else(|| format!("missing {tag}"))?
-            .trim()
-            .parse()
-            .map_err(|_| format!("invalid {tag}"))
-    }
-    fn visit(node: roxmltree::Node, model: &mut Model) -> Result<usize, String> {
-        let mut instance = ModelInstance {
-            class: node.attribute("class").unwrap_or("").into(),
-            ..Default::default()
-        };
-        if let Some(properties) = node.children().find(|n| n.has_tag_name("Properties")) {
-            for p in properties.children().filter(|n| n.is_element()) {
-                let Some(name) = p.attribute("name") else {
-                    continue;
-                };
-                let text = p.text().unwrap_or("").trim();
-                let value = match p.tag_name().name() {
-                    "string" | "ProtectedString" => Property::String(p.text().unwrap_or("").into()),
-                    "bool" => Property::Bool(text == "true"),
-                    "int" => Property::Int(text.parse().map_err(|_| "invalid int")?),
-                    "float" => Property::Float(text.parse().map_err(|_| "invalid float")?),
-                    "token" => Property::Token(text.parse().map_err(|_| "invalid token")?),
-                    "CoordinateFrame" => {
-                        let r = |t| number::<f32>(p, t);
-                        Property::CFrame(CoordinateFrame {
-                            position: [r("X")?, r("Y")?, r("Z")?],
-                            rotation: [
-                                [r("R00")?, r("R01")?, r("R02")?],
-                                [r("R10")?, r("R11")?, r("R12")?],
-                                [r("R20")?, r("R21")?, r("R22")?],
-                            ],
-                        })
-                    }
-                    _ => continue,
-                };
-                instance.properties.insert(name.into(), value);
-            }
-        }
-        let index = model.instances.len();
-        model.instances.push(instance);
-        for child in node.children().filter(|n| n.has_tag_name("Item")) {
-            let c = visit(child, model)?;
-            model.instances[index].children.push(c);
-        }
-        Ok(index)
-    }
-    for item in doc
-        .root_element()
-        .children()
-        .filter(|n| n.has_tag_name("Item"))
-    {
-        let index = visit(item, &mut model)?;
-        model.roots.push(index);
-    }
-    Ok(model)
-}
-
 /// The binary models shipped in the install that the native SerializerBinary
 /// wrote (the other `.rbxm` files there are XML).
 pub const NATIVE_BINARY_MODELS: [&str; 2] = [
@@ -1258,7 +1233,18 @@ pub fn audit(bundle: &crate::bundle::Bundle) -> Result<String, String> {
             return Err(format!("{report}rewrite of {path} differs"));
         }
     }
-    writeln!(report, "rbxm_pass files={}", NATIVE_BINARY_MODELS.len()).unwrap();
+    let mut identical = 0;
+    for (line, same) in crate::rbxmx::rewrite_report(bundle)? {
+        writeln!(report, "{line}").unwrap();
+        identical += usize::from(same);
+    }
+    writeln!(
+        report,
+        "rbxm_pass files={} xml_files={} xml_identical={identical}",
+        NATIVE_BINARY_MODELS.len(),
+        crate::rbxmx::NATIVE_XML_MODELS.len()
+    )
+    .unwrap();
     Ok(report)
 }
 

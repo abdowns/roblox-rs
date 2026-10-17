@@ -13,11 +13,39 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   install holds (Int, UDim, UDim2, Ray, Faces, Axes, Color3, Vector2, the
   int16 vectors, the sequences, NumberRange, Rect2D) round-trip through our
   own reader (`sh tools/cargo.sh test --locked rbxm`) but are **not tested**
-  against native output. Writing XML is not implemented.
+  against native output.
+
+- XML model files (.rbxmx/.rbxlx and XML .rbxm, TextXmlParser and
+  TextXmlWriter): reading every type the binary format has, plus Content,
+  ProtectedString and BinaryString; writing the native layout, escaping,
+  CDATA and number formats. Run `sh tools/cargo.sh run --locked --
+  audit-rbxm`; expect 19 `rbxmx_rewrite` lines, `identical=true` for the 7
+  files in `rbxmx::NATIVE_XML_IDENTICAL` (PhysicsAnalyzer,
+  TransformDragger, VideoDocumentation, character3,
+  humanoidAnimateLocalKeyframe2, humanoidAnimateR15, humanoidSoundNewLocal),
+  `skipped={}` on every line, then `rbxm_pass files=2 xml_files=19
+  xml_identical=7`. The other 12 were written by other writers (a trailing
+  newline, MSVC's three-digit exponents, space indentation, no referents,
+  escaped multi-line strings); the line shows where each differs.
+  `sh tools/cargo.sh test --locked rbxmx` checks the number formatting
+  against C printf values and round-trips every type. **Not tested**
+  against native output: BinaryString, Ray, Faces, Axes, Vector2, the int16
+  vectors, the sequences, NumberRange, NaN/INF, and non-ASCII strings (no
+  native XML file holds them). UDim has no native XML writer in 0.255; its
+  `S`/`O` layout is a guess.
+- `rbxm-convert <in> <out>` converts between binary and XML (the output
+  format follows the extension). A conversion keeps every value, but not
+  every type: XML has no BrickColor type (it is `<int>`), and binary has one
+  string type for string, Content and ProtectedString. Native Studio takes
+  the types from reflection, which the port does not have yet, so binary ->
+  XML -> binary of a generic model is **not** byte-identical. Going through
+  a Workspace is (`the_demo_place_round_trips_through_xml`).
 
 - Workspace files: `Workspace::save` and `Workspace::load` write and read
   Parts, WedgeParts and the joints the port simulates with the native
-  property sets. Run `sh tools/cargo.sh test --locked workspace`; expect
+  property sets, binary or XML (by extension). The XML Part property set is
+  assumed to be the binary one (both come from the same descriptor bit); no
+  0.255-written XML Part exists in the install to check it. Run `sh tools/cargo.sh test --locked workspace`; expect
   `the_demo_round_trips_through_a_binary_file` and
   `part_properties_match_a_native_saved_part` to pass. The joint property
   sets are **not tested** against a native file. Loading refuses other

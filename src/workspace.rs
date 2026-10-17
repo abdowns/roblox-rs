@@ -566,7 +566,8 @@ impl Workspace {
     pub fn load(path: &Path) -> Result<Self, String> {
         Self::from_model(&Model::read_file(path)?).map_err(|e| format!("{}: {e}", path.display()))
     }
-    /// Writes a binary .rbxm (`to_model`, `Model::to_binary`).
+    /// Writes the place: XML for a .rbxmx or .rbxlx path, binary for any
+    /// other (`to_model`, `Model::write_file`).
     pub fn save(&self, path: &Path) -> Result<(), String> {
         self.to_model()?.write_file(path)
     }
@@ -799,6 +800,16 @@ mod tests {
         assert_eq!(demo.to_model().unwrap().to_binary().unwrap(), bytes);
         let back = Workspace::from_model(&Model::parse(&bytes).unwrap()).unwrap();
         assert_same(&demo, &back);
+    }
+    #[test]
+    fn the_demo_place_round_trips_through_xml() {
+        let demo = Workspace::place("viewport-baseplate").unwrap();
+        let xml = demo.to_model().unwrap().to_xml().unwrap();
+        let back = Workspace::from_model(&Model::parse(&xml).unwrap()).unwrap();
+        assert_same(&demo, &back);
+        // And back to binary, the file is the same.
+        let bytes = std::fs::read(place_path(DEMO_PLACE)).unwrap();
+        assert_eq!(back.to_model().unwrap().to_binary().unwrap(), bytes);
     }
     #[test]
     fn a_part_has_the_native_property_set() {

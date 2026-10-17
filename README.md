@@ -24,15 +24,15 @@ Early and incomplete. Working today, with an automated audit for each item:
     hinges, motor hinges, Motors and Motor6Ds.
 - **Rendering:** the character, the studded Baseplate, block, Ball and
   Wedge Parts, the default sky and lighting.
-- **Model files:** binary .rbxm read and written byte for byte as the
-  original writes them. The demo place and the test places are .rbxm files
-  in `places/`.
+- **Model files:** binary .rbxm and XML .rbxmx read and written byte for
+  byte as the original writes them. The demo place and the test places are
+  .rbxm files in `places/`.
 
 Not there yet:
 - the Studio editor UI;
 - a general Lua runtime;
-- loading whole places (.rbxl with services, scripts, Models) and writing
-  XML;
+- loading whole places (.rbxl with services, scripts, Models) and the
+  reflection data that types a converted file's properties;
 - the remaining joint kinds (VelocityMotor, ManualGlue, surface joints);
 - Cylinders, CornerWedges and the other Part shapes;
 - textures and decals beyond the character, shadows and outlines.

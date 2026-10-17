@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-rbxm|audit-baseplate|audit-part-wall|audit-part-drop|audit-part-weld|audit-part-glue|audit-part-hinge|audit-part-motor|audit-part-ball|audit-part-ball-push|audit-part-wedge|audit-ball-render|audit-part-push|audit-part-stand|audit-part-jump|audit-humanoid-slope|audit-broadphase|audit-joints|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\n       studio-2016 rbxm-dump <file.rbxm|.rbxl|.rbxmx>\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
+            "Usage: studio-2016 [audit-runtime|audit-geometry|audit-render|audit-player|audit-physics|audit-motion|audit-rig|audit-animation|audit-animation-render|audit-locomotion|audit-collision|audit-assembly|audit-kernel|audit-legacy-contact|audit-block-contact|audit-material|audit-scheduler|audit-camera|audit-lighting|audit-sky|audit-animate|audit-workspace|audit-rbxm|audit-baseplate|audit-part-wall|audit-part-drop|audit-part-weld|audit-part-glue|audit-part-hinge|audit-part-motor|audit-part-ball|audit-part-ball-push|audit-part-wedge|audit-ball-render|audit-part-push|audit-part-stand|audit-part-jump|audit-humanoid-slope|audit-broadphase|audit-joints|audit-baseplate-render|audit-walking|audit-walking-render|viewport-walking|viewport-walking-smoke|viewport-baseplate|viewport-baseplate-smoke|viewport-animation-smoke|viewport|viewport-smoke|viewport-motion-smoke] [RobloxStudio directory]\n       studio-2016 rbxm-dump <file.rbxm|.rbxl|.rbxmx>\n       studio-2016 rbxm-convert <input> <output.rbxm|.rbxmx>\nDefault: open the rendered character viewport. Escape closes it.\nRead-only exact-version import and recovered core-client diagnostics.\nEvidence logs stay in RobloxStudio/analysis."
         );
         return ExitCode::SUCCESS;
     }
@@ -24,6 +24,27 @@ fn main() -> ExitCode {
             }
             Err(error) => {
                 eprintln!("rbxm_dump_failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if args.len() == 3 && args[0] == "rbxm-convert" {
+        let (input, output) = (std::path::Path::new(&args[1]), std::path::Path::new(&args[2]));
+        let result = studio_2016::rbxm::Model::read_file(input).and_then(|model| {
+            model.write_file(output)?;
+            Ok(model.instances.len())
+        });
+        return match result {
+            Ok(instances) => {
+                println!(
+                    "rbxm_convert input={} output={} instances={instances}",
+                    input.display(),
+                    output.display()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("rbxm_convert_failed: {error}");
                 ExitCode::FAILURE
             }
         };

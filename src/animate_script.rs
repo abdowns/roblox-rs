@@ -10,7 +10,7 @@ use crate::{
     animator::{Animator, KeyframeSequence, TrackEvent, TrackId},
     bundle::Bundle,
     humanoid::HumanoidEvent,
-    rbxm::{Model, Property},
+    rbxm::Model,
     rig::R6Rig,
 };
 use sha2::{Digest, Sha256};
@@ -235,10 +235,9 @@ impl AnimateProfile {
             .iter()
             .find(|i| i.class == "LocalScript" && i.name() == "Animate")
             .ok_or("missing Animate LocalScript")?;
-        let Some(Property::String(source)) = script.properties.get("Source") else {
+        let Some(source) = script.string("Source") else {
             return Err("missing Animate source".into());
         };
-        let source = source.as_str();
         for contract in [
             "local _, time = wait(",
             "currentAnimTrack = humanoid:LoadAnimation(anim)",

@@ -1,5 +1,46 @@
 # MODLOG
 
+## 2026-10-16 XML model files: the native reader and writer
+
+**Changed:**
+- New `src/rbxmx.rs`: the 0.255 TextXmlParser and TextXmlWriter with the
+  per-type XML layouts, traced in Ghidra (addresses in docs/RESEARCH.md).
+  `Model::parse` uses it for XML files (the old roxmltree subset reader is
+  gone). `Model::to_xml` is new, and `Model::write_file` writes XML for a
+  `.rbxmx`/`.rbxlx` path.
+- `Property` gains Content, ProtectedString and BinaryString (binary type
+  0x01, separate XML tags), and `Property::bytes`. `ModelInstance` gains
+  `referent` (kept from the file, as natively) and `string(name)`.
+- `Workspace::save` writes XML for an XML extension.
+- `rbxm-convert <in> <out>`.
+- `audit-rbxm` also rewrites the 19 XML models in the install, and fails if
+  one of the 7 that match stops matching.
+- animate_script reads Source through `ModelInstance::string`.
+
+**Why:** The user asked for .rbxm compatibility: reading, loading, saving.
+
+**Tested how:**
+- `audit-rbxm`: 7 of 19 native XML files rewrite byte-identical. The
+  differences in the other 12 are writer differences, listed in RESEARCH.md.
+  `skipped={}` on all 19: every property tag in them is read.
+- `test rbxmx`: %.9g/%.20g against the macOS C printf (checked with a C
+  program), escaping, base64, Color3 bytes, and a round trip of every type.
+- `test workspace`: the demo place through XML gives the same Workspace and,
+  saved as binary again, the same bytes.
+- `audit-animate` output is identical before and after (its script is now
+  read by the new parser).
+- 130 tests pass, clippy is clean.
+
+**Not tested:** native output for BinaryString, Ray, Faces, Axes, Vector2,
+the int16 vectors, the sequences, NumberRange, NaN/INF and non-ASCII text.
+UDim's XML layout is a guess (0.255 has no UDim XML writer). The XML Part
+property set is assumed equal to the binary one.
+
+**Known gap:** binary -> XML -> binary of a generic model is not
+byte-identical. BrickColor comes back as Int, and Content/ProtectedString
+come back as String from binary. Native Studio types them from reflection,
+which the port has not ported yet.
+
 ## 2026-10-16 The audit places are files in places/
 
 **Changed:**

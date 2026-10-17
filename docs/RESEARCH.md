@@ -250,3 +250,62 @@ BallVertex 01c86008: aa9ea4, 9 | BallEdge 01c86068: aa9c2a, 10 | BallPlane 01c86
   - C0 and C1;
   - F0..F3 and BaseAngle;
   - MaxVelocity and DesiredAngle (0x1f), CurrentAngle (0x15).
+
+## XML serializer (rbxmx port session, 2026-10-16)
+
+- Atoms (00bb6dcb): the tag and attribute names are interned once
+  ("roblox", "Item", "Properties", "referent", "External", X..R22, XS/XO/
+  YS/YO, faces, axes, origin, direction, min, max, CustomPhysics, Density,
+  Friction, Elasticity, FrictionWeight, ElasticityWeight, ...). "S" and "O"
+  have no reader or writer: no UDim XML form.
+- Root (00bb070a): `roblox` with xmlns:xmime, xmlns:xsi,
+  xsi:noNamespaceSchemaLocation and version="4" (plus one more attribute
+  when a string argument is non-empty), then `<External>null</External>`
+  and `<External>nil</External>`.
+- Instance::writeXml (00ac2362): `Item` with class and referent, then
+  Properties (00ac227e walks the class's descriptor list; files show it is
+  name-sorted), then the children (00ac21b2). A property element
+  (0056260e) is the type's tag with a `name` attribute, filled by the
+  descriptor's vtable +0x34 writer.
+- Referents (00bb5ea8 case 8): the instance's cached id (+0x10) if the
+  writer accepts it, otherwise 0067202c: "RBX" + a GUID string with the
+  braces and dashes erased. The loader stores the file's referent on the
+  instance (00bb0cbe -> 00bb6300).
+- Value strings (00bb5ea8): bool "true"/"false", int %d, token %u, float
+  %.9g, double %.20g, with INF/-INF/NAN.
+- Text output: 00bb8640 writes CDATA when the string has "\n" and no "]]>"
+  (with strlen, so a NUL ends it), else 00bb872c escapes per byte. Bytes
+  >= 0x7f and control bytes other than \n and \r become `&#N;`.
+- Element output: 00bb8884 (open with attributes), 00bba128 (value; a
+  Content value is `<url>..</url>` or `<null></null>`), 00bba086 (children
+  one tab deeper on their own lines), 00bb8a60 (close).
+- Reader: TextXmlParser::parse 00bb92c0, text 00bb8068 (CDATA, then skip to
+  '<'), entities 00bb7a56 (lt gt amp quot apos, nbsp as space, &#N; as a
+  byte via atoi, &#x is an error, unknown kept).
+- Type writers and readers (00ab4000..00ab9400 and elsewhere):
+  - CFrame 0098b48a: X Y Z then R00..R22, floats;
+  - Vector3 00ab4d08, Vector2 00ab4b4c, Rect2D 00ab84fe (min, max);
+  - Vector3int16 00ab7cc6 and Vector2int16 00ab7a00: ints, sign extended;
+  - Region3int16 (00ab4322 reads min/max): its helper 00ab4508 reads each
+    16-bit field with a 32-bit load, so X prints as x | y << 16 and Z picks
+    up two bytes past the value. Not ported (no binary type);
+  - UDim2 00ab87d6/00ab88f2: XS float, XO int, YS, YO;
+  - Ray 00ab92d8: origin, direction;
+  - Faces/Axes 00ab8b74: a `faces`/`axes` int child;
+  - Color3 00ab900e: 0xFF000000 | r<<16 | g<<8 | b as %u, the bytes from
+    G3D::Color3uint8 (0124ff24): min(255, (int)floorf(c * 256.0f)), no
+    lower clamp. The reader 00ab8ef2 takes that uint (bytes / 255.0f,
+    0124fc10) or R/G/B children;
+  - PhysicalProperties 00ab813c / 00ab7e9e: CustomPhysics, then Density,
+    Friction, Elasticity, FrictionWeight, ElasticityWeight. The reader's
+    defaults are 1, 0, 0, 1, 1, and it clamps density to [0.01, 100],
+    friction to [0, 2], elasticity to [0, 1] and both weights to [0, 100];
+  - NumberRange 0087248a, NumberSequence 00c5ce95, ColorSequence 007e79a5:
+    ostream doubles, each followed by a space;
+  - BinaryString 00ab9d5e -> 00ac088c: base64, '=' padded, a newline after
+    every 18 full groups.
+- Which install files the 0.255 writer made: rewriting all 19 XML models,
+  7 come out identical. Rocket.rbxm and characterR15.rbxm print
+  `-1.1920929e-007` (three exponent digits: MSVC, a Windows writer). Others
+  indent with spaces, omit referents (humanoidStatic, humanoidExtra,
+  SlingshotPellet) or escape CR/LF in Source instead of CDATA.
