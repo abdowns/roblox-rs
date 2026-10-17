@@ -23,8 +23,8 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   files in `rbxmx::NATIVE_XML_IDENTICAL` (PhysicsAnalyzer,
   TransformDragger, VideoDocumentation, character3,
   humanoidAnimateLocalKeyframe2, humanoidAnimateR15, humanoidSoundNewLocal),
-  `skipped={}` on every line, then `rbxm_pass files=2 xml_files=19
-  xml_identical=7`. The other 12 were written by other writers (a trailing
+  `skipped={}` on every line, then `rbxm_pass files=2 xml_round_trips=3
+  xml_files=19 xml_identical=7`. The other 12 were written by other writers (a trailing
   newline, MSVC's three-digit exponents, space indentation, no referents,
   escaped multi-line strings); the line shows where each differs.
   `sh tools/cargo.sh test --locked rbxmx` checks the number formatting
@@ -34,12 +34,19 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   native XML file holds them). UDim has no native XML writer in 0.255; its
   `S`/`O` layout is a guess.
 - `rbxm-convert <in> <out>` converts between binary and XML (the output
-  format follows the extension). A conversion keeps every value, but not
-  every type: XML has no BrickColor type (it is `<int>`), and binary has one
-  string type for string, Content and ProtectedString. Native Studio takes
-  the types from reflection, which the port does not have yet, so binary ->
-  XML -> binary of a generic model is **not** byte-identical. Going through
-  a Workspace is (`the_demo_place_round_trips_through_xml`).
+  format follows the extension). The writers type BrickColor, Content,
+  ProtectedString and BinaryString properties from the recovered
+  reflection table (reflection.rs), as native Studio does, so binary ->
+  XML -> binary gives the same bytes. Run `sh tools/cargo.sh run --locked
+  -- audit-rbxm`; expect three `rbxm_xml_round_trip ... identical=true`
+  lines (places/viewport-baseplate.rbxm, characterR15_2.rbxm,
+  humanoidAnimateR15_2.rbxm) and `xml_round_trips=3` on the `rbxm_pass`
+  line. `sh tools/cargo.sh test --locked reflection` checks the lookups
+  (inherited properties, and same-named properties of other types such as
+  IntValue.Value). **Not tested:** XML -> binary -> XML of a native XML
+  file (the 12 non-native XML files would not come back identical anyway),
+  and classes outside the two install models and the demo place (the
+  table is from Ghidra, not from running Studio).
 
 - Workspace files: `Workspace::save` and `Workspace::load` write and read
   Parts, WedgeParts and the joints the port simulates with the native

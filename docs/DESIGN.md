@@ -891,11 +891,20 @@ GUID. Properties are written in name order, which is the native order
 `Property` has Content, ProtectedString and BinaryString next to String so
 an XML file keeps its tags. The binary format has one string type, so
 these come back as String from a binary file. XML writes BrickColor as
-`<int>`, so it comes back as Int. Native Studio resolves both from
-reflection. Until the port has the reflection table, a generic binary <->
-XML conversion keeps every value but can change these types.
-`Workspace::from_model` accepts either, and `to_model` writes the native
-types, so Workspace files convert exactly.
+`<int>`, so it comes back as Int. Native Studio gets the type from each
+property's descriptor. The port has the slice of the reflection database
+that this needs, in reflection.rs: the (class, property) pairs whose type
+is BrickColor, Content, ProtectedString or BinaryString (69 pairs), and
+the base chain of the classes that have or inherit them. It was traced in
+Ghidra (RESEARCH.md). Both writers start from `Model::with_native_types`,
+which retypes by that table (Int -> BrickColor, String -> Content /
+ProtectedString / BinaryString) and borrows the model when nothing
+changes. So a generic binary -> XML -> binary conversion gives the same
+bytes, and binary -> XML writes the native tags. The readers do not
+retype: a Model read from XML still holds Int for BrickColor, and one read
+from binary holds String (`ModelInstance::string` and `token` accept
+either). Strings that are not UTF-8 on a Content or ProtectedString
+property stay `Bytes` and are written as `<string>`.
 
 Places made for the port (the viewport demo, and later the audit places)
 are binary .rbxm files in `places/`, written with `Workspace::save` and read

@@ -912,6 +912,9 @@ fn referents(model: &Model) -> Vec<String> {
 /// Writes the model as the native XML serializer does (00bb070a builds
 /// the root, Instance::writeXml 00ac2362 each Item).
 pub fn write(model: &Model) -> Result<Vec<u8>, String> {
+    // The descriptors decide each tag (Content, ProtectedString,
+    // BinaryString for a string read from binary).
+    let model = &*model.with_native_types();
     let ids = referents(model);
     let referent = |i: usize| ids[i].clone();
     let mut seen = vec![false; model.instances.len()];

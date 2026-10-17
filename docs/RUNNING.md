@@ -178,14 +178,18 @@ Expect, for each of the two native binary models in the install
 (`characterR15_2.rbxm`, `humanoidAnimateR15_2.rbxm`), a line
 `rbxm_rewrite file=... bytes=7610 written=7610 identical=true
 first_difference=None instances=67 classes={...}` (6353 bytes and 22
-instances for the second). Then one `rbxmx_rewrite file=... identical=...
-skipped={} first_difference=... context=...` line for each of the 19 XML
-models, `identical=true` for PhysicsAnalyzer, TransformDragger,
-VideoDocumentation, character3, humanoidAnimateLocalKeyframe2,
-humanoidAnimateR15 and humanoidSoundNewLocal, and last
-`rbxm_pass files=2 xml_files=19 xml_identical=7`. TerrainTools.rbxmx differs
-only by its final newline (`first_difference=Some(248755)`). The audit fails
-if one of the seven stops matching. The files are only read.
+instances for the second). Then three `rbxm_xml_round_trip file=...
+bytes=... xml_bytes=... identical=true` lines, for
+places/viewport-baseplate.rbxm (6892 bytes) and the same two models:
+binary -> XML -> binary gives the same bytes. Then one `rbxmx_rewrite
+file=... identical=... skipped={} first_difference=... context=...` line
+for each of the 19 XML models, `identical=true` for PhysicsAnalyzer,
+TransformDragger, VideoDocumentation, character3,
+humanoidAnimateLocalKeyframe2, humanoidAnimateR15 and
+humanoidSoundNewLocal, and last `rbxm_pass files=2 xml_round_trips=3
+xml_files=19 xml_identical=7`. TerrainTools.rbxmx differs only by its final
+newline (`first_difference=Some(248755)`). The audit fails if one of the
+seven stops matching or a round trip differs. The files are only read.
 
 ```sh
 sh tools/cargo.sh run --locked -- rbxm-convert places/viewport-baseplate.rbxm demo.rbxmx

@@ -1,5 +1,69 @@
 # MODLOG
 
+## 2026-10-16 Binary <-> XML conversion keeps the native property types
+
+**Changed:**
+- New `src/reflection.rs`: the property types the two formats lose
+  (BrickColor, Content, ProtectedString, BinaryString), as 69 (class,
+  property) pairs plus the base chain of the 86 classes that have or
+  inherit them. Recovered in Ghidra from the descriptor constructor
+  00562476, the four Type singletons and the ClassDescriptor constructor
+  0055ea3e (addresses in the module header and docs/RESEARCH.md).
+  `property_type(class, property)` and `native_value(class, property,
+  value)`.
+- `Model::with_native_types` retypes by that table: Int -> BrickColor,
+  String -> Content / ProtectedString, String or Bytes -> BinaryString.
+  `Model::to_binary` and `rbxmx::write` start from it. The readers are
+  unchanged.
+- `rbxm::xml_round_trip(bytes)`; `audit-rbxm` prints an
+  `rbxm_xml_round_trip` line for the demo place and the two native binary
+  models, fails if one differs, and adds `xml_round_trips=3` to
+  `rbxm_pass`.
+
+**Why:** binary -> XML -> binary was not byte-identical: BrickColor came
+back as Int (binary type 0x03 instead of 0x0b), and binary -> XML wrote
+`<string>` where native writes `<Content>`, `<ProtectedString>` or
+`<BinaryString>`.
+
+**Tested how:**
+- `audit-rbxm`: `rbxm_xml_round_trip ... identical=true` for
+  places/viewport-baseplate.rbxm (6892 bytes), characterR15_2.rbxm (7610)
+  and humanoidAnimateR15_2.rbxm (6353), and still `xml_identical=7`.
+- `test`: 134 pass. New: `reflection::tests` (inherited lookups;
+  IntValue.Value stays Int, BrickColorValue.Value is BrickColor),
+  `binary_models_round_trip_through_xml`, and
+  `xml_from_binary_uses_reflected_tags`.
+- The XML written from characterR15_2.rbxm has `<Content name="MeshID">`,
+  `<Content name="TextureID"><null></null></Content>` and
+  `<BinaryString name="PhysicsData">`, the same forms as the native XML
+  files (character3.rbxm).
+- clippy is clean. `cargo fmt --check` is clean for the new code. It still
+  reports formatting in rbxmx.rs, main.rs and rbxm.rs:218 that was already
+  there at 4ad5b9f; left alone.
+
+**Not tested:** XML -> binary -> XML of a native XML file, and classes
+that are in none of the three files (their rows come from Ghidra only,
+not from running Studio). Content or ProtectedString values that are not
+UTF-8 stay `Bytes` and are written as `<string>`, which native would not
+write. Not checked against native output.
+
+**Dead ends:** inline Ghidra scripts are disabled in this setup
+(GHIDRA_MCP_ALLOW_SCRIPTS). The trace ran instead from a Python script
+over the ghidra-mcp HTTP API (decompile and xrefs only, read-only), saved
+with its output as RobloxStudio/analysis/reflection-types-20261016.*.
+First try, by the strings: "Content" has one Type and only 3 direct
+descriptor uses. The other Content properties go through one-call getter
+thunks (ContentId subtypes such as AnimationId), so the trace has to
+follow those thunks.
+
+**Demo:** nothing to show in the viewport. The demo place file is one of
+the three round trips in `audit-rbxm`.
+
+**Process slip:** during the repro I wrote conversions of the two install
+models (and rbxm-dump text of them) to the session scratchpad, outside
+RobloxStudio/. Deleted once noticed. The audit and test work in memory and
+write nothing.
+
 ## 2026-10-16 XML model files: the native reader and writer
 
 **Changed:**

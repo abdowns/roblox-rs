@@ -34,6 +34,7 @@ pub mod poly;
 pub mod poly_contact;
 pub mod rbxm;
 pub mod rbxmx;
+pub mod reflection;
 pub mod render;
 pub mod rig;
 pub mod runtime;

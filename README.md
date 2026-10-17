@@ -31,8 +31,9 @@ Early and incomplete. Working today, with an automated audit for each item:
 Not there yet:
 - the Studio editor UI;
 - a general Lua runtime;
-- loading whole places (.rbxl with services, scripts, Models) and the
-  reflection data that types a converted file's properties;
+- loading whole places (.rbxl with services, scripts, Models), and the
+  rest of the reflection database (the port has only the property types
+  that a format conversion needs);
 - the remaining joint kinds (VelocityMotor, ManualGlue, surface joints);
 - Cylinders, CornerWedges and the other Part shapes;
 - textures and decals beyond the character, shadows and outlines.

@@ -304,6 +304,36 @@ BallVertex 01c86008: aa9ea4, 9 | BallEdge 01c86068: aa9c2a, 10 | BallPlane 01c86
     ostream doubles, each followed by a space;
   - BinaryString 00ab9d5e -> 00ac088c: base64, '=' padded, a newline after
     every 18 full groups.
+- Property types for format conversion (reflection.rs, 2026-10-16). The
+  formats lose four types (XML BrickColor is `<int>`; binary string, Content,
+  ProtectedString and BinaryString are all 0x01), so the table holds those:
+  - Type singletons, built on first use under a cxa guard:
+    BrickColor 0223cc88 (00ab9362; Type ctor 00ac047e with name "BrickColor"
+    and tag "int"), Content 0223ca08 (00ab5d26; ctor 00abec3c, tag = name),
+    ProtectedString 0222c7b0 (006b922e), BinaryString 0223ccd8 (00ab9a3e).
+    ContentId subtypes (AnimationId, TextureId, ...) use one-call getters
+    that return the Content Type (e.g. 0062d1e0), so XML has one Content
+    tag for all of them;
+  - property descriptors: every one is built by 00562476 (this, class
+    descriptor, Type, name, category, ...), called from 202 typed
+    constructors. The ones for the four types: 008ae190 (BrickColor),
+    00cb2838, 006e7c38, 00902d08, 00c4eaa8, 00dcb532 (Content), 00cb25ec
+    (ProtectedString), 00cfd9d0 (BinaryString). Per-class wrappers
+    (e.g. 006e7aae for Animation) call those, and the static initializers
+    (e.g. 006e88b4) pass the property name as a literal;
+  - ClassDescriptor ctor 0055ea3e (this, base, name); the name is a literal
+    or `*PTR_PTR_x` (a pointer to the class's `sName` string). 347 classes;
+  - result: 69 (class, property) pairs on 44 classes, and the base chain
+    for the 86 classes that have or inherit one. Same-named properties of
+    other types exist (IntValue.Value is int, BrickColorValue.Value is
+    BrickColor, BinaryStringValue.Value is BinaryString), so the lookup is
+    by class. The traversal ran through the ghidra-mcp HTTP API (inline
+    Ghidra scripts are disabled in this setup); script and output are
+    RobloxStudio/analysis/reflection-types-20261016.{py,txt}, the checks
+    (every Type argument resolved; none of the 22 other Type getters reach
+    the four) in reflection-types-checks-20261016.txt;
+  - with the table, binary -> XML -> binary of characterR15_2.rbxm,
+    humanoidAnimateR15_2.rbxm and the demo place is byte-identical.
 - Which install files the 0.255 writer made: rewriting all 19 XML models,
   7 come out identical. Rocket.rbxm and characterR15.rbxm print
   `-1.1920929e-007` (three exponent digits: MSVC, a Windows writer). Others

@@ -13,6 +13,7 @@
 //! `Model::to_binary` writes what the native writer writes for the same
 //! tree. The XML format (TextXmlParser / TextXmlWriter) is in `rbxmx.rs`.
 use crate::scene::CoordinateFrame;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -314,7 +315,29 @@ impl Model {
     /// END is LZ4-compressed; END holds "</roblox>" uncompressed (flag 2).
     /// A class's instances must all carry the same property names and types,
     /// as reflection gives them.
+    /// The model with each property in the type reflection gives it
+    /// (`reflection::native_value`): BrickColor read from XML as Int, and
+    /// Content, ProtectedString and BinaryString read from binary as
+    /// String. Both writers start from this, as the native writers start
+    /// from the descriptors. Borrowed when nothing changes.
+    pub fn with_native_types(&self) -> Cow<'_, Model> {
+        let mut model = Cow::Borrowed(self);
+        for (index, instance) in self.instances.iter().enumerate() {
+            for (name, value) in &instance.properties {
+                if let Some(native) = crate::reflection::native_value(&instance.class, name, value)
+                {
+                    model.to_mut().instances[index]
+                        .properties
+                        .insert(name.clone(), native);
+                }
+            }
+        }
+        model
+    }
     pub fn to_binary(&self) -> Result<Vec<u8>, String> {
+        self.with_native_types().write_binary()
+    }
+    fn write_binary(&self) -> Result<Vec<u8>, String> {
         let order = self.pre_order()?;
         let mut referent = vec![-1i32; self.instances.len()];
         for (id, (index, _)) in order.iter().enumerate() {
@@ -1206,6 +1229,14 @@ pub const NATIVE_BINARY_MODELS: [&str; 2] = [
     "Contents/Resources/content/fonts/humanoidAnimateR15_2.rbxm",
 ];
 
+/// Converts a binary file to XML and back. Returns the XML size and
+/// whether the binary written from the XML equals `bytes`.
+pub fn xml_round_trip(bytes: &[u8]) -> Result<(usize, bool), String> {
+    let xml = Model::parse(bytes)?.to_xml()?;
+    let back = Model::parse(&xml)?.to_binary()?;
+    Ok((xml.len(), back == bytes))
+}
+
 /// Parses each native binary model and writes it again with `to_binary`;
 /// the bytes must be identical.
 pub fn audit(bundle: &crate::bundle::Bundle) -> Result<String, String> {
@@ -1233,6 +1264,27 @@ pub fn audit(bundle: &crate::bundle::Bundle) -> Result<String, String> {
             return Err(format!("{report}rewrite of {path} differs"));
         }
     }
+    // Binary -> XML -> binary: the XML reader gives BrickColor back as Int
+    // and the binary reader gives the string types back as String, so
+    // this holds only because both writers retype from reflection.
+    let demo = crate::workspace::place_path(crate::workspace::DEMO_PLACE);
+    let demo_bytes = std::fs::read(&demo).map_err(|e| format!("{}: {e}", demo.display()))?;
+    let mut sources = vec![("places/viewport-baseplate.rbxm".to_string(), demo_bytes)];
+    for path in NATIVE_BINARY_MODELS {
+        sources.push((path.to_string(), bundle.read(path, 16 * 1024 * 1024)?));
+    }
+    for (path, bytes) in &sources {
+        let (xml_bytes, same) = xml_round_trip(bytes)?;
+        writeln!(
+            report,
+            "rbxm_xml_round_trip file={path} bytes={} xml_bytes={xml_bytes} identical={same}",
+            bytes.len()
+        )
+        .unwrap();
+        if !same {
+            return Err(format!("{report}binary -> XML -> binary of {path} differs"));
+        }
+    }
     let mut identical = 0;
     for (line, same) in crate::rbxmx::rewrite_report(bundle)? {
         writeln!(report, "{line}").unwrap();
@@ -1240,8 +1292,9 @@ pub fn audit(bundle: &crate::bundle::Bundle) -> Result<String, String> {
     }
     writeln!(
         report,
-        "rbxm_pass files={} xml_files={} xml_identical={identical}",
+        "rbxm_pass files={} xml_round_trips={} xml_files={} xml_identical={identical}",
         NATIVE_BINARY_MODELS.len(),
+        sources.len(),
         crate::rbxmx::NATIVE_XML_MODELS.len()
     )
     .unwrap();
@@ -1377,5 +1430,47 @@ mod tests {
             let model = Model::parse(&bytes).unwrap();
             assert_eq!(model.to_binary().unwrap(), bytes, "{name}");
         }
+    }
+    /// Binary -> XML -> binary gives the same bytes: the demo place, and
+    /// the native binary models when the install is there.
+    #[test]
+    fn binary_models_round_trip_through_xml() {
+        let demo = crate::workspace::place_path(crate::workspace::DEMO_PLACE);
+        let bytes = std::fs::read(demo).unwrap();
+        assert!(xml_round_trip(&bytes).unwrap().1, "viewport-baseplate");
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("RobloxStudio/Contents/Resources/content/fonts");
+        for name in ["characterR15_2.rbxm", "humanoidAnimateR15_2.rbxm"] {
+            let Ok(bytes) = std::fs::read(root.join(name)) else {
+                eprintln!("skipped: {name} not installed");
+                continue;
+            };
+            assert!(xml_round_trip(&bytes).unwrap().1, "{name}");
+        }
+    }
+    /// The XML from a binary file carries the reflected tags.
+    #[test]
+    fn xml_from_binary_uses_reflected_tags() {
+        let mut model = Model::default();
+        let mut script = ModelInstance::new("LocalScript");
+        script
+            .set("Source", Property::String("print(1)".into()))
+            .set("LinkedSource", Property::String(String::new()));
+        model.add(script, None);
+        let mut part = ModelInstance::new("Part");
+        part.set("BrickColor", Property::Int(21));
+        model.add(part, None);
+        let xml = String::from_utf8(model.to_xml().unwrap()).unwrap();
+        assert!(xml.contains("<ProtectedString name=\"Source\">"), "{xml}");
+        assert!(
+            xml.contains("<Content name=\"LinkedSource\"><null></null></Content>"),
+            "{xml}"
+        );
+        assert!(xml.contains("<int name=\"BrickColor\">21</int>"), "{xml}");
+        let back = Model::parse(&model.to_binary().unwrap()).unwrap();
+        assert_eq!(
+            back.instances[1].properties["BrickColor"],
+            Property::BrickColor(21)
+        );
     }
 }
