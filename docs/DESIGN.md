@@ -91,7 +91,8 @@ Diagnostic poses are explicit probe inputs, not recovered historical defaults.
 
 `render` extracts Draw components through a Bevy update, uploads world-space
 vertices and uses independently authored WGSL for the recovered low-quality
-lighting/fog equations. Only opaque Plastic is accepted. A linear UNORM target,
+lighting/fog equations. Only opaque Parts are accepted; non-Plastic materials
+need `add_materials` (see Workspace materials). A linear UNORM target,
 back culling, LEQUAL depth/write and disabled blending follow the native default
 Technique. Grid/shadow are explicit constant probe inputs. No PBR, tone mapping
 or automatic sRGB conversion establishes historical behavior.
@@ -176,6 +177,49 @@ atlas alpha is ignored. Outlines are an explicit disabled probe option, with no
 edge/tangent geometry or high-quality normal perturbation implied. A synthetic
 texture gives `[32,64,96,255]`; the real atlas changes 5,518 pixels with identical
 repeat output. Full original lighting and visual parity remain **not tested**.
+
+## Workspace materials
+
+`material_generator` selects the native low-quality (quality level 2) Technique
+per Part, as createDefaultMaterial 010c0e00 and createRenderMaterial 010bc630 do:
+
+- Plastic and SmoothPlastic use DefaultPlasticFS (stud atlas only).
+- Plastic or SmoothPlastic with Reflectance > 0.015 use
+  DefaultPlasticReflectionFS / DefaultSmoothPlasticReflectionFS (the name is
+  "Default" + material + "Reflection" + "FS"; the low-quality code of both is
+  the same shader). The albedo is lerped toward a cube environment map
+  by the vertex reflectance, quantized as (int)(min(r,1) x 0.8 x 255) / 255.
+- Neon uses DefaultNeonFS: color x glow (2.2, from the SceneManager ctor at
+  011c084e, used while PostFX is below level 1), opaque blending.
+- Cobblestone uses LowQMaterialWangFS; the 17 other render materials use
+  LowQMaterialFS. Codes outside the 20 render materials have no material and
+  are an error.
+
+LowQMaterial samples `textures/<lowercase name>/diffuse.dds` from the install's
+PlatformContent (DXT1 or DXT5, decoded with the squish fallback; DXT5 alpha uses
+integer palettes) with linear/wrap filtering, plus `wangIndex.dds` (128x128
+L8A8, point/wrap) for Cobblestone. The far tiling factor is 0.25 for Slate,
+Concrete, Granite, Aluminum, Grass and Ice, 0.5 for Rust and 1 otherwise. The
+shader formulas follow the shipped default.hlsl/common.h (fade over 300 studs,
+cutoff 0.6, `lerp(1, color, a) x albedo`).
+
+Material UVs come from getTiling 010c3c40 (read from the binary by following the
+switch) and the 64-float offset table 017f0218. The native origin seed is
+`part + (part >> 3)` of the Part's heap address, which cannot be reproduced;
+`part_seed(index)` substitutes a deterministic 16-byte-aligned pseudo address,
+so texture *offsets* differ from any given native run while tiling, the offset
+table and the UV layout per face (blocks 010cca80, balls addSphere, wedges) are
+the native ones. Brick and WoodPlanks use the table values directly; the rest
+use ((T + T) - 1) x ((x + y) + z) x 0.5.
+
+The GPU path (`Gpu::add_materials`) re-uploads 68-byte vertices with the
+reflectance attribute and builds one pipeline per Technique and one bind group
+per material. The environment map (EnvMap 010a7310, renderFace 010a8030) is a
+256x256 cube with mips; each face renders the sky without stars from the origin
+with perspective(pi/2, 1, 0.5, 3000). It is built once: the native time-based
+EnvMap::update refresh is **not ported**, and mips use CPU 2x2 averaging (the
+native GPU filter is not recovered). High-quality techniques (normal, specular
+and normal-detail maps, tangents) are **not ported**.
 
 ## Humanoid command boundary
 
@@ -1011,8 +1055,9 @@ types 1-5 run u = width/2 -> 0 and v = row -> row + 0.25 per full strip (row fro
 017f045c), and the last strip ends at row + clamp(rest/8, 0, 1) * 0.25, so a
 single-strip face matches the character `face_uv`. The Baseplate is 132 quads:
 64 Studs strips on top, 64 Inlet strips underneath, four Smooth sides. Material
-UVs, tangents and outline edge distances are not produced (the low-quality
-Plastic shader reads only stud coordinates; outlines are disabled). More than
+UVs are produced for workspace Parts (see Workspace materials); tangents and
+outline edge distances are not (the low-quality shaders do not read them;
+outlines are disabled). More than
 0x2000 quads is an error, as the native assert. `viewport-baseplate` and
 `audit-baseplate-render` add these draws to the walking viewport path with
 `motion::install_world(.., baseplate=true)`.
@@ -1056,8 +1101,9 @@ builds a cube sphere:
     and without parentheses;
   - a position is (size x 0.5) x (d / |d|);
   - the grid steps are doubled once and then added once per vertex or row.
-- **Not produced.** Material UVs, tangents and outline distances are left
-  out, as for blocks. The vertex color is 010ca980, shared with blocks.
+- **Not produced.** Tangents and outline distances are left out, as for
+  blocks. Material UVs are produced (see Workspace materials). The vertex
+  color is 010ca980, shared with blocks.
 
 `audit-ball-render` checks the mesh against the native counts and the
 sphere, then renders a Ball beside a cube and compares their silhouettes.

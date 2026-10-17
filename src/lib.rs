@@ -24,6 +24,7 @@ pub mod lighting;
 pub mod locomotion;
 pub mod loose;
 pub mod material;
+pub mod material_generator;
 pub mod mesh;
 mod motion;
 pub mod motor;

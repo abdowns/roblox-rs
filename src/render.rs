@@ -219,6 +219,22 @@ struct Gpu {
     decals: Option<DecalGpu>,
     studs: Option<StudGpu>,
     sky: Option<SkyGpu>,
+    /// Each draw's name, material and index range in the shared buffers.
+    ranges: Vec<(String, u32, std::ops::Range<u32>)>,
+    /// Vertex reflectance per Workspace Part (`add_materials`).
+    reflectance: std::collections::BTreeMap<String, f32>,
+    materials: Option<MaterialGpu>,
+}
+/// An index range and its technique: None draws with the Plastic stud pass,
+/// Some((pipeline, bindings)) with a material technique.
+type MaterialDraw = (Option<(usize, usize)>, std::ops::Range<u32>);
+/// The non-Plastic low-quality techniques (material_generator.rs).
+struct MaterialGpu {
+    pipelines: Vec<wgpu::RenderPipeline>,
+    globals: Vec<wgpu::BindGroup>,
+    bindings: Vec<wgpu::BindGroup>,
+    /// Index ranges in draw order.
+    draws: Vec<MaterialDraw>,
 }
 struct SkyGpu {
     opaque: wgpu::RenderPipeline,
@@ -230,6 +246,15 @@ struct SkyGpu {
     layout: wgpu::BindGroupLayout,
     draws: Vec<(wgpu::Buffer, wgpu::BindGroup, crate::sky::Blend)>,
 }
+struct SkyResources {
+    opaque: wgpu::RenderPipeline,
+    additive: wgpu::RenderPipeline,
+    globals_layout: wgpu::BindGroupLayout,
+    layout: wgpu::BindGroupLayout,
+    quad: wgpu::Buffer,
+    views: Vec<wgpu::TextureView>,
+    sampler: wgpu::Sampler,
+}
 struct StudGpu {
     pipeline: wgpu::RenderPipeline,
     globals: wgpu::BindGroup,
@@ -240,6 +265,10 @@ enum ShaderKind {
     Untextured,
     Plastic,
     Decal,
+    PlasticReflection,
+    LowQuality,
+    LowQualityWang,
+    Neon,
 }
 struct DecalGpu {
     pipeline: wgpu::RenderPipeline,
@@ -254,6 +283,9 @@ struct GpuTextureDraw {
     count: u32,
 }
 
+/// Position, normal, material uv, color, specular, stud uv, reflectance.
+const VERTEX_STRIDE: u64 = 68;
+
 fn pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -261,7 +293,7 @@ fn pipeline(
     kind: ShaderKind,
 ) -> wgpu::RenderPipeline {
     let decal = kind == ShaderKind::Decal;
-    let attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2,3=>Float32x4,4=>Float32x2,5=>Float32x2];
+    let attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2,3=>Float32x4,4=>Float32x2,5=>Float32x2,6=>Float32];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(if decal {
             "recovered decal pass"
@@ -274,7 +306,7 @@ fn pipeline(
             entry_point: Some("vertex"),
             compilation_options: Default::default(),
             buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: 64,
+                array_stride: VERTEX_STRIDE,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &attributes,
             })],
@@ -305,6 +337,10 @@ fn pipeline(
                 ShaderKind::Untextured => "fragment",
                 ShaderKind::Plastic => "fragment_plastic",
                 ShaderKind::Decal => "fragment_decal",
+                ShaderKind::PlasticReflection => "fragment_plastic_reflection",
+                ShaderKind::LowQuality => "fragment_low_quality",
+                ShaderKind::LowQualityWang => "fragment_low_quality_wang",
+                ShaderKind::Neon => "fragment_neon",
             }),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -338,9 +374,18 @@ impl Gpu {
     ) -> Result<(Self, wgpu::Adapter), String> {
         if draws
             .iter()
-            .any(|draw| draw.material != 0x100 || draw.vertices.iter().any(|v| v.color[3] != 1.0))
+            .any(|draw| draw.vertices.iter().any(|v| v.color[3] != 1.0))
         {
-            return Err("static shader supports opaque Plastic only".into());
+            return Err("static shader supports opaque Parts only".into());
+        }
+        let mut ranges = Vec::new();
+        let mut start = 0u32;
+        for draw in draws {
+            crate::material_generator::technique(draw.material, 0.0)
+                .map_err(|e| format!("{:?}: {e}", draw.name))?;
+            let end = start + draw.indices.len() as u32;
+            ranges.push((draw.name.clone(), draw.material, start..end));
+            start = end;
         }
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             compatible_surface: surface,
@@ -403,6 +448,9 @@ impl Gpu {
                 decals: None,
                 studs: None,
                 sky: None,
+                ranges,
+                reflectance: Default::default(),
+                materials: None,
             },
             adapter,
         ))
@@ -497,7 +545,8 @@ impl Gpu {
             ..Default::default()
         });
         let bindings = self.texture_bindings(&pipeline, &surface.atlas, &sampler)?;
-        let (vertices, _, count) = draw_bytes_with_studs(draws, Some(&surface.coordinates))?;
+        let (vertices, _, count) =
+            draw_bytes_with_studs(draws, Some(&surface.coordinates), Some(&self.reflectance))?;
         if count != self.count {
             return Err("stud upload changed topology".into());
         }
@@ -611,19 +660,21 @@ impl Gpu {
         decals: &[TexturedDraw],
         surfaces: &SurfaceScene,
     ) -> Result<(), String> {
-        let (vertices, indices, count) = draw_bytes_with_studs(draws, Some(&surfaces.coordinates))?;
+        let (vertices, indices, count) =
+            draw_bytes_with_studs(draws, Some(&surfaces.coordinates), Some(&self.reflectance))?;
         if count != self.count
             || indices != self.topology
             || vertices.len() as u64 != self.vertices.size()
         {
             return Err("pose update changed Part topology".into());
         }
-        let uploaded = self.decals.as_ref().ok_or("motion requires decal upload")?;
-        if uploaded.draws.len() != decals.len() {
+        // add_decals uploads nothing for an empty list.
+        let uploaded = self.decals.as_ref().map_or(&[][..], |d| &d.draws[..]);
+        if uploaded.len() != decals.len() {
             return Err("pose update changed decal count".into());
         }
         let mut decal_vertices = Vec::new();
-        for (gpu, decal) in uploaded.draws.iter().zip(decals) {
+        for (gpu, decal) in uploaded.iter().zip(decals) {
             let (vertices, indices, count) = draw_bytes(std::slice::from_ref(&decal.draw))?;
             if count != gpu.count
                 || indices != gpu.topology
@@ -635,7 +686,7 @@ impl Gpu {
         }
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         self.queue.write_buffer(&self.vertices, 0, &vertices);
-        for (gpu, vertices) in uploaded.draws.iter().zip(decal_vertices) {
+        for (gpu, vertices) in uploaded.iter().zip(decal_vertices) {
             self.queue.write_buffer(&gpu.vertices, 0, &vertices);
         }
         if let Some(error) = pollster::block_on(scope.pop()) {
@@ -644,9 +695,13 @@ impl Gpu {
         Ok(())
     }
 
-    /// Default Sky (sky.rs): six faces, sun and moon textures and pipelines.
-    fn add_sky(&mut self, textures: &crate::sky::SkyTextures) -> Result<(), String> {
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    /// Sky::render's pipelines, quad, sampler and textures for a target
+    /// format (the window, or the environment map's faces).
+    fn sky_resources(
+        &self,
+        textures: &crate::sky::SkyTextures,
+        format: wgpu::TextureFormat,
+    ) -> Result<SkyResources, String> {
         let shader = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -733,7 +788,7 @@ impl Gpu {
                         entry_point: Some("sky_fragment"),
                         compilation_options: Default::default(),
                         targets: &[Some(wgpu::ColorTargetState {
-                            format: self.format,
+                            format,
                             blend: Some(blend),
                             write_mask: wgpu::ColorWrites::ALL,
                         })],
@@ -754,14 +809,6 @@ impl Gpu {
                 dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },
-        });
-        let globals = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &globals_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: self.uniform.as_entire_binding(),
-            }],
         });
         let mut quad = Vec::new();
         for (position, uv) in crate::sky::QUAD {
@@ -827,6 +874,584 @@ impl Gpu {
             }
             views.push(texture.create_view(&Default::default()));
         }
+        Ok(SkyResources {
+            opaque,
+            additive,
+            globals_layout,
+            layout,
+            quad,
+            views,
+            sampler,
+        })
+    }
+
+    /// A sampled 2D texture with its mips.
+    fn upload_2d(&self, data: &PngTexture, label: &str) -> Result<wgpu::TextureView, String> {
+        let first = data.mips.first().ok_or("empty texture")?;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: first.width,
+                height: first.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: data.mips.len() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (level, mip) in data.mips.iter().enumerate() {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &mip.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(mip.width * 4),
+                    rows_per_image: Some(mip.height),
+                },
+                wgpu::Extent3d {
+                    width: mip.width,
+                    height: mip.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        Ok(texture.create_view(&Default::default()))
+    }
+
+    /// EnvMap (ctor 010a7310, renderFace 010a8030): a 256 x 256 cube with
+    /// a full mip chain. Each face renders Sky::render without stars from
+    /// the origin with a 90 degree, 0.5..3000 perspective and the face's
+    /// view matrix (the first set built in renderFace's static initializer,
+    /// which matches the wgpu cube layout). Mips are the native 2x2
+    /// averages of `PngTexture::from_rgba`; the original generates them on
+    /// the GPU, so the filter is not recovered. Returns the cube view and
+    /// one report line per face.
+    fn environment_map(
+        &self,
+        textures: &crate::sky::SkyTextures,
+        sky: &crate::lighting::SkyParameters,
+    ) -> Result<(wgpu::TextureView, String), String> {
+        const SIDE: u32 = 256;
+        // View rows (right, up, back) per cube face +X, -X, +Y, -Y, +Z, -Z.
+        const FACES: [[[f32; 3]; 3]; 6] = [
+            [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]],
+            [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+            [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, -1.0, 0.0]],
+            [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]],
+            [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        ];
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let resources = self.sky_resources(textures, wgpu::TextureFormat::Rgba8Unorm)?;
+        let (draws, _) = crate::sky::draws(sky, [0.0; 3])?;
+        let mut constants = Vec::new();
+        for draw in &draws {
+            let bytes: Vec<u8> = draw
+                .world
+                .iter()
+                .chain(&draw.color)
+                .chain(&draw.color2)
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            let buffer = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("envmap sky constants"),
+                    contents: &bytes,
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+            let view = resources
+                .views
+                .get(draw.texture)
+                .ok_or("missing sky texture")?;
+            let bindings = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &resources.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&resources.sampler),
+                    },
+                ],
+            });
+            constants.push((buffer, bindings, draw.blend));
+        }
+        let projection = camera::perspective(std::f32::consts::FRAC_PI_2, 1.0, 0.5, 3000.0)?;
+        let mut faces = Vec::new();
+        let mut report = String::new();
+        for (index, rows) in FACES.iter().enumerate() {
+            let frame = CoordinateFrame {
+                position: [0.0; 3],
+                rotation: std::array::from_fn(|i| std::array::from_fn(|j| rows[j][i])),
+            };
+            let vp = camera::multiply(projection, camera::view(&frame));
+            let mut bytes = Vec::new();
+            for column in 0..4 {
+                for row in &vp {
+                    bytes.extend(row[column].to_le_bytes());
+                }
+            }
+            let uniform = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("envmap face camera"),
+                    contents: &bytes,
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+            let globals = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &resources.globals_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                }],
+            });
+            let target = self.texture(
+                SIDE,
+                SIDE,
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            );
+            let depth = self.texture(
+                SIDE,
+                SIDE,
+                wgpu::TextureFormat::Depth32Float,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            );
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            {
+                let color = target.create_view(&Default::default());
+                let depth = depth.create_view(&Default::default());
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("EnvMap::renderFace"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &color,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    ..Default::default()
+                });
+                pass.set_bind_group(0, &globals, &[]);
+                pass.set_vertex_buffer(0, resources.quad.slice(..));
+                for (_, bindings, blend) in &constants {
+                    pass.set_pipeline(match blend {
+                        crate::sky::Blend::Opaque => &resources.opaque,
+                        crate::sky::Blend::Additive => &resources.additive,
+                    });
+                    pass.set_bind_group(1, bindings, &[]);
+                    pass.draw(0..4, 0..1);
+                }
+            }
+            let pixels = self.readback(encoder, &target, SIDE, SIDE)?;
+            let center = ((SIDE / 2 * SIDE + SIDE / 2) * 4) as usize;
+            writeln!(
+                report,
+                "envmap_face index={index} center_rgba={:?} rgba_sha256={:x}",
+                &pixels[center..center + 4],
+                Sha256::digest(&pixels)
+            )
+            .unwrap();
+            faces.push(PngTexture::from_rgba(SIDE, SIDE, pixels)?);
+        }
+        let levels = faces[0].mips.len() as u32;
+        let cube = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Global envmap"),
+            size: wgpu::Extent3d {
+                width: SIDE,
+                height: SIDE,
+                depth_or_array_layers: 6,
+            },
+            mip_level_count: levels,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (layer, face) in faces.iter().enumerate() {
+            for (level, mip) in face.mips.iter().enumerate() {
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &cube,
+                        mip_level: level as u32,
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: layer as u32,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &mip.rgba,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(mip.width * 4),
+                        rows_per_image: Some(mip.height),
+                    },
+                    wgpu::Extent3d {
+                        width: mip.width,
+                        height: mip.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            return Err(format!("environment map: {e}"));
+        }
+        writeln!(
+            report,
+            "envmap_pass size={SIDE} faces=6 mips={levels} stars=false"
+        )
+        .unwrap();
+        Ok((
+            cube.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::Cube),
+                ..Default::default()
+            }),
+            report,
+        ))
+    }
+
+    /// The low-quality material techniques (material_generator.rs) for the
+    /// draws `scene` names: LowQMaterialFS / LowQMaterialWangFS with the
+    /// material's diffuse map (Linear/Wrap, slot 5) and the Wang index
+    /// (Point/Wrap, slot 8), DefaultNeonFS with the glow factor, and
+    /// Default<Plastic>ReflectionFS with the stud atlas and the environment
+    /// map (built from `sky`). Plain Plastic draws keep the stud pass. Also
+    /// re-uploads the vertices with each Part's reflectance. Call after
+    /// `add_studs`.
+    fn add_materials(
+        &mut self,
+        draws: &[Draw],
+        surfaces: &SurfaceScene,
+        scene: &crate::material_generator::MaterialScene,
+        sky: Option<(&crate::sky::SkyTextures, &crate::lighting::SkyParameters)>,
+    ) -> Result<String, String> {
+        use crate::material_generator::Technique;
+        if self.studs.is_none() {
+            return Err("material techniques need the stud pass first".into());
+        }
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        self.reflectance = scene.reflectance.clone();
+        let (vertices, _, count) =
+            draw_bytes_with_studs(draws, Some(&surfaces.coordinates), Some(&self.reflectance))?;
+        if count != self.count {
+            return Err("material upload changed topology".into());
+        }
+        self.vertices = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("native material UVs and reflectance"),
+                contents: &vertices,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            });
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(SHADER)),
+            });
+        let sampler = |label, address, filter, mipmap| {
+            self.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some(label),
+                address_mode_u: address,
+                address_mode_v: address,
+                address_mode_w: address,
+                mag_filter: filter,
+                min_filter: filter,
+                mipmap_filter: mipmap,
+                ..Default::default()
+            })
+        };
+        let linear_wrap = sampler(
+            "material diffuse linear wrap",
+            wgpu::AddressMode::Repeat,
+            wgpu::FilterMode::Linear,
+            wgpu::MipmapFilterMode::Linear,
+        );
+        let point_wrap = sampler(
+            "wang index point wrap",
+            wgpu::AddressMode::Repeat,
+            wgpu::FilterMode::Nearest,
+            wgpu::MipmapFilterMode::Nearest,
+        );
+        let linear_clamp = sampler(
+            "envmap linear clamp",
+            wgpu::AddressMode::ClampToEdge,
+            wgpu::FilterMode::Linear,
+            wgpu::MipmapFilterMode::Linear,
+        );
+        let mut gpu = MaterialGpu {
+            pipelines: Vec::new(),
+            globals: Vec::new(),
+            bindings: Vec::new(),
+            draws: Vec::new(),
+        };
+        let mut pipelines: std::collections::BTreeMap<&str, usize> = Default::default();
+        let mut bindings: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut environment: Option<wgpu::TextureView> = None;
+        let mut studs_view: Option<wgpu::TextureView> = None;
+        let mut report = String::new();
+        let mut wang_view: Option<wgpu::TextureView> = None;
+        for (name, material, range) in self.ranges.clone() {
+            let technique = scene.technique(&name, material)?;
+            let selection = match &technique {
+                Technique::Plastic {
+                    reflection: false, ..
+                } => None,
+                _ => {
+                    let (kind, entry) = match &technique {
+                        Technique::Plastic { .. } => (ShaderKind::PlasticReflection, "reflection"),
+                        Technique::Neon => (ShaderKind::Neon, "neon"),
+                        Technique::LowQuality { wang: true, .. } => {
+                            (ShaderKind::LowQualityWang, "wang")
+                        }
+                        Technique::LowQuality { .. } => (ShaderKind::LowQuality, "low_quality"),
+                    };
+                    let p = match pipelines.get(entry) {
+                        Some(p) => *p,
+                        None => {
+                            let pipeline = pipeline(&self.device, &shader, self.format, kind);
+                            gpu.globals.push(self.device.create_bind_group(
+                                &wgpu::BindGroupDescriptor {
+                                    label: None,
+                                    layout: &pipeline.get_bind_group_layout(0),
+                                    entries: &[wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: self.uniform.as_entire_binding(),
+                                    }],
+                                },
+                            ));
+                            gpu.pipelines.push(pipeline);
+                            pipelines.insert(entry, gpu.pipelines.len() - 1);
+                            gpu.pipelines.len() - 1
+                        }
+                    };
+                    let key = format!("{entry}/{material:#x}");
+                    let b = match bindings.get(&key) {
+                        Some(b) => *b,
+                        None => {
+                            let layout = gpu.pipelines[p].get_bind_group_layout(1);
+                            let mut entries = Vec::new();
+                            let constants;
+                            let diffuse;
+                            match &technique {
+                                Technique::Plastic { .. } => {
+                                    if environment.is_none() {
+                                        let (textures, sky) = sky.ok_or(
+                                            "Plastic Reflectance needs the Sky for the environment map",
+                                        )?;
+                                        let (view, lines) = self.environment_map(textures, sky)?;
+                                        report.push_str(&lines);
+                                        environment = Some(view);
+                                    }
+                                    if studs_view.is_none() {
+                                        studs_view =
+                                            Some(self.upload_2d(&surfaces.atlas, "stud atlas")?);
+                                    }
+                                    entries.extend([
+                                        wgpu::BindGroupEntry {
+                                            binding: 0,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                studs_view.as_ref().unwrap(),
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 1,
+                                            resource: wgpu::BindingResource::Sampler(&linear_wrap),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 5,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                environment.as_ref().unwrap(),
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 6,
+                                            resource: wgpu::BindingResource::Sampler(&linear_clamp),
+                                        },
+                                    ]);
+                                }
+                                Technique::Neon => {
+                                    let floats = [1.0f32, 1.0, 1.0, 1.0, scene.glow, 0.0, 0.0, 0.0];
+                                    constants = self.device.create_buffer_init(
+                                        &wgpu::util::BufferInitDescriptor {
+                                            label: Some("DefaultNeonFS constants"),
+                                            contents: &floats
+                                                .iter()
+                                                .flat_map(|v| v.to_le_bytes())
+                                                .collect::<Vec<_>>(),
+                                            usage: wgpu::BufferUsages::UNIFORM,
+                                        },
+                                    );
+                                    entries.push(wgpu::BindGroupEntry {
+                                        binding: 2,
+                                        resource: constants.as_entire_binding(),
+                                    });
+                                }
+                                Technique::LowQuality {
+                                    material,
+                                    far_tiling,
+                                    wang,
+                                    ..
+                                } => {
+                                    let texture = scene
+                                        .textures
+                                        .get(material)
+                                        .ok_or("missing material diffuse map")?;
+                                    diffuse = self.upload_2d(texture, "material diffuse")?;
+                                    entries.extend([
+                                        wgpu::BindGroupEntry {
+                                            binding: 0,
+                                            resource: wgpu::BindingResource::TextureView(&diffuse),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 1,
+                                            resource: wgpu::BindingResource::Sampler(&linear_wrap),
+                                        },
+                                    ]);
+                                    if *wang {
+                                        if wang_view.is_none() {
+                                            wang_view = Some(self.upload_2d(
+                                                scene.wang.as_ref().ok_or("missing Wang index")?,
+                                                "wangIndex",
+                                            )?);
+                                        }
+                                        entries.extend([
+                                            wgpu::BindGroupEntry {
+                                                binding: 3,
+                                                resource: wgpu::BindingResource::TextureView(
+                                                    wang_view.as_ref().unwrap(),
+                                                ),
+                                            },
+                                            wgpu::BindGroupEntry {
+                                                binding: 4,
+                                                resource: wgpu::BindingResource::Sampler(
+                                                    &point_wrap,
+                                                ),
+                                            },
+                                        ]);
+                                    } else {
+                                        let floats = [
+                                            *far_tiling,
+                                            *far_tiling,
+                                            1.0,
+                                            1.0,
+                                            scene.glow,
+                                            0.0,
+                                            0.0,
+                                            0.0,
+                                        ];
+                                        constants = self.device.create_buffer_init(
+                                            &wgpu::util::BufferInitDescriptor {
+                                                label: Some("LqmatFarTilingFactor"),
+                                                contents: &floats
+                                                    .iter()
+                                                    .flat_map(|v| v.to_le_bytes())
+                                                    .collect::<Vec<_>>(),
+                                                usage: wgpu::BufferUsages::UNIFORM,
+                                            },
+                                        );
+                                        entries.push(wgpu::BindGroupEntry {
+                                            binding: 2,
+                                            resource: constants.as_entire_binding(),
+                                        });
+                                    }
+                                }
+                            }
+                            gpu.bindings.push(self.device.create_bind_group(
+                                &wgpu::BindGroupDescriptor {
+                                    label: None,
+                                    layout: &layout,
+                                    entries: &entries,
+                                },
+                            ));
+                            bindings.insert(key, gpu.bindings.len() - 1);
+                            gpu.bindings.len() - 1
+                        }
+                    };
+                    Some((p, b))
+                }
+            };
+            writeln!(
+                report,
+                "material_draw name={name:?} technique={} indices={}..{}",
+                technique.name(),
+                range.start,
+                range.end
+            )
+            .unwrap();
+            match gpu.draws.last_mut() {
+                Some((last, previous)) if *last == selection && previous.end == range.start => {
+                    previous.end = range.end;
+                }
+                _ => gpu.draws.push((selection, range)),
+            }
+        }
+        if let Some(error) = pollster::block_on(scope.pop()) {
+            return Err(format!("material upload: {error}"));
+        }
+        writeln!(
+            report,
+            "material_gpu_pass pipelines={} bind_groups={} draw_calls={} environment_map={}",
+            gpu.pipelines.len(),
+            gpu.bindings.len(),
+            gpu.draws.len(),
+            environment.is_some()
+        )
+        .unwrap();
+        self.materials = Some(gpu);
+        Ok(report)
+    }
+
+    /// Default Sky (sky.rs): six faces, sun and moon textures and pipelines.
+    fn add_sky(&mut self, textures: &crate::sky::SkyTextures) -> Result<(), String> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let SkyResources {
+            opaque,
+            additive,
+            globals_layout,
+            layout,
+            quad,
+            views,
+            sampler,
+        } = self.sky_resources(textures, self.format)?;
+        let globals = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &globals_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.uniform.as_entire_binding(),
+            }],
+        });
         if let Some(e) = pollster::block_on(scope.pop()) {
             return Err(format!("sky initialization: {e}"));
         }
@@ -960,7 +1585,31 @@ impl Gpu {
         }
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..self.count, 0, 0..1);
+        match &self.materials {
+            None => pass.draw_indexed(0..self.count, 0, 0..1),
+            Some(materials) => {
+                for (selection, range) in &materials.draws {
+                    match selection {
+                        None => {
+                            if let Some(studs) = &self.studs {
+                                pass.set_pipeline(&studs.pipeline);
+                                pass.set_bind_group(0, &studs.globals, &[]);
+                                pass.set_bind_group(1, &studs.bindings, &[]);
+                            } else {
+                                pass.set_pipeline(&self.pipeline);
+                                pass.set_bind_group(0, &self.bindings, &[]);
+                            }
+                        }
+                        Some((pipeline, bindings)) => {
+                            pass.set_pipeline(&materials.pipelines[*pipeline]);
+                            pass.set_bind_group(0, &materials.globals[*pipeline], &[]);
+                            pass.set_bind_group(1, &materials.bindings[*bindings], &[]);
+                        }
+                    }
+                    pass.draw_indexed(range.clone(), 0, 0..1);
+                }
+            }
+        }
         if let Some(decals) = &self.decals {
             pass.set_pipeline(&decals.pipeline);
             pass.set_bind_group(0, &decals.globals, &[]);
@@ -984,27 +1633,14 @@ impl Gpu {
             }
         }
     }
-    fn read_frame(
+    /// Copy a rendered RGBA/BGRA target into tightly packed rows.
+    fn readback(
         &self,
+        mut encoder: wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
         width: u32,
         height: u32,
-        inputs: &RenderInputs,
     ) -> Result<Vec<u8>, String> {
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        self.queue
-            .write_buffer(&self.uniform, 0, &inputs.bytes(width, height)?);
-        let texture = self.texture(
-            width,
-            height,
-            self.format,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        );
-        let depth = self.texture(
-            width,
-            height,
-            wgpu::TextureFormat::Depth32Float,
-            wgpu::TextureUsages::RENDER_ATTACHMENT,
-        );
         let row = (width * 4).div_ceil(256) * 256;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("numeric readback"),
@@ -1012,15 +1648,9 @@ impl Gpu {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        self.pass(
-            &mut encoder,
-            &texture.create_view(&Default::default()),
-            &depth.create_view(&Default::default()),
-        );
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -1060,17 +1690,55 @@ impl Gpu {
             .slice(..)
             .get_mapped_range()
             .map_err(|e| e.to_string())?;
-        let mut pixels: Vec<u8> = data
+        let pixels: Vec<u8> = data
             .chunks_exact(row as usize)
             .flat_map(|r| r[..width as usize * 4].iter().copied())
             .collect();
+        drop(data);
+        buffer.unmap();
+        Ok(pixels)
+    }
+    fn read_frame(
+        &self,
+        width: u32,
+        height: u32,
+        inputs: &RenderInputs,
+    ) -> Result<Vec<u8>, String> {
+        if self.materials.is_none()
+            && self
+                .ranges
+                .iter()
+                .any(|(_, material, _)| !matches!(*material, 0x100 | 0x110))
+        {
+            return Err("non-Plastic Parts need the material techniques (add_materials)".into());
+        }
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        self.queue
+            .write_buffer(&self.uniform, 0, &inputs.bytes(width, height)?);
+        let texture = self.texture(
+            width,
+            height,
+            self.format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let depth = self.texture(
+            width,
+            height,
+            wgpu::TextureFormat::Depth32Float,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        self.pass(
+            &mut encoder,
+            &texture.create_view(&Default::default()),
+            &depth.create_view(&Default::default()),
+        );
+        let mut pixels = self.readback(encoder, &texture, width, height)?;
         if self.format == wgpu::TextureFormat::Bgra8Unorm {
             for pixel in pixels.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
             }
         }
-        drop(data);
-        buffer.unmap();
         if let Some(e) = pollster::block_on(scope.pop()) {
             return Err(format!("GPU frame: {e}"));
         }
@@ -1079,16 +1747,23 @@ impl Gpu {
 }
 
 fn draw_bytes(draws: &[Draw]) -> Result<(Vec<u8>, Vec<u8>, u32), String> {
-    draw_bytes_with_studs(draws, None)
+    draw_bytes_with_studs(draws, None, None)
 }
+/// The vertex upload. `reflectance` holds each Workspace Part's vertex
+/// reflectance (`material_generator::vertex_reflectance`); other draws get 0.
 fn draw_bytes_with_studs(
     draws: &[Draw],
     coordinates: Option<&std::collections::BTreeMap<String, Vec<[f32; 2]>>>,
+    reflectance: Option<&std::collections::BTreeMap<String, f32>>,
 ) -> Result<(Vec<u8>, Vec<u8>, u32), String> {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     let mut base = 0u32;
     for draw in draws {
+        let draw_reflectance = reflectance
+            .and_then(|map| map.get(&draw.name))
+            .copied()
+            .unwrap_or(0.0);
         let uvs = coordinates
             .map(|map| map.get(&draw.name).ok_or("missing stud coordinates"))
             .transpose()?;
@@ -1125,6 +1800,7 @@ fn draw_bytes_with_studs(
                 }
                 vertices.extend(f.to_le_bytes());
             }
+            vertices.extend(draw_reflectance.to_le_bytes());
         }
         for i in &draw.indices {
             if *i as usize >= draw.vertices.len() {
@@ -1339,6 +2015,189 @@ pub fn audit_decal_render(bundle: &Bundle) -> Result<String, String> {
         "decal_render_pass decals={} skipped={} repeat_identical=true texture_wraps=true native_pixel_parity=not_tested",
         decals.len(),
         workspace.decals.len() - decals.len()
+    )
+    .unwrap();
+    Ok(report)
+}
+
+/// Workspace Part materials at low quality (places/audit-material-render):
+/// one block per render material, a Wood Ball, a Brick Wedge and two
+/// Plastics with Reflectance 0.5, seen from +Z under the default lighting.
+/// Checks the native tiling and glow constants, one block's material UVs
+/// against the tables, and per Part (its pixels found by hiding it) how
+/// many pixels differ from the same scene drawn all Plastic: none for
+/// Plastic, most for the textured, Neon and reflective techniques.
+pub fn audit_material_render(bundle: &Bundle) -> Result<String, String> {
+    use crate::material_generator::{self, MaterialTables, RENDER_MATERIALS, Technique};
+    use crate::workspace::Workspace;
+    let image = crate::native_data::NativeImage::load(bundle)?;
+    let tables = MaterialTables::load(&image)?;
+    let mut report = String::new();
+    for (code, name) in RENDER_MATERIALS {
+        writeln!(
+            report,
+            "material_constants name={name} code={code:#x} tiling={} far_tiling={} technique={}",
+            tables.tiling(code)?,
+            material_generator::far_tiling(code),
+            material_generator::technique(code, 0.0)?.name()
+        )
+        .unwrap();
+    }
+    if tables.tiling(0x100)? != 1.3 || tables.tiling(0x370)? != 0.0675 || tables.glow != 2.2 {
+        return Err(format!("unexpected native material constants\n{report}"));
+    }
+    let workspace = Workspace::place("audit-material-render")?;
+    let scene = RenderScene::character(bundle)?;
+    let mut surfaces = surface::character(bundle, &scene)?;
+    let mut app = scene_app(scene);
+    let (draws, coordinates, draw_report) = crate::geometry::workspace_draws(bundle, &workspace)?;
+    report.push_str(&draw_report);
+    // addBlock's Back face (2) starts at origin + width, origin.
+    let (index, wood) = workspace
+        .parts
+        .iter()
+        .enumerate()
+        .find(|(_, p)| p.material == 0x200)
+        .ok_or("audit place has no Wood block")?;
+    let uv = tables.uv(
+        wood.material,
+        wood.size,
+        material_generator::part_seed(index),
+    )?;
+    let wood_draw = draws
+        .iter()
+        .find(|d| d.name == wood.name)
+        .ok_or("no Wood draw")?;
+    let expected = [
+        (uv.offset[0] + wood.size[0]) * uv.tiling,
+        uv.offset[1] * uv.tiling,
+    ];
+    writeln!(
+        report,
+        "material_uv name={:?} origin={:?} tiling={} back_face_first={:?} expected={expected:?}",
+        wood.name, uv.offset, uv.tiling, wood_draw.vertices[8].uv
+    )
+    .unwrap();
+    if wood_draw.vertices[8].uv != expected {
+        return Err(format!("Wood block material UVs differ\n{report}"));
+    }
+    surfaces.coordinates.extend(coordinates);
+    let mut plain = workspace.clone();
+    for part in &mut plain.parts {
+        part.material = 0x100;
+        part.reflectance = 0.0;
+    }
+    let (plain_draws, _, _) = crate::geometry::workspace_draws(bundle, &plain)?;
+    for draw in draws {
+        app.world_mut().spawn(draw);
+    }
+    app.update();
+    let materials = material_generator::workspace_materials(bundle, &workspace)?;
+    report.push_str(&materials.report);
+    let profile = crate::lighting::LightingProfile::load(bundle)?;
+    let sky = profile.sky(profile.properties.time_of_day);
+    let sky_textures = crate::sky::SkyTextures::load(bundle)?;
+    let mut inputs = RenderInputs::character_probe();
+    inputs.apply_lighting(&profile.render_lighting(&sky));
+    inputs.frame = CoordinateFrame {
+        position: [0.0, 58.0, 24.0],
+        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    };
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let extracted = app.world().resource::<Extracted>().0.clone();
+    let (mut gpu, _) = Gpu::new(&instance, None, wgpu::TextureFormat::Rgba8Unorm, &extracted)?;
+    gpu.add_studs(&extracted, &surfaces)?;
+    if gpu.read_frame(64, 48, &inputs).is_ok() {
+        return Err("non-Plastic Parts rendered without their techniques".into());
+    }
+    report.push_str(&gpu.add_materials(
+        &extracted,
+        &surfaces,
+        &materials,
+        Some((&sky_textures, &sky)),
+    )?);
+    let (width, height) = (640u32, 480u32);
+    let full = gpu.read_frame(width, height, &inputs)?;
+    if gpu.read_frame(width, height, &inputs)? != full {
+        return Err("material render repeat readback mismatch".into());
+    }
+    let plain_extracted: Vec<Draw> = extracted
+        .iter()
+        .map(|d| {
+            plain_draws
+                .iter()
+                .find(|p| p.name == d.name)
+                .unwrap_or(d)
+                .clone()
+        })
+        .collect();
+    let (mut plain_gpu, _) = Gpu::new(
+        &instance,
+        None,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &plain_extracted,
+    )?;
+    plain_gpu.add_studs(&plain_extracted, &surfaces)?;
+    let plastic = plain_gpu.read_frame(width, height, &inputs)?;
+    let mut failures = Vec::new();
+    for part in &workspace.parts {
+        let technique = materials.technique(&part.name, part.material)?;
+        let mut hidden = extracted.clone();
+        for draw in hidden.iter_mut().filter(|d| d.name == part.name) {
+            for v in &mut draw.vertices {
+                v.position = [1e6; 3];
+            }
+        }
+        gpu.update_geometry(&hidden, &[], &surfaces)?;
+        let without = gpu.read_frame(width, height, &inputs)?;
+        let mut pixels = 0;
+        let mut changed = 0;
+        let mut colors = std::collections::BTreeSet::new();
+        let mut plain_colors = std::collections::BTreeSet::new();
+        for ((a, b), p) in full
+            .chunks_exact(4)
+            .zip(without.chunks_exact(4))
+            .zip(plastic.chunks_exact(4))
+        {
+            if a != b {
+                pixels += 1;
+                changed += usize::from(a != p);
+                colors.insert(a.to_vec());
+                plain_colors.insert(p.to_vec());
+            }
+        }
+        writeln!(
+            report,
+            "material_render name={:?} technique={} pixels={pixels} changed_vs_plastic={changed} colors={} plastic_colors={}",
+            part.name,
+            technique.name(),
+            colors.len(),
+            plain_colors.len()
+        )
+        .unwrap();
+        let ok = pixels > 200
+            && match technique {
+                Technique::Plastic {
+                    reflection: false, ..
+                } => part.material != 0x100 || changed == 0,
+                _ => changed * 2 > pixels,
+            };
+        if !ok {
+            failures.push(part.name.clone());
+        }
+    }
+    gpu.update_geometry(&extracted, &[], &surfaces)?;
+    if gpu.read_frame(width, height, &inputs)? != full {
+        return Err("material render restore readback mismatch".into());
+    }
+    if !failures.is_empty() {
+        return Err(format!("material render failed {failures:?}\n{report}"));
+    }
+    writeln!(
+        report,
+        "material_render_pass parts={} repeat_identical=true rgba_sha256={:x} native_pixel_parity=not_tested",
+        workspace.parts.len(),
+        Sha256::digest(&full)
     )
     .unwrap();
     Ok(report)
@@ -2185,6 +3044,8 @@ struct Viewport {
     walking_camera_root: Option<[f32; 3]>,
     walking_camera: Option<crate::camera_script::ClassicCamera>,
     walking_sky: Option<crate::lighting::SkyParameters>,
+    /// The demo place's material techniques (baseplate viewport only).
+    materials: Option<crate::material_generator::MaterialScene>,
     cursor: Option<[f64; 2]>,
     #[cfg(feature = "dev")]
     dev: Option<dev::DevPanel>,
@@ -2232,6 +3093,26 @@ impl ApplicationHandler for Viewport {
             )?;
             gpu.add_studs(&self.app.world().resource::<Extracted>().0, &self.surfaces)?;
             gpu.add_decals(&self.app.world().resource::<ExtractedDecals>().0)?;
+            if let Some(materials) = &self.materials {
+                let bundle = Bundle::open(&self.bundle_root)?;
+                let textures = crate::sky::SkyTextures::load(&bundle)?;
+                let sky = match &self.walking_sky {
+                    Some(sky) => sky.clone(),
+                    None => {
+                        let profile = crate::lighting::LightingProfile::load(&bundle)?;
+                        profile.sky(profile.properties.time_of_day)
+                    }
+                };
+                let lines = gpu.add_materials(
+                    &self.app.world().resource::<Extracted>().0,
+                    &self.surfaces,
+                    materials,
+                    Some((&textures, &sky)),
+                )?;
+                for line in lines.lines().filter(|l| !l.starts_with("material_draw ")) {
+                    self.log_event(line.to_string())?;
+                }
+            }
             let size = window.inner_size();
             let mut config = surface
                 .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -2759,6 +3640,7 @@ fn run_viewport(
         crate::workspace::Workspace::default()
     };
     install_motion_world(&mut app, bundle, baseplate.then_some(&demo))?;
+    let mut materials = None;
     let walking_camera_root = if walking && baseplate {
         app.world_mut()
             .resource_mut::<MotionControl>()
@@ -2797,6 +3679,9 @@ fn run_viewport(
                 }
             }
         }
+        let scene = crate::material_generator::workspace_materials(bundle, &demo)?;
+        report.push_str(&scene.report);
+        materials = Some(scene);
         let decals = texture::workspace_decals(bundle, &local)?;
         report.push_str(&decals.report);
         for decal in decals.draws {
@@ -2922,6 +3807,7 @@ fn run_viewport(
         walking_camera_root,
         walking_camera,
         walking_sky,
+        materials,
         cursor: None,
         #[cfg(feature = "dev")]
         dev: None,

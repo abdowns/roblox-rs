@@ -929,7 +929,7 @@ mod tests {
         let path = place_path(DEMO_PLACE);
         let bytes = std::fs::read(&path).unwrap();
         let demo = Workspace::load(&path).unwrap();
-        assert_eq!(demo.parts.len(), 28);
+        assert_eq!(demo.parts.len(), 51);
         assert_eq!(demo.joints.len(), 5);
         assert_eq!(demo.decals.len(), 3);
         // Saved again, the file is the same.

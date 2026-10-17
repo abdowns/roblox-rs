@@ -100,7 +100,7 @@ fn float(image: &NativeImage, at: u32) -> Result<f32, String> {
 /// base, `CMP code, imm` and the conditional jumps select the branch, and
 /// `MOVSS xmm, [pic+disp]` / `XORPS xmm, xmm` set the result. Any other
 /// instruction (the assert path for unknown materials) is an error.
-fn follow_switch(
+pub(crate) fn follow_switch(
     image: &NativeImage,
     start: u32,
     exit: u32,

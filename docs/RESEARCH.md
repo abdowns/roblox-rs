@@ -374,3 +374,57 @@ BallVertex 01c86008: aa9ea4, 9 | BallEdge 01c86068: aa9c2a, 10 | BallPlane 01c86
 - ObjectExporter::processPart 0110f6a0 (OBJ export, not the renderer)
   pushes decal vertices 0.02 along the normal; the renderer does not move
   them (decal pass depth bias instead).
+
+## Materials (material port session, 2026-10-17)
+
+- createDefaultMaterial 010c0e00: reflection flag =
+  `(material & ~0x10) == 0x100 && Reflectance > 0.015` (Plastic and
+  SmoothPlastic only).
+- createRenderMaterial 010bc630 (material, PartMaterial, reflection): cache
+  index per material 0..0x14 (0x100 -> 0, 0x110 -> 2 | refl, 0x120 -> 0x15,
+  0x200 -> 4 ... 0x600 -> 0x14); any other code returns no material. Name
+  strings "Plastic".."Ice"; `name + ("Reflection" if refl)`. Low-quality FS:
+  0x100/0x110 -> "DefaultPlasticFS" or "Default" + name + "Reflection" +
+  "FS" (so DefaultSmoothPlasticReflectionFS); 0x120 -> "DefaultNeonFS";
+  0x370 -> "LowQMaterialWangFS" (or "LowQMaterialWangFallbackFS" when that
+  program fails); else "LowQMaterialFS". Slot 0 = studs.dds sampler
+  (Linear=1, Wrap). Non-Plastic/Neon: slot 5 =
+  "rbxasset://textures/" + lowercase(name) + "/diffuse" + DAT_0224dde0
+  (".dds"), sampler (1, 0, 0); slot 8 = wang index (MaterialGenerator +0x944*4)
+  with sampler (0, 0, 0) for Cobblestone. LqmatFarTilingFactor (f, f, 1, 1):
+  0.25 for 800 (Slate), 0x330, 0x340, 0x430, 0x500, 0x600; 0.5 for 0x410;
+  1 otherwise. Neon passes `material == 0x120` to FUN_010bbf40 (blend
+  state); Plastic/Neon call FUN_010bc540, the rest set the textures.
+- shaders.json: plastic.hlsl and smoothplastic.hlsl have the same non-HQ
+  code (`#define PIN_PLASTIC` + default.hlsl), so the two reflection
+  programs differ only in name at low quality.
+- getTiling 010c3c40: a switch (jump table at 010c3e65), read at runtime
+  with follow_switch; values Plastic 1.3, SmoothPlastic/Neon 1, Wood,
+  WoodPlanks, Diamondplate, Metal 0.2, Marble, Slate, Granite, Pebble, Rust,
+  Aluminum, Sand, Ice 0.1, Concrete, Grass, Fabric 0.15, Brick 0.125,
+  Cobblestone 0.0675.
+- UV origin (addPartImpl 010d1850): seed = part + (part >> 3) (heap
+  address); bits 3..8 and 9..14 index the 64 floats at 017f0218. Brick and
+  WoodPlanks use the table values directly; the rest use
+  ((T + T) + -1) * ((x + y) + z) * 0.5. UVs are multiplied by the tiling.
+- addBlock 010cca80 material UVs: u = origin + width at the first corner,
+  origin at the second (width = Z on X faces, X otherwise); v = start, +8 per
+  strip, the last strip ends at start + rest (unclamped). Wedge (fc54): the
+  strip's v end is 8 + v_off, rate 8 * z / y per strip. addSphere: u starts
+  each row at origin + |column * size|, falls by width * fraction; v grows by
+  |row * size| * fraction per row, skipping each strip's repeated last row.
+- Vertex reflectance byte = (int)(min(r, 1) * 0.8 * 255), 0 when r <= 0.
+- Glow factor 2.2: SceneManager ctor immediate at 011c084e (`C7 40 04`),
+  used when the PostFX level is below 1 (011c2200).
+- EnvMap 010a7310 / renderFace 010a8030: 256x256 cube with mips; each face
+  draws Sky::render without stars from the origin with
+  perspective(pi/2, 1, 0.5, 3000); the face view matrices come from a static
+  initializer and match the wgpu cube face order. EnvMap::update refreshes
+  faces over time (not ported).
+- BlendState layout {colorMask, srcColor, dstColor, srcAlpha, dstAlpha};
+  factor table 017ef0cc: 0 ONE, 1 ZERO, 2 DST_COLOR, 3 SRC_ALPHA,
+  4 INV_SRC_ALPHA, 5 DST_ALPHA, 6 INV_DST_ALPHA. Neon is opaque.
+- FastCluster passes geometry Options flags 0, so every material keeps the
+  stud coordinates in the second UV set.
+- squish DXT5: alpha uses integer palettes; DXT5 color always takes the
+  4-color branch.

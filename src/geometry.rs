@@ -35,6 +35,21 @@ pub struct RenderScene {
     pub report: String,
 }
 
+/// The material texture coordinates a geometry generator writes: the
+/// Part's UV origin (`material_generator::MaterialTables::uv`) and
+/// MaterialGenerator::getTiling, which scales every coordinate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaterialUv {
+    pub tiling: f32,
+    pub offset: [f32; 2],
+}
+
+impl MaterialUv {
+    fn at(&self, u: f32, v: f32) -> [f32; 2] {
+        [u * self.tiling, v * self.tiling]
+    }
+}
+
 fn prop<'a, 'b>(item: Node<'a, 'b>, name: &str) -> Result<Node<'a, 'b>, String> {
     item.children()
         .find(|n| n.has_tag_name("Properties"))
@@ -192,14 +207,30 @@ fn block_frame(part: &PartInstance) -> ([[f32; 3]; 8], [[f32; 3]; 6]) {
 /// (side faces) or Z (Top/Bottom), stepping from the face's first edge. Stud
 /// coordinates (types 1-5) run u = width/2 -> 0 and v = row -> row + 0.25 per
 /// full strip; the last strip ends at row + clamp(rest/8, 0, 1) * 0.25.
-/// Material UVs, tangents and outline edge distances are not produced (the
-/// low-quality Plastic shader reads only the stud coordinates; outlines are
-/// disabled). Returns the draw and its stud coordinates.
+/// Tangents and outline edge distances are not produced (the low-quality
+/// shaders do not read them; outlines are disabled). Material UVs are zero;
+/// `workspace_block_material` writes them. Returns the draw and its stud
+/// coordinates.
 pub fn workspace_block(
     faces: &[[usize; 4]; 6],
     rows: &[f32; 6],
     colors: &BTreeMap<u32, [u8; 3]>,
     part: &PartInstance,
+) -> Result<(Draw, Vec<[f32; 2]>), String> {
+    workspace_block_material(faces, rows, colors, part, None)
+}
+
+/// `workspace_block` with addBlock's material UVs. Each face runs u from
+/// origin + width (the first corner's edge) to origin and v from origin by 8
+/// per strip, the last strip ending at its start + the remaining length;
+/// both are scaled by the tiling. Width is Z on the X faces and X on the
+/// others.
+pub fn workspace_block_material(
+    faces: &[[usize; 4]; 6],
+    rows: &[f32; 6],
+    colors: &BTreeMap<u32, [u8; 3]>,
+    part: &PartInstance,
+    material: Option<MaterialUv>,
 ) -> Result<(Draw, Vec<[f32; 2]>), String> {
     let size = part.size;
     let r = &part.frame.rotation;
@@ -267,17 +298,27 @@ pub fn workspace_block(
         };
         let step = steps[face];
         let mut offset = [0.0f32; 3];
-        let mut quad = |positions: [[f32; 3]; 4], v_end: f32| {
+        // Material u: origin + width at the first corner, origin at the
+        // second; v: the strip's start and end.
+        let (u_far, u_near) = material.map_or((0.0, 0.0), |m| (m.offset[0] + width, m.offset[0]));
+        let mut v_start = material.map_or(0.0, |m| m.offset[1]);
+        let mut quad = |positions: [[f32; 3]; 4], v_end: f32, material_v: [f32; 2]| {
             let first = draw.vertices.len() as u32;
-            for (position, stud) in
-                positions
-                    .into_iter()
-                    .zip([[u, row], [0.0, row], [u, v_end], [0.0, v_end]])
+            let uvs = [
+                [u_far, material_v[0]],
+                [u_near, material_v[0]],
+                [u_far, material_v[1]],
+                [u_near, material_v[1]],
+            ];
+            for ((position, stud), uv) in positions
+                .into_iter()
+                .zip([[u, row], [0.0, row], [u, v_end], [0.0, v_end]])
+                .zip(uvs)
             {
                 draw.vertices.push(RenderVertex {
                     position,
                     normal: normals[face],
-                    uv: [0.0; 2],
+                    uv: material.map_or([0.0; 2], |m| m.at(uv[0], uv[1])),
                     color,
                     specular,
                 });
@@ -288,6 +329,7 @@ pub fn workspace_block(
         };
         for _ in 1..count {
             let next: [f32; 3] = std::array::from_fn(|i| step[i] * 8.0 + offset[i]);
+            let v_end = v_start + 8.0;
             quad(
                 [
                     std::array::from_fn(|i| a[i] + offset[i]),
@@ -296,8 +338,10 @@ pub fn workspace_block(
                     std::array::from_fn(|i| next[i] + b[i]),
                 ],
                 extent + row,
+                [v_start, v_end],
             );
             offset = next;
+            v_start = v_end;
         }
         if count > 0 {
             let rest = (count - 1) as f32 * -8.0 + length;
@@ -315,6 +359,7 @@ pub fn workspace_block(
                     corners[table[3]],
                 ],
                 fraction * extent + row,
+                [v_start, rest + v_start],
             );
         }
     }
@@ -405,15 +450,31 @@ pub fn workspace_decal(
 ///   and moves by 4 z/y per full strip (by 4 z/y times the fraction on the
 ///   last one), so the studs follow the narrowing face.
 ///
-/// As for blocks, only positions, normals and stud coordinates are
-/// produced. The float association of the corner and normal sums follows
-/// `workspace_block`; it is not checked against this function's
-/// disassembly.
+/// As for blocks, material UVs are zero here (`workspace_wedge_material`
+/// writes them) and tangents are not produced. The float association of the
+/// corner and normal sums follows `workspace_block`; it is not checked
+/// against this function's disassembly.
 pub fn workspace_wedge(
     faces: &[[usize; 4]; 6],
     rows: &[f32; 6],
     colors: &BTreeMap<u32, [u8; 3]>,
     part: &PartInstance,
+) -> Result<(Draw, Vec<[f32; 2]>), String> {
+    workspace_wedge_material(faces, rows, colors, part, None)
+}
+
+/// `workspace_wedge` with the Wedge generator's material UVs (010dda90..):
+/// as addBlock's, except on the triangles. A corner whose edge follows the
+/// slope (its stud rate is z/y) starts at the other corner's u and moves
+/// by 8 z/y per full strip (by the remaining length times z/y on the last
+/// one) toward it: the first corner up from origin, the second down from
+/// origin + width.
+pub fn workspace_wedge_material(
+    faces: &[[usize; 4]; 6],
+    rows: &[f32; 6],
+    colors: &BTreeMap<u32, [u8; 3]>,
+    part: &PartInstance,
+    material: Option<MaterialUv>,
 ) -> Result<(Draw, Vec<[f32; 2]>), String> {
     let size = part.size;
     let r = &part.frame.rotation;
@@ -514,37 +575,52 @@ pub fn workspace_wedge(
         if rate_a != 0.0 {
             u_a = 0.0;
         }
-        let mut quad = |positions: [[f32; 3]; 4], us: [f32; 4], v_end: f32| {
-            let first = draw.vertices.len() as u32;
-            for (position, stud) in positions.into_iter().zip([
-                [us[0], row],
-                [us[1], row],
-                [us[2], v_end],
-                [us[3], v_end],
-            ]) {
-                draw.vertices.push(RenderVertex {
-                    position,
-                    normal: normals[face],
-                    uv: [0.0; 2],
-                    color,
-                    specular,
-                });
-                studs.push(stud);
-            }
-            draw.indices
-                .extend([first, first + 1, first + 2, first + 2, first + 1, first + 3]);
-        };
+        let mut quad =
+            |positions: [[f32; 3]; 4], us: [f32; 4], v_end: f32, material_uv: [[f32; 2]; 4]| {
+                let first = draw.vertices.len() as u32;
+                for ((position, stud), uv) in positions
+                    .into_iter()
+                    .zip([[us[0], row], [us[1], row], [us[2], v_end], [us[3], v_end]])
+                    .zip(material_uv)
+                {
+                    draw.vertices.push(RenderVertex {
+                        position,
+                        normal: normals[face],
+                        uv: material.map_or([0.0; 2], |m| m.at(uv[0], uv[1])),
+                        color,
+                        specular,
+                    });
+                    studs.push(stud);
+                }
+                draw.indices
+                    .extend([first, first + 1, first + 2, first + 2, first + 1, first + 3]);
+            };
+        // Material u per corner: a's start/end, b's start/end and b's base
+        // (local_20c, local_25c, fStack_204, fStack_1f4, local_32c).
+        let (origin_u, mut v_start) = material.map_or((0.0, 0.0), |m| (m.offset[0], m.offset[1]));
+        let far = origin_u + width;
+        let (mut ua_start, mut ua_end) = (far, far);
+        let (mut ub_start, mut ub_end, mut b_base) = (origin_u, origin_u, origin_u);
+        if rate_b != 0.0 {
+            (ub_start, ub_end, b_base) = (far, far, far);
+        }
+        if rate_a != 0.0 {
+            (ua_start, ua_end) = (b_base, b_base);
+        }
         let (mut off_a, mut off_b) = ([0.0f32; 3], [0.0f32; 3]);
         for _ in 1..count {
             let (start_a, start_b) = (u_a, u_b);
             if rate_b != 0.0 {
                 u_b -= u_rate * rate_b;
+                ub_end = b_base - rate_b * 8.0;
             }
             if rate_a != 0.0 {
                 u_a += u_rate * rate_a;
+                ua_end += rate_a * 8.0;
             }
             let next_a: [f32; 3] = std::array::from_fn(|i| step_a[i] * 8.0 + off_a[i]);
             let next_b: [f32; 3] = std::array::from_fn(|i| step_b[i] * 8.0 + off_b[i]);
+            let v_end = v_start + 8.0;
             quad(
                 [
                     std::array::from_fn(|i| off_a[i] + a[i]),
@@ -554,7 +630,21 @@ pub fn workspace_wedge(
                 ],
                 [start_a, start_b, u_a, u_b],
                 extent + row,
+                [
+                    [ua_start, v_start],
+                    [ub_start, v_start],
+                    [ua_end, v_end],
+                    [ub_end, v_end],
+                ],
             );
+            b_base = ub_end;
+            if rate_b != 0.0 {
+                ub_start = ub_end;
+            }
+            if rate_a != 0.0 {
+                ua_start = ua_end;
+            }
+            v_start = v_end;
             off_a = next_a;
             off_b = next_b;
         }
@@ -569,9 +659,11 @@ pub fn workspace_wedge(
             let (start_a, start_b) = (u_a, u_b);
             if rate_b != 0.0 {
                 u_b -= rate_b * fraction * u_rate;
+                b_base -= rate_b * rest;
             }
             if rate_a != 0.0 {
                 u_a += u_rate * fraction * rate_a;
+                ua_end += rate_a * rest;
             }
             quad(
                 [
@@ -582,6 +674,12 @@ pub fn workspace_wedge(
                 ],
                 [start_a, start_b, u_a, u_b],
                 extent * fraction + row,
+                [
+                    [ua_start, v_start],
+                    [ub_start, v_start],
+                    [ua_end, rest + v_start],
+                    [b_base, rest + v_start],
+                ],
             );
         }
     }
@@ -630,14 +728,31 @@ fn sphere_side(part: &PartInstance, tiling: [f32; 2]) -> (f32, f32) {
 /// side / (2 tiles) down by side / (2 tiles rows) per vertex, v starts each
 /// strip at frac(strip * side / tiles) / 8 * 0.25 + row and grows by
 /// side * 0.25 / (8 tiles rows) per row (side = the clamped smallest size).
-/// Material UVs, tangents and outline edge distances are not produced, as
-/// for blocks. Returns the draw and its stud coordinates.
+/// Tangents and outline edge distances are not produced, and material UVs
+/// are zero (`workspace_sphere_material` writes them), as for blocks.
+/// Returns the draw and its stud coordinates.
 pub fn workspace_sphere(
     faces: &[[usize; 4]; 6],
     rows: &[f32; 6],
     tiling: [f32; 2],
     colors: &BTreeMap<u32, [u8; 3]>,
     part: &PartInstance,
+) -> Result<(Draw, Vec<[f32; 2]>), String> {
+    workspace_sphere_material(faces, rows, tiling, colors, part, None)
+}
+
+/// `workspace_sphere` with addSphere's material UVs (010cb4a4..): per cube
+/// face, u starts each vertex row at origin + |column direction . size| and
+/// falls by that width / (tiles rows) per vertex; v starts at origin and
+/// grows by |row direction . size| / (tiles rows) per row, continuing
+/// across strips (a strip's repeated last row does not step).
+pub fn workspace_sphere_material(
+    faces: &[[usize; 4]; 6],
+    rows: &[f32; 6],
+    tiling: [f32; 2],
+    colors: &BTreeMap<u32, [u8; 3]>,
+    part: &PartInstance,
+    material: Option<MaterialUv>,
 ) -> Result<(Draw, Vec<[f32; 2]>), String> {
     // The cube corners 0224e02c: bit 4 = +X, bit 2 = +Y, bit 1 = +Z.
     let corner = |k: usize| -> [f32; 3] {
@@ -701,6 +816,11 @@ pub fn workspace_sphere(
         } else {
             (0.0, 0.0, 0.0)
         };
+        let dot = |a: [f32; 3]| (a[2] * size[2] + a[1] * size[1] + a[0] * size[0]).abs();
+        let (width, height) = (dot(COLUMN_STEP[face]), dot(ROW_STEP[face]));
+        let (u_step_material, v_step_material) = (width * fraction, height * fraction);
+        let (u_origin, mut material_v) =
+            material.map_or((0.0, 0.0), |m| (m.offset[0] + width, m.offset[1] + 0.0));
         for strip in 0..tiles {
             let first = draw.vertices.len() as u32;
             let x = (strip as f32 * clamped) / tiles_f;
@@ -708,6 +828,7 @@ pub fn workspace_sphere(
             for row_index in 0..=strip_rows {
                 let mut d = start;
                 let mut u = rows_f * u_step;
+                let mut material_u = u_origin;
                 for _ in 0..across {
                     // Sums run x, y, z as the disassembly shows (010cc130..).
                     let inverse = 1.0 / ((d[0] * d[0] + d[1] * d[1]) + d[2] * d[2]).sqrt();
@@ -724,16 +845,18 @@ pub fn workspace_sphere(
                     draw.vertices.push(RenderVertex {
                         position,
                         normal: w.map(|v| v * length),
-                        uv: [0.0; 2],
+                        uv: material.map_or([0.0; 2], |m| m.at(material_u, material_v)),
                         color,
                         specular,
                     });
                     studs.push([u, v]);
                     d = std::array::from_fn(|i| d[i] + column_step[i]);
                     u -= u_step;
+                    material_u -= u_step_material;
                 }
                 if row_index < strip_rows {
                     start = std::array::from_fn(|i| start[i] + row_step[i]);
+                    material_v += v_step_material;
                 }
                 v += clamped * extent * fraction * 0.125;
             }
@@ -919,12 +1042,23 @@ pub fn workspace_draws(
         image.sphere_tiling()?,
     );
     let wedge_faces = image.wedge_faces()?;
+    let tables = crate::material_generator::MaterialTables::load(&image)?;
     let mut draws = Vec::new();
     let mut coordinates = BTreeMap::new();
     let mut report = String::new();
-    for part in &workspace.parts {
+    for (index, part) in workspace.parts.iter().enumerate() {
+        let material = Some(
+            tables
+                .uv(
+                    part.material,
+                    part.size,
+                    crate::material_generator::part_seed(index),
+                )
+                .map_err(|e| format!("Part {:?}: {e}", part.name))?,
+        );
         if part.shape == crate::workspace::SHAPE_BALL {
-            let (draw, studs) = workspace_sphere(&faces, &rows, tiling, &colors, part)?;
+            let (draw, studs) =
+                workspace_sphere_material(&faces, &rows, tiling, &colors, part, material)?;
             let (tiles, strip_rows) = sphere_grid(part, tiling);
             let center = part.frame.position;
             let (near, far) = draw.vertices.iter().fold((f32::MAX, 0.0f32), |(n, f), v| {
@@ -949,7 +1083,8 @@ pub fn workspace_draws(
             continue;
         }
         if part.shape == crate::workspace::SHAPE_WEDGE {
-            let (draw, studs) = workspace_wedge(&wedge_faces, &rows, &colors, part)?;
+            let (draw, studs) =
+                workspace_wedge_material(&wedge_faces, &rows, &colors, part, material)?;
             writeln!(
                 report,
                 "workspace_draw name={:?} geometry=wedge quads={} vertices={} triangles={} color={:?} stud_extent={:?}",
@@ -973,7 +1108,7 @@ pub fn workspace_draws(
                 part.name
             ));
         }
-        let (draw, studs) = workspace_block(&faces, &rows, &colors, part)?;
+        let (draw, studs) = workspace_block_material(&faces, &rows, &colors, part, material)?;
         writeln!(
             report,
             "workspace_draw name={:?} quads={} vertices={} triangles={} color={:?} top_stud_extent={:?}",

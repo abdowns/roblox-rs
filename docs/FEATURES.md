@@ -59,8 +59,8 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   classes and the Part properties the simulation does not use yet.
 
 - The demo place is a file: `viewport-baseplate` loads
-  `places/viewport-baseplate.rbxm` (28 Parts, 5 joints, 3 decals) and logs
-  `place_loaded ... parts=28 joints=5`. `rbxm-dump <file>` prints any model
+  `places/viewport-baseplate.rbxm` (51 Parts, 5 joints, 3 decals) and logs
+  `place_loaded ... parts=51 joints=5`. `rbxm-dump <file>` prints any model
   file as text. Run `sh tools/cargo.sh test --locked
   the_demo_place_round_trips`; expect it to pass (loading and saving gives
   the same bytes).
@@ -458,8 +458,8 @@ output to expect. Anything not covered by an audit is marked **not tested**.
 
   The float association of the corner and normal sums is copied from
   `workspace_block`; it is **not checked** against 010dc290's disassembly.
-  How it looks is **not tested** (log, don't look). Material UVs, tangents
-  and outline distances are not produced, as for blocks.
+  How it looks is **not tested** (log, don't look). Tangents and outline
+  distances are not produced, as for blocks; material UVs are.
 
 - Decals and Textures on block Parts (`geometry::workspace_decal`,
   `texture::workspace_decals`), ported from addBlock's decal path
@@ -492,6 +492,45 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   is pushed (they are posed from the same body frame as the Crate draw, but
   no audit measures it).
 
+- Part materials at the native low quality level (`material_generator`,
+  `Gpu::add_materials`), ported from createDefaultMaterial 010c0e00,
+  createRenderMaterial 010bc630, getTiling 010c3c40, the UV offset table
+  017f0218, EnvMap 010a7310 and the shipped default.hlsl. All 20 render
+  materials draw: Plastic/SmoothPlastic with the stud atlas
+  (DefaultPlasticFS), reflective Plastic/SmoothPlastic (Reflectance > 0.015)
+  with a sky cube map, Neon times glow 2.2, Cobblestone with the Wang tile
+  index, and the other 16 with their `textures/<name>/diffuse.dds` from the
+  install. Blocks, Balls and Wedges get material UVs.
+  Run `sh tools/cargo.sh run --locked -- audit-material-render`. Expect:
+  - 20 `material_constants` lines, e.g.
+    `material_constants name=Plastic code=0x100 tiling=1.3 far_tiling=1 technique=DefaultPlasticFS`,
+    `name=Cobblestone code=0x370 tiling=0.0675 far_tiling=1 technique=LowQMaterialWangFS`,
+    `name=Rust code=0x410 tiling=0.1 far_tiling=0.5 technique=LowQMaterialFS`;
+  - `material_uv name="Wood" origin=[3.327456, -1.2216079] tiling=0.2 back_face_first=[1.3654913, -0.24432158] expected=[1.3654913, -0.24432158]`;
+  - 17 `material_texture` lines (e.g. `folder=wood format=DXT1 size=1024x1024 mips=11`)
+    and `material_wang_index size=128x128`;
+  - `material_part name="SmoothMirror" material=SmoothPlastic technique=DefaultSmoothPlasticReflectionFS reflectance=0.4`;
+  - `workspace_material_pass parts=24 textures=17 wang=true glow=2.2`;
+  - `envmap_pass size=256 faces=6 mips=9 stars=false`;
+  - `material_gpu_pass pipelines=4 bind_groups=20 draw_calls=23 environment_map=true`;
+  - `material_render name="Plastic" ... changed_vs_plastic=0`, and every
+    other part with `changed_vs_plastic` equal to its `pixels` (SmoothPlastic
+    2601 of 2899; pixel counts are GPU dependent);
+  - `material_render_pass parts=24 repeat_identical=true ... native_pixel_parity=not_tested`.
+
+  `sh tools/cargo.sh test --locked material_generator` checks the technique
+  choice and names, the reflectance quantizing and the UV seed;
+  `sh tools/cargo.sh test --locked dxt5` checks the DXT5 decoder.
+  Differs from native: the material texture offset comes from the Part's heap
+  address natively, here from a deterministic seed per Part, so the texture
+  is shifted differently (tiling and layout are the native ones). The
+  environment map is built once (the native refreshes it over time) and its
+  mips are CPU-averaged. Ice and Aluminum ship 4x4 placeholder diffuse maps in
+  this install, so they draw nearly flat. Not ported: the high-quality
+  techniques (normal, specular and normal-detail maps, tangents), outlines,
+  transparent Parts, CustomPhysicalProperties. Not tested: how it looks
+  against the original (log, don't look).
+
 - Ball Parts are drawn as addSphere's cube sphere (`geometry::workspace_sphere`).
   Run `sh tools/cargo.sh run --locked -- audit-ball-render`. Expect:
   - `ball_mesh name="Boulder" diameter=4 smooth=false tiles=1 rows=6 vertices=294 expected_vertices=294 quads=216 expected_quads=216 radius_error=0.00000023841858 ... least_normal_alignment=0.9999999 inward_triangles=0 distinct_points=Some(218) expected_distinct=218`,
@@ -507,8 +546,8 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   - `ball_render_pass round=true repeat_identical=true native_differential=not_tested`.
 
   The pixel counts depend on the GPU. No viewport shows a Ball yet (the demo
-  place has none). Not ported: decals on Balls, material UVs, tangents and
-  outline distances (as for blocks). Native parity is **not tested**.
+  place has none). Not ported: decals on Balls, tangents and outline
+  distances (as for blocks). Material UVs are produced (see Part materials). Native parity is **not tested**.
 
 - The character against Ball Parts. A ball 4 studs across stays below the
   Head, so the Torso's touch ends RunningNoPhysics. Run
@@ -671,7 +710,7 @@ with the original running client is **not tested**.
 No full graphical client, general native geometry dispatch, complete native camera/input,
 complete physics, keyframe animation, Lua runtime, Studio ribbon/docks/editing, place saving,
 or complete XML/binary-place loader exists yet. Mesh v1.00/v1.01 are not implemented.
-General surface subdivisions/UVs, decals/textures, high-quality materials, outlines,
+General surface subdivisions, high-quality materials, outlines,
 dynamic light grid, shadows, sky stars and postprocessing remain unimplemented. Imported Attachments and
 Humanoid do not execute their native behavior. Full native execution, behavioral equivalence and visual equivalence
 are **not tested**. Do not treat `static_import_pass` as evidence of those.

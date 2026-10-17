@@ -1,5 +1,64 @@
 # MODLOG
 
+## 2026-10-17 Part materials (low quality techniques)
+
+**Changed:**
+- New `src/material_generator.rs`: the per-Part technique
+  (createDefaultMaterial 010c0e00 and createRenderMaterial 010bc630), the
+  tiling read from getTiling 010c3c40 in the binary, the UV offset table
+  017f0218, the glow factor 2.2 (011c084e), the reflectance byte and the
+  diffuse/wang texture loading (`workspace_materials`).
+- `src/geometry.rs`: `MaterialUv` and `workspace_{block,wedge,sphere}_material`
+  write the native material UVs. The old functions keep their signatures and
+  delegate with no material (zero UVs).
+- `src/dds.rs`: DXT5 (`Bc3Dds`) with squish's integer alpha palettes, and
+  L8A8 (`luminance_alpha`) for wangIndex.dds.
+- `src/render.wgsl` / `src/render.rs`: 68-byte vertices with reflectance;
+  new pipelines DefaultPlasticReflectionFS, LowQMaterialFS,
+  LowQMaterialWangFS and DefaultNeonFS; `Gpu::add_materials` builds them
+  plus a 256x256 sky cube map (EnvMap) for reflection. `Gpu::new` now
+  accepts any opaque Part; non-Plastic ones need `add_materials`.
+- New command `audit-material-render` with `places/audit-material-render.rbxm`
+  (20 material blocks, a Wood Ball, a Brick Wedge, two mirrors).
+- Demo place: a 20-block material wall, a Wood Ball, a Rust Wedge and a
+  reflective Mirror at z -40 (51 Parts, 7944 bytes). The baseplate viewport
+  draws them with the material pipelines.
+
+**Why:** the user asked for everything related to materials. This step covers
+how materials look; CustomPhysicalProperties is a separate step.
+
+**Tested how:**
+- `audit-material-render`: the 20 tilings read from the binary match the
+  decompiled literals; `material_uv name="Wood"` matches the table by hand;
+  `envmap_pass size=256 faces=6 mips=9`; `material_gpu_pass pipelines=4
+  bind_groups=20 draw_calls=23`; Plastic changes 0 pixels against plain
+  Plastic, every other part changes all of its pixels (SmoothPlastic
+  2601/2899, as it gets no stud atlas); `material_render_pass parts=24
+  repeat_identical=true`.
+- `viewport-baseplate-smoke`: `place_loaded ... parts=51 joints=5`,
+  `workspace_material_pass parts=51 textures=17 wang=true glow=2.2`, 120
+  frames, `viewport_final_readback_pass`.
+- `test`: 139 pass (140 with `--features dev`); clippy clean with and
+  without `dev`. audit-render, audit-baseplate-render, audit-ball-render,
+  audit-decal-render, audit-sky, audit-lighting, audit-animation-render,
+  audit-walking-render, audit-rbxm, audit-workspace and audit-material still
+  pass.
+
+**Not tested:** how it looks against the original (log, don't look); native
+pixel parity. The texture offsets differ from any native run (native seeds
+them from the Part's heap address; the port uses a deterministic seed). The
+env map is built once (EnvMap::update's time-based refresh is not ported)
+and its mips are CPU averages. High-quality techniques, outlines, transparent
+Parts and CustomPhysicalProperties are not ported.
+
+**Dead end:** the audit first required LowQMaterial parts to show more colors
+than Plastic; WoodBall failed (348 vs 420) because Plastic on a ball already
+has a shading gradient. The gate is now "more than half the pixels change".
+I also first named both reflection techniques DefaultPlasticReflectionFS;
+createRenderMaterial builds "Default" + material name + "Reflection" + "FS",
+so SmoothPlastic is DefaultSmoothPlasticReflectionFS (same shader code at low
+quality, only the name changed).
+
 ## 2026-10-16 Dev panel decal tool
 
 **Changed:**
