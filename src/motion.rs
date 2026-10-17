@@ -287,6 +287,26 @@ pub(crate) fn sync_loose(
     }
 }
 
+/// A Workspace decal on a loose Part, generated part-local and posed from
+/// the Part's kernel body like the Part's own draw.
+#[derive(Component)]
+pub(crate) struct LooseDecal {
+    pub index: usize,
+    pub geometry: Draw,
+}
+
+pub(crate) fn sync_loose_decals(
+    mut decals: Query<(&LooseDecal, &mut TexturedDraw)>,
+    mut control: ResMut<MotionControl>,
+) {
+    for (local, mut decal) in &mut decals {
+        match control.walking.world.loose.prim_frame(local.index) {
+            Ok(frame) => decal.draw = pose_draw(&local.geometry, &frame),
+            Err(_) => control.error = Some("drawn loose decal lost its Part body".into()),
+        }
+    }
+}
+
 pub(crate) fn sync_decals(
     bodies: Query<&FreeFallBody>,
     mut decals: Query<(&LocalDecal, &mut TexturedDraw)>,

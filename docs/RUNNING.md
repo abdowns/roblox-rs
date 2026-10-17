@@ -15,7 +15,7 @@ with studs on top, under the default sky. The character spawns with its Head at
 (0, 107, 0), falls about one second with the fall animation, lands and idles.
 The Baseplate and the demo Parts are read from the place file
 `places/viewport-baseplate.rbxm` (the log prints `place_loaded
-path=.../places/viewport-baseplate.rbxm parts=27 joints=5`). Print its
+path=.../places/viewport-baseplate.rbxm parts=28 joints=5`). Print its
 contents with `sh tools/cargo.sh run --locked -- rbxm-dump
 places/viewport-baseplate.rbxm`. Next to the Baseplate are five unanchored
 Parts:
@@ -36,6 +36,16 @@ East of the spawn (+X, turn right) a showcase of the later features:
 - **Hinges** (z 16): a yellow bar swings on a free Hinge at x 20, a green
   plate spins on a motor hinge at x 30, and a red Motor arm on a loose tower
   at x 40 turns 90 degrees.
+
+**Decals and Textures**: the red Crate carries face.png on its Back (the
+side facing the spawn) and a half-transparent SpawnLocation.png Decal on its
+Right; both move with it when it is pushed. Behind it to the left, a white
+8x6 "Tiles" wall at (-12, 3, -22) has a Texture with 2-stud tiles of
+SpawnLocation.png on its Back (4 x 3 tiles). The log prints
+`decal_loaded name="Crate/Face" class=Decal face=2 uv_extent=[1.0, 1.0] ...`,
+`decal_loaded name="Crate/Label" ... alpha=0.5019608 ...`,
+`decal_loaded name="Tiles/Tiles" class=Texture face=2 uv_extent=[4.0, 3.0] ...`
+and `workspace_decal_pass draws=3 decals=3`.
 
 West of the spawn (-X, turn left), the **Wedges** (x -20..-40):
 - a grey Wedge ramp at (-24, 2, 6), rising towards +Z: walk up it from its
@@ -62,7 +72,7 @@ Parts swing, spin and follow their motors (`audit-part-hinge`), and Motors
 and Motor6Ds turn the Parts they link (`audit-part-motor`). Ball Parts land,
 roll down a ramp and knock into each other (`audit-part-ball`), and the
 character pushes a loose ball and is stopped by an anchored one
-(`audit-part-ball-push`). Balls are drawn as spheres (`audit-ball-render`).
+(`audit-part-ball-push`). Balls are drawn as spheres (`audit-ball-render`). Decals and tiled Textures on blocks: `audit-decal-render`.
 Wedge Parts land, tumble and carry blocks down their slope, and the
 character walks up them (`audit-part-wedge`). They are drawn by the native
 Wedge path (`geometry::workspace_wedge`).
@@ -180,7 +190,7 @@ Expect, for each of the two native binary models in the install
 first_difference=None instances=67 classes={...}` (6353 bytes and 22
 instances for the second). Then three `rbxm_xml_round_trip file=...
 bytes=... xml_bytes=... identical=true` lines, for
-places/viewport-baseplate.rbxm (6892 bytes) and the same two models:
+places/viewport-baseplate.rbxm (7505 bytes) and the same two models:
 binary -> XML -> binary gives the same bytes. Then one `rbxmx_rewrite
 file=... identical=... skipped={} first_difference=... context=...` line
 for each of the 19 XML models, `identical=true` for PhysicsAnalyzer,

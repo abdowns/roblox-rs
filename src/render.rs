@@ -181,6 +181,7 @@ fn install_motion_world(
             motion::advance,
             motion::sync_bodies,
             motion::sync_loose,
+            motion::sync_loose_decals,
             motion::sync_decals,
         )
             .chain()
@@ -539,22 +540,37 @@ impl Gpu {
                 resource: self.uniform.as_entire_binding(),
             }],
         });
-        // Native Decal flags 0x8: filter=2 (trilinear/anisotropic), address=1
-        // (CLAMP_TO_EDGE). Anisotropy=1 is an explicit probe setting, not a
-        // recovered Studio quality default.
-        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("decal probe trilinear clamp"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            ..Default::default()
-        });
+        // createMaterial (010c3460) adds flag 0x8 for a Decal and 0x10 for a
+        // Texture; createTexturedMaterial (010c09a0) then sets filter=2
+        // (trilinear/anisotropic) for both and address=(flags >> 3) & 1:
+        // 1 (CLAMP_TO_EDGE) for a Decal, 0 (WRAP) for a Texture.
+        // Anisotropy=1 is an explicit probe setting, not a recovered Studio
+        // quality default.
+        let sampler = |label, address| {
+            self.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some(label),
+                address_mode_u: address,
+                address_mode_v: address,
+                address_mode_w: address,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            })
+        };
+        let clamp = sampler(
+            "decal probe trilinear clamp",
+            wgpu::AddressMode::ClampToEdge,
+        );
+        let wrap = sampler("texture probe trilinear wrap", wgpu::AddressMode::Repeat);
         let mut uploaded = Vec::new();
         for draw in draws {
-            let bindings = self.texture_bindings(&pipeline, &draw.texture, &sampler)?;
+            let sampler = if draw.draw.geometry == "texture" {
+                &wrap
+            } else {
+                &clamp
+            };
+            let bindings = self.texture_bindings(&pipeline, &draw.texture, sampler)?;
             let (v, i, count) = draw_bytes(std::slice::from_ref(&draw.draw))?;
             let vertices = self
                 .device
@@ -1229,6 +1245,100 @@ pub fn audit_ball_render(bundle: &Bundle) -> Result<String, String> {
     writeln!(
         report,
         "ball_render_pass round=true repeat_identical=true native_differential=not_tested"
+    )
+    .unwrap();
+    Ok(report)
+}
+
+/// Decals and Textures on Workspace blocks (`places/audit-decal-render.rbxm`):
+/// an 8x6 "Wall" with a 2-stud Texture on its Back and a 4x4 "Sign" with
+/// face.png on its Back, a fully transparent Decal and an empty one. Each
+/// drawn decal must change pixels (face.png is mostly transparent, so at
+/// least 300); the Texture must render differently
+/// clamped than wrapped (it tiles 4 x 3 times).
+pub fn audit_decal_render(bundle: &Bundle) -> Result<String, String> {
+    use crate::workspace::Workspace;
+    let scene = RenderScene::character(bundle)?;
+    let mut surfaces = surface::character(bundle, &scene)?;
+    let mut app = scene_app(scene);
+    let workspace = Workspace::place("audit-decal-render")?;
+    let (draws, coordinates, mut report) = crate::geometry::workspace_draws(bundle, &workspace)?;
+    surfaces.coordinates.extend(coordinates);
+    for draw in draws {
+        app.world_mut().spawn(draw);
+    }
+    let decals = texture::workspace_decals(bundle, &workspace)?;
+    report.push_str(&decals.report);
+    for decal in decals.draws {
+        app.world_mut().spawn(decal);
+    }
+    app.update();
+    let mut inputs = RenderInputs::character_probe();
+    // Identity frame: the camera looks down -Z at the Back (+Z) faces.
+    inputs.frame = CoordinateFrame {
+        position: [1.0, 60.0, 14.0],
+        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    };
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let extracted = app.world().resource::<Extracted>().0.clone();
+    let decals = app.world().resource::<ExtractedDecals>().0.clone();
+    // Only the head decal's character mesh is not in this scene: every
+    // extracted decal is a Workspace one.
+    let (mut gpu, _) = Gpu::new(&instance, None, wgpu::TextureFormat::Rgba8Unorm, &extracted)?;
+    gpu.add_studs(&extracted, &surfaces)?;
+    gpu.add_decals(&decals)?;
+    let (width, height) = (640u32, 480u32);
+    let full = gpu.read_frame(width, height, &inputs)?;
+    if gpu.read_frame(width, height, &inputs)? != full {
+        return Err("decal render repeat readback mismatch".into());
+    }
+    let changed = |a: &[u8], b: &[u8]| {
+        a.chunks_exact(4)
+            .zip(b.chunks_exact(4))
+            .filter(|(x, y)| x != y)
+            .count()
+    };
+    let mut pixels = Vec::new();
+    for decal in &decals {
+        let mut hidden = decals.clone();
+        for other in hidden.iter_mut().filter(|d| d.draw.name == decal.draw.name) {
+            for v in &mut other.draw.vertices {
+                v.position = [1e6; 3];
+            }
+        }
+        gpu.update_geometry(&extracted, &hidden, &surfaces)?;
+        let count = changed(&full, &gpu.read_frame(width, height, &inputs)?);
+        writeln!(
+            report,
+            "decal_render name={:?} kind={} pixels={count}",
+            decal.draw.name, decal.draw.geometry
+        )
+        .unwrap();
+        pixels.push(count);
+    }
+    gpu.update_geometry(&extracted, &decals, &surfaces)?;
+    if gpu.read_frame(width, height, &inputs)? != full {
+        return Err("decal render restore readback mismatch".into());
+    }
+    // The Texture again with the Decal sampler (clamped): only its first
+    // tile keeps the same texels.
+    let mut clamped = decals.clone();
+    for d in clamped.iter_mut().filter(|d| d.draw.geometry == "texture") {
+        d.draw.geometry = "decal".into();
+    }
+    let mut clamp_gpu = Gpu::new(&instance, None, wgpu::TextureFormat::Rgba8Unorm, &extracted)?.0;
+    clamp_gpu.add_studs(&extracted, &surfaces)?;
+    clamp_gpu.add_decals(&clamped)?;
+    let wrap_vs_clamp = changed(&full, &clamp_gpu.read_frame(width, height, &inputs)?);
+    writeln!(report, "decal_texture_wrap_vs_clamp pixels={wrap_vs_clamp}").unwrap();
+    if decals.len() != 2 || pixels.iter().any(|&p| p < 300) || wrap_vs_clamp < 2000 {
+        return Err(format!("decal render failed\n{report}"));
+    }
+    writeln!(
+        report,
+        "decal_render_pass decals={} skipped={} repeat_identical=true texture_wraps=true native_pixel_parity=not_tested",
+        decals.len(),
+        workspace.decals.len() - decals.len()
     )
     .unwrap();
     Ok(report)
@@ -2672,6 +2782,23 @@ fn run_viewport(
                 }
                 None => {
                     app.world_mut().spawn(draw);
+                }
+            }
+        }
+        let decals = texture::workspace_decals(bundle, &local)?;
+        report.push_str(&decals.report);
+        for decal in decals.draws {
+            let part = decal.draw.name.split_once('/').map(|(p, _)| p.to_string());
+            match loose.iter().position(|n| Some(*n) == part.as_deref()) {
+                Some(index) => {
+                    let local = motion::LooseDecal {
+                        index,
+                        geometry: decal.draw.clone(),
+                    };
+                    app.world_mut().spawn((decal, local));
+                }
+                None => {
+                    app.world_mut().spawn(decal);
                 }
             }
         }

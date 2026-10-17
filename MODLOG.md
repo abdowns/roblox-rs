@@ -1,5 +1,55 @@
 # MODLOG
 
+## 2026-10-16 Decals and Textures on block Parts
+
+**Changed:**
+- `workspace::DecalInstance` and `Workspace::decals`: Decal and Texture
+  children of Parts load from and save to .rbxm/.rbxmx (Name, Face,
+  Texture, Transparency, StudsPerTileU/V; native defaults from the ctors
+  007ffb8e, 0081d6ae, 00800428).
+- `geometry::workspace_decal` and `decal_extent`: addBlock's one-quad decal
+  path (010cca80, table 017f01b8 via `NativeImage::decal_faces`) and the
+  Texture tiling FUN_010e4850. `workspace_block`'s corners and normals moved
+  into a shared helper, unchanged.
+- `texture::workspace_decals`: which decals draw, per
+  FastCluster::updateGeometry (0116a2a0) and createMaterialForDecal.
+- The decal pass wraps Texture draws and clamps Decal draws
+  (createTexturedMaterial 010c09a0).
+- `motion::LooseDecal`: decals on loose Parts follow the Part's body.
+- `audit-decal-render` and `places/audit-decal-render.rbxm`.
+- Demo place: face.png on the Crate's Back, a half-transparent Decal on its
+  Right, and a new anchored "Tiles" wall with a 2-stud Texture (28 Parts,
+  3 decals).
+
+**Why:** the user asked for Decals and Textures on Parts, 1:1 with the
+original.
+
+**Tested how:**
+- `audit-decal-render`: both drawn decals change pixels (13991 and 658),
+  the transparent and empty ones are skipped, the Texture renders
+  differently clamped than wrapped (12892 pixels), repeat readback
+  identical.
+- `test`: 135 pass. New: `decal_quads_cover_their_face_upright` (every
+  face's quad on its plane, not mirrored, extents and alpha). The demo
+  place round-trip tests now also compare decals (binary and XML).
+- `viewport-baseplate-smoke` runs 120 frames and logs the three demo
+  decals (`workspace_decal_pass draws=3 decals=3`).
+- `audit-rbxm`, `audit-ball-render`, `audit-baseplate-render` and
+  `audit-render` still pass. clippy is clean.
+
+**Not tested:** pixels against the original; the Top/Bottom image
+orientation against running Studio (taken from the table only); that the
+Crate's decals stay on the Crate when pushed (same body frame, not
+measured). LocalTransparencyModifier is taken as 0. Decals on non-block
+shapes are an error.
+
+**Dead ends:** ObjectExporter::processPart (0110f6a0) looked like the
+renderer's decal path at first; it is the OBJ exporter (it pushes decal
+vertices 0.02 along the normal, which the renderer does not do). The
+renderer's path is FastCluster::updateGeometry -> 0116b6a0 -> addInstance.
+
+**Demo:** see docs/RUNNING.md (Crate face and label, the Tiles wall).
+
 ## 2026-10-16 Binary <-> XML conversion keeps the native property types
 
 **Changed:**

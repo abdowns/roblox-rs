@@ -4,7 +4,7 @@ use crate::{
     mesh::MeshData,
     native_data::NativeImage,
     scene::{Part, Scene},
-    workspace::{PartInstance, Workspace},
+    workspace::{DecalInstance, PartInstance, Workspace},
 };
 use bevy::prelude::{Component, Resource};
 use roxmltree::Node;
@@ -147,43 +147,12 @@ fn part_color(colors: &BTreeMap<u32, [u8; 3]>, part: &PartInstance) -> Result<[f
     ])
 }
 
-/// GeometryGenerator::addBlock (010cca80) for a Workspace block Part without
-/// a decal: world-space corners from the part CFrame, one quad per Smooth
-/// face, and faces with any other surface cut into 8-stud strips along Y
-/// (side faces) or Z (Top/Bottom), stepping from the face's first edge. Stud
-/// coordinates (types 1-5) run u = width/2 -> 0 and v = row -> row + 0.25 per
-/// full strip; the last strip ends at row + clamp(rest/8, 0, 1) * 0.25.
-/// Material UVs, tangents and outline edge distances are not produced (the
-/// low-quality Plastic shader reads only the stud coordinates; outlines are
-/// disabled). Returns the draw and its stud coordinates.
-pub fn workspace_block(
-    faces: &[[usize; 4]; 6],
-    rows: &[f32; 6],
-    colors: &BTreeMap<u32, [u8; 3]>,
-    part: &PartInstance,
-) -> Result<(Draw, Vec<[f32; 2]>), String> {
+/// addBlock's (010cca80) world-space corners (bit 4 +X, 2 +Y, 1 +Z from
+/// center - size/2) and face normals, shared by the strip and decal paths.
+fn block_frame(part: &PartInstance) -> ([[f32; 3]; 8], [[f32; 3]; 6]) {
     let size = part.size;
     let r = &part.frame.rotation;
     let t = part.frame.position;
-    let strips_y = (size[1] * 0.125 + 0.999) as i32 as i16;
-    let strips_z = (size[2] * 0.125 + 0.999) as i32 as i16;
-    let smooth = |face: usize| matches!(part.surfaces[face], 0 | 10);
-    let mut quads = 0u32;
-    for face in 0..6 {
-        let strips = if face == 1 || face == 4 {
-            strips_z
-        } else {
-            strips_y
-        };
-        quads += if smooth(face) {
-            1
-        } else {
-            strips.max(0) as u32
-        };
-    }
-    if quads > 0x2000 {
-        return Err("block exceeds the native 0x2000 quad limit".into());
-    }
     let half = size.map(|v| v * 0.5);
     let base: [f32; 3] = std::array::from_fn(|i| {
         -half[2] * r[i][2] + -half[1] * r[i][1] + -half[0] * r[i][0] + t[i]
@@ -214,6 +183,47 @@ pub fn workspace_block(
         unit(negate(column(1))),
         unit(negate(column(2))),
     ];
+    (corners, normals)
+}
+
+/// GeometryGenerator::addBlock (010cca80) for a Workspace block Part without
+/// a decal: world-space corners from the part CFrame, one quad per Smooth
+/// face, and faces with any other surface cut into 8-stud strips along Y
+/// (side faces) or Z (Top/Bottom), stepping from the face's first edge. Stud
+/// coordinates (types 1-5) run u = width/2 -> 0 and v = row -> row + 0.25 per
+/// full strip; the last strip ends at row + clamp(rest/8, 0, 1) * 0.25.
+/// Material UVs, tangents and outline edge distances are not produced (the
+/// low-quality Plastic shader reads only the stud coordinates; outlines are
+/// disabled). Returns the draw and its stud coordinates.
+pub fn workspace_block(
+    faces: &[[usize; 4]; 6],
+    rows: &[f32; 6],
+    colors: &BTreeMap<u32, [u8; 3]>,
+    part: &PartInstance,
+) -> Result<(Draw, Vec<[f32; 2]>), String> {
+    let size = part.size;
+    let r = &part.frame.rotation;
+    let strips_y = (size[1] * 0.125 + 0.999) as i32 as i16;
+    let strips_z = (size[2] * 0.125 + 0.999) as i32 as i16;
+    let smooth = |face: usize| matches!(part.surfaces[face], 0 | 10);
+    let mut quads = 0u32;
+    for face in 0..6 {
+        let strips = if face == 1 || face == 4 {
+            strips_z
+        } else {
+            strips_y
+        };
+        quads += if smooth(face) {
+            1
+        } else {
+            strips.max(0) as u32
+        };
+    }
+    if quads > 0x2000 {
+        return Err("block exceeds the native 0x2000 quad limit".into());
+    }
+    let (corners, normals) = block_frame(part);
+    let column = |c: usize| [r[0][c], r[1][c], r[2][c]];
     let down = column(1).map(|x| -x);
     let back = column(2).map(|x| -x);
     let steps = [down, back, down, down, column(2), down];
@@ -309,6 +319,78 @@ pub fn workspace_block(
         }
     }
     Ok((draw, studs))
+}
+
+/// The decal's texture coordinate extent (FUN_010e4850, called from
+/// addBlock at 010cd5d1 with the Part size): (1, 1) for a Decal; for a
+/// Texture the face's two in-plane sizes over StudsPerTileU/V, signed per
+/// face (Right z,y; Top -x,z; Back x,y; Left -z,y; Bottom x,-z; Front -x,y).
+pub fn decal_extent(decal: &DecalInstance, size: [f32; 3]) -> [f32; 2] {
+    let Some([su, sv]) = decal.studs_per_tile else {
+        return [1.0, 1.0];
+    };
+    let [x, y, z] = size;
+    let (u, v) = match decal.face {
+        0 => (z, y),
+        1 => (-x, z),
+        2 => (x, y),
+        3 => (-z, y),
+        4 => (x, -z),
+        5 => (-x, y),
+        _ => return [0.0, 0.0],
+    };
+    [u / su, v / sv]
+}
+
+/// GeometryGenerator::addBlock (010cca80) with a Decal: one quad on the
+/// decal's Face (+0x58), whatever the surfaces. Corners come from the decal
+/// table 017f01b8 (`NativeImage::decal_faces`), the normal is the block's
+/// face normal, and the texture coordinates are (U, 0), (0, 0), (U, V),
+/// (0, V) with (U, V) = `decal_extent`. The vertex color (010ca980 with a
+/// decal) is white with alpha 255 - (int)(min(t, 1) * 255) for
+/// t = 1 - (1 - Transparency)(1 - LocalTransparencyModifier) (007ffd24),
+/// 255 when t <= 0; LocalTransparencyModifier is taken as 0. Specular is the
+/// Part's, as for the block. Indices 0 1 2 2 1 3.
+pub fn workspace_decal(
+    decal_faces: &[[usize; 4]; 6],
+    part: &PartInstance,
+    decal: &DecalInstance,
+) -> Result<Draw, String> {
+    let face = decal.face as usize;
+    let table = decal_faces
+        .get(face)
+        .ok_or_else(|| format!("decal {:?}: Face {face} is not a NormalId", decal.name))?;
+    let (corners, normals) = block_frame(part);
+    let [u, v] = decal_extent(decal, part.size);
+    let t = 1.0 - (1.0 - decal.transparency) * (1.0 - 0.0);
+    let alpha = if 0.0 < t {
+        (255 - (t.min(1.0) * 255.0) as i32) as f32 / 255.0
+    } else {
+        1.0
+    };
+    let specular = specular(part.material)?;
+    let vertices = table
+        .iter()
+        .zip([[u, 0.0], [0.0, 0.0], [u, v], [0.0, v]])
+        .map(|(&corner, uv)| RenderVertex {
+            position: corners[corner],
+            normal: normals[face],
+            uv,
+            color: [1.0, 1.0, 1.0, alpha],
+            specular,
+        })
+        .collect();
+    Ok(Draw {
+        name: format!("{}/{}", part.name, decal.name),
+        vertices,
+        indices: vec![0, 1, 2, 2, 1, 3],
+        material: part.material,
+        geometry: if decal.studs_per_tile.is_some() {
+            "texture".into()
+        } else {
+            "decal".into()
+        },
+    })
 }
 
 /// GeometryGenerator's Wedge path (010dc290) for a Workspace WedgePart
@@ -1164,6 +1246,71 @@ impl RenderScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn decal_quads_cover_their_face_upright() {
+        // The 017f01b8 decal corner table (see docs/RESEARCH.md).
+        let faces = [
+            [6, 7, 4, 5],
+            [3, 7, 2, 6],
+            [7, 3, 5, 1],
+            [3, 2, 1, 0],
+            [5, 1, 4, 0],
+            [2, 6, 0, 4],
+        ];
+        let mut part = PartInstance {
+            name: "P".into(),
+            ..Default::default()
+        };
+        part.set_size([4.0, 6.0, 2.0]);
+        part.frame.position = [1.0, 2.0, 3.0];
+        let half = [2.0, 3.0, 1.0];
+        let up = [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        for face in 0..6u32 {
+            let mut decal = DecalInstance::decal(0);
+            decal.face = face;
+            let draw = workspace_decal(&faces, &part, &decal).unwrap();
+            let axis = (face % 3) as usize;
+            let sign = if face < 3 { 1.0 } else { -1.0 };
+            let n = draw.vertices[0].normal;
+            assert_eq!(n[axis], sign, "face {face} normal {n:?}");
+            for v in &draw.vertices {
+                let local = v.position[axis] - part.frame.position[axis];
+                assert_eq!(local, sign * half[axis], "face {face} off its plane");
+            }
+            // u runs 1 -> 0 from vertex 0 to 1; v runs 0 -> 1 from 0 to 2.
+            let d = |a: usize, b: usize| -> [f32; 3] {
+                std::array::from_fn(|i| draw.vertices[b].position[i] - draw.vertices[a].position[i])
+            };
+            let down = d(0, 2);
+            // v grows down the image: the image top is +Y on the sides
+            // and +Z (Back) on Top and Bottom, as the table orders them.
+            let expected_up = if face == 1 || face == 4 { up[1] } else { up[0] };
+            let dot: f32 = (0..3).map(|i| down[i] * expected_up[i]).sum();
+            assert!(dot < 0.0, "face {face} v does not run down");
+            // Seen from outside, u = 0 is on the left: left x down = n.
+            let left = d(0, 1);
+            let cross = [
+                left[1] * down[2] - left[2] * down[1],
+                left[2] * down[0] - left[0] * down[2],
+                left[0] * down[1] - left[1] * down[0],
+            ];
+            let facing: f32 = (0..3).map(|i| cross[i] * n[i]).sum();
+            assert!(facing > 0.0, "face {face} is mirrored");
+            assert_eq!(draw.vertices[2].uv, [1.0, 1.0]);
+            assert_eq!(draw.indices, [0, 1, 2, 2, 1, 3]);
+            assert_eq!(draw.vertices[0].color, [1.0; 4]);
+        }
+        let mut texture = DecalInstance::texture(0);
+        texture.face = 2;
+        assert_eq!(decal_extent(&texture, part.size), [2.0, 3.0]);
+        texture.face = 1;
+        texture.studs_per_tile = Some([4.0, 0.5]);
+        assert_eq!(decal_extent(&texture, part.size), [-1.0, 4.0]);
+        let mut faded = DecalInstance::decal(0);
+        faded.transparency = 0.5;
+        let draw = workspace_decal(&faces, &part, &faded).unwrap();
+        assert_eq!(draw.vertices[0].color[3], 128.0 / 255.0);
+    }
     #[test]
     fn wedge_draw_lies_on_the_wedge_mesh() {
         // The 017f0744 corner columns (see docs/RESEARCH.md).

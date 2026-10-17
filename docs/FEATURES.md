@@ -59,8 +59,8 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   classes and the Part properties the simulation does not use yet.
 
 - The demo place is a file: `viewport-baseplate` loads
-  `places/viewport-baseplate.rbxm` (27 Parts, 5 joints) and logs
-  `place_loaded ... parts=27 joints=5`. `rbxm-dump <file>` prints any model
+  `places/viewport-baseplate.rbxm` (28 Parts, 5 joints, 3 decals) and logs
+  `place_loaded ... parts=28 joints=5`. `rbxm-dump <file>` prints any model
   file as text. Run `sh tools/cargo.sh test --locked
   the_demo_place_round_trips`; expect it to pass (loading and saving gives
   the same bytes).
@@ -460,6 +460,37 @@ output to expect. Anything not covered by an audit is marked **not tested**.
   `workspace_block`; it is **not checked** against 010dc290's disassembly.
   How it looks is **not tested** (log, don't look). Material UVs, tangents
   and outline distances are not produced, as for blocks.
+
+- Decals and Textures on block Parts (`geometry::workspace_decal`,
+  `texture::workspace_decals`), ported from addBlock's decal path
+  (010cca80), FUN_010e4850 (Texture tiling), 010ca980/007ffd24 (color and
+  transparency), createMaterial/createTexturedMaterial (sampler) and
+  FastCluster::updateGeometry (which decals are drawn). One quad on the
+  decal's Face, whatever the surfaces, corners from the native table
+  017f01b8; a Decal spans the face once (clamped), a Texture repeats every
+  StudsPerTileU/V studs (wrapped). Decals load from and save to .rbxm/.rbxmx
+  as children of their Part (`Workspace::decals`).
+  Run `sh tools/cargo.sh run --locked -- audit-decal-render`. Expect:
+  - `decal_loaded name="Wall/Tiles" class=Texture face=2 uv_extent=[4.0, 3.0] alpha=1 size=64x64 ...`;
+  - `decal_loaded name="Sign/Face" class=Decal face=2 uv_extent=[1.0, 1.0] alpha=1 size=128x128 ...`;
+  - `decal_skip name="Sign/Hidden" reason=transparent` and
+    `decal_skip name="Sign/Empty" reason=empty_texture`;
+  - `decal_render name="Wall/Tiles" kind=texture pixels=13991` and
+    `decal_render name="Sign/Face" kind=decal pixels=658` (GPU dependent);
+  - `decal_texture_wrap_vs_clamp pixels=12892` (the Texture tiles);
+  - `decal_render_pass decals=2 skipped=2 repeat_identical=true texture_wraps=true native_pixel_parity=not_tested`.
+
+  `sh tools/cargo.sh test --locked decal_quads` checks that each face's quad
+  lies on its face, is not mirrored seen from outside, and has the image
+  top toward +Y on the sides and toward +Z (Back) on Top and Bottom.
+  Not ported: decals on Balls, Wedges, Cylinders and meshes (an error, not
+  a fallback); LocalTransparencyModifier (taken as 0); non-rbxasset URLs
+  (not drawn offline, logged `reason=not_offline_asset`); images other than
+  square power-of-two RGBA8 PNGs (an error). Not tested: how it looks
+  against the original (log, don't look), the Top/Bottom orientation
+  against running Studio, and that the Crate's decals stay on it while it
+  is pushed (they are posed from the same body frame as the Crate draw, but
+  no audit measures it).
 
 - Ball Parts are drawn as addSphere's cube sphere (`geometry::workspace_sphere`).
   Run `sh tools/cargo.sh run --locked -- audit-ball-render`. Expect:

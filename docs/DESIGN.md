@@ -117,7 +117,7 @@ formats/resizing remain unsupported. The original PNG is read only at runtime.
 
 `character_decals` follows explicit XML: empty texture creates no material,
 SpecialMesh Head uses the full existing mesh/UVs and white decal color. It assumes
-probe LocalTransparencyModifier=0; generic block decal UVs are unsupported.
+probe LocalTransparencyModifier=0.
 TexturedDraw is a separate Bevy component; existing Draw/RenderVertex signatures
 stay stable. The low-quality decal shader follows the bundle's DefaultFS albedo
 equation, SRC_ALPHA color blending, separate alpha blending, LEQUAL/no depth writes,
@@ -128,6 +128,31 @@ The original character rotates its face toward +Z. The probe camera now faces
 that side. A failed back-side probe changed zero pixels; corrected probe changes
 120 pixels. Synthetic textures verify row orientation/clamp, straight-alpha
 blending and absence of decal depth writes. Full original pixels remain **not tested**.
+
+### Workspace decals
+
+A Decal or Texture on a Workspace Part is a `DecalInstance` in
+`Workspace::decals` (parent Part index, Content URL, Face, Transparency and,
+for a Texture, StudsPerTileU/V). They load and save as children of their
+Part; the model writes them after the joints so the Part indices joints use
+stay the model indices.
+
+`texture::workspace_decals` follows FastCluster::updateGeometry: every
+Decal child whose transparency is below 1 is drawn, whatever the Part's own
+transparency. An empty URL has no material and draws nothing; a URL that is
+not rbxasset:// cannot load offline and draws nothing. Each texture file is
+decoded once.
+
+`geometry::workspace_decal` is addBlock's decal branch: one quad on the
+Face, corners from table 017f01b8, the block's face normal, white vertex
+color with the decal's alpha, the Part's specular. Texture coordinates run
+(U, 0), (0, 0), (U, V), (0, V); (U, V) is (1, 1) for a Decal and the face's
+size over StudsPerTile (signed per face) for a Texture. The draw's
+`geometry` tag is "decal" or "texture"; the decal pass picks the clamped or
+the wrapped sampler from it, as createTexturedMaterial picks the address
+mode from the 0x8/0x10 flag. Decals on loose Parts are generated
+part-local and posed from the Part's kernel body each frame
+(`motion::LooseDecal`), like the Part draws.
 
 ## Plastic surface boundary
 

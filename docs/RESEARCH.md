@@ -339,3 +339,38 @@ BallVertex 01c86008: aa9ea4, 9 | BallEdge 01c86068: aa9c2a, 10 | BallPlane 01c86
   `-1.1920929e-007` (three exponent digits: MSVC, a Windows writer). Others
   indent with spaces, omit referents (humanoidStatic, humanoidExtra,
   SlingshotPellet) or escape CR/LF in Source instead of CDATA.
+
+## Decals and Textures (decal port session, 2026-10-16)
+
+- RBX::Decal ctor 007ffb8e: Texture string +0x5c, Specular +0x60 = 0,
+  Shiny +0x64 = 20, Transparency +0x68 = 0, LocalTransparencyModifier
+  +0x6c = 0; class descriptor 01c98270. FaceInstance ctor 0081d6ae: Face
+  +0x58 = 5 (Front). Texture ctor 00800428: StudsPerTileU/V +0x70/+0x74 = 2;
+  class 01d6beb0; setter 00800398 ignores values <= 0.
+- Property init 00802341 (category Appearance): Texture, Transparency,
+  StudsPerTileU/V with flags 0x1f; Specular and Shiny 0x15;
+  LocalTransparencyModifier 0x10. Native XML (character3.rbxm) saves a
+  Decal as Face, Name, Texture, Transparency only.
+- Effective transparency 007ffd24: 1 - (1 - T)(1 - LTM).
+- FastCluster::updateGeometry 0116a2a0: the Part draws if its own
+  transparency < 1. If the Part has decal children (+0x94 bit 0), every
+  child of class 01c98270 (Decal or Texture) with effective transparency
+  < 1 is added with flags (partFlags & 1) | 2. The render queue is 4 for an
+  opaque decal, 3 for a translucent one, 7 when the Part is translucent.
+- createMaterial 010c3460: a decal adds flag 0x10 for a Texture, 0x8 for a
+  Decal, then createMaterialForDecal 010c3150 (no texture -> no material).
+  createTexturedMaterial 010c09a0: sampler filter = 2 when flags & 0x18,
+  address = (flags >> 3) & 1, so Decal clamps and Texture wraps.
+- addBlock 010cca80 with a Decal: one quad (quad count 1, no strips). Face
+  = Decal +0x58; corners from table 017f01b8 (four u32 per face):
+  6 7 4 5 / 3 7 2 6 / 7 3 5 1 / 3 2 1 0 / 5 1 4 0 / 2 6 0 4. Normal = the
+  block face normal. UV per vertex (U,0) (0,0) (U,V) (0,V); uv2 = 0; edge
+  distances 10.0. Tiling is 1 (getTiling is skipped for decals). The
+  vertex color is 010ca980 with the decal: white, alpha
+  255 - (int)(min(t,1) * 255), 255 when t <= 0.
+- FUN_010e4850(out, decal, size, flag) at 010cd5d1: (1, 1) if flag or not a
+  Texture; else per Face: 0 (z, y), 1 (-x, z), 2 (x, y), 3 (-z, y),
+  4 (x, -z), 5 (-x, y), each divided by (StudsPerTileU, StudsPerTileV).
+- ObjectExporter::processPart 0110f6a0 (OBJ export, not the renderer)
+  pushes decal vertices 0.02 along the normal; the renderer does not move
+  them (decal pass depth bias instead).

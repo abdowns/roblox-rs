@@ -23,7 +23,8 @@ Early and incomplete. Working today, with an automated audit for each item:
   - welded Parts that move as one, glued Parts that break under load,
     hinges, motor hinges, Motors and Motor6Ds.
 - **Rendering:** the character, the studded Baseplate, block, Ball and
-  Wedge Parts, the default sky and lighting.
+  Wedge Parts, Decals and tiled Textures on blocks, the default sky and
+  lighting.
 - **Model files:** binary .rbxm and XML .rbxmx read and written byte for
   byte as the original writes them. The demo place and the test places are
   .rbxm files in `places/`.
@@ -36,7 +37,8 @@ Not there yet:
   that a format conversion needs);
 - the remaining joint kinds (VelocityMotor, ManualGlue, surface joints);
 - Cylinders, CornerWedges and the other Part shapes;
-- textures and decals beyond the character, shadows and outlines.
+- decals and textures on Balls, Wedges and meshes (blocks have them),
+  shadows and outlines.
 
 Matching the original is not tested pixel for pixel or step for step. See
 [docs/FEATURES.md](docs/FEATURES.md) for the full list and the test for each

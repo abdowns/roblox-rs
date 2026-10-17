@@ -199,6 +199,89 @@ pub fn character_decals(bundle: &Bundle, scene: &RenderScene) -> Result<DecalSce
     Ok(result)
 }
 
+/// Decals and Textures on Workspace Parts, as FastCluster::updateGeometry
+/// (0116a2a0) adds them: every Decal child (class 01c98270, so Textures
+/// too) whose transparency (007ffd24) is below 1, whatever the Part's own
+/// transparency. A decal whose texture is empty has no material
+/// (createMaterialForDecal 010c3150) and is not drawn; a non-rbxasset URL
+/// cannot load offline and is not drawn either. Geometry is
+/// `geometry::workspace_decal`; only block Parts are ported. Draws are
+/// tagged "decal" (clamped sampler) or "texture" (wrapped sampler).
+pub fn workspace_decals(
+    bundle: &Bundle,
+    workspace: &crate::workspace::Workspace,
+) -> Result<DecalScene, String> {
+    let image = crate::native_data::NativeImage::load(bundle)?;
+    let faces = image.decal_faces()?;
+    let mut result = DecalScene {
+        draws: Vec::new(),
+        report: String::new(),
+    };
+    let mut cache: std::collections::BTreeMap<String, PngTexture> = Default::default();
+    for decal in &workspace.decals {
+        let part = workspace
+            .parts
+            .get(decal.part)
+            .ok_or_else(|| format!("decal {:?}: no Part {}", decal.name, decal.part))?;
+        let name = format!("{}/{}", part.name, decal.name);
+        let skip = |reason: &str, report: &mut String| {
+            writeln!(report, "decal_skip name={name:?} reason={reason}").unwrap()
+        };
+        if 1.0 - (1.0 - decal.transparency) * (1.0 - 0.0) >= 1.0 {
+            skip("transparent", &mut result.report);
+            continue;
+        }
+        if decal.texture.is_empty() {
+            skip("empty_texture", &mut result.report);
+            continue;
+        }
+        let Some(path) = decal.texture.strip_prefix("rbxasset://") else {
+            skip("not_offline_asset", &mut result.report);
+            continue;
+        };
+        if part.shape != crate::workspace::SHAPE_BLOCK {
+            return Err(format!(
+                "decal {name:?}: decals on Part shape {} are not ported",
+                part.shape
+            ));
+        }
+        if !cache.contains_key(path) {
+            let texture = PngTexture::parse(&bundle.read(
+                &format!("Contents/Resources/content/{path}"),
+                16 * 1024 * 1024,
+            )?)
+            .map_err(|e| format!("decal {name:?} {path}: {e}"))?;
+            cache.insert(path.to_string(), texture);
+        }
+        let texture = cache[path].clone();
+        let draw = crate::geometry::workspace_decal(&faces, part, decal)?;
+        let first = &texture.mips[0];
+        writeln!(
+            result.report,
+            "decal_loaded name={:?} class={} face={} uv_extent={:?} alpha={} size={}x{} rgba_sha256={:x} corners={:?}",
+            draw.name,
+            if draw.geometry == "texture" { "Texture" } else { "Decal" },
+            decal.face,
+            draw.vertices[2].uv,
+            draw.vertices[0].color[3],
+            first.width,
+            first.height,
+            Sha256::digest(&first.rgba),
+            draw.vertices.iter().map(|v| v.position).collect::<Vec<_>>()
+        )
+        .unwrap();
+        result.draws.push(TexturedDraw { draw, texture });
+    }
+    writeln!(
+        result.report,
+        "workspace_decal_pass draws={} decals={}",
+        result.draws.len(),
+        workspace.decals.len()
+    )
+    .unwrap();
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

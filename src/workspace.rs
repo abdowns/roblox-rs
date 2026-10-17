@@ -161,6 +161,49 @@ impl PartInstance {
     }
 }
 
+/// A Decal or Texture on a Part (RBX::Decal, ctor 007ffb8e; Texture ctor
+/// 00800428). Saved properties are the streamable ones of 00802341 and the
+/// FaceInstance Face: Name, Face, Texture, Transparency, and on a Texture
+/// StudsPerTileU/V. Shiny and Specular (+0x64, +0x60) are not saved and
+/// LocalTransparencyModifier (+0x6c) is runtime-only, so neither is kept.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecalInstance {
+    pub name: String,
+    /// Index of the parent Part in `Workspace::parts`.
+    pub part: usize,
+    /// Decal +0x5c, a Content URL.
+    pub texture: String,
+    /// FaceInstance +0x58, a NormalId (default 5 Front, ctor 0081d6ae).
+    pub face: u32,
+    /// Decal +0x68.
+    pub transparency: f32,
+    /// Texture +0x70/+0x74 (default 2, 2; the setters 00800398 ignore
+    /// values <= 0). None for a Decal.
+    pub studs_per_tile: Option<[f32; 2]>,
+}
+
+impl DecalInstance {
+    /// Instance.new("Decal") on `part`.
+    pub fn decal(part: usize) -> Self {
+        Self {
+            name: "Decal".into(),
+            part,
+            texture: String::new(),
+            face: 5,
+            transparency: 0.0,
+            studs_per_tile: None,
+        }
+    }
+    /// Instance.new("Texture") on `part`.
+    pub fn texture(part: usize) -> Self {
+        Self {
+            name: "Texture".into(),
+            studs_per_tile: Some([2.0, 2.0]),
+            ..Self::decal(part)
+        }
+    }
+}
+
 /// A JointInstance: Part0, Part1, C0, C1. A rigid joint (Weld, ManualWeld,
 /// Snap) holds Part0.CFrame * C0 = Part1.CFrame * C1; a Glue pulls the
 /// corners of its face in C0 toward the same corners in C1; a hinge
@@ -194,6 +237,8 @@ pub struct JointInstance {
 pub struct Workspace {
     pub parts: Vec<PartInstance>,
     pub joints: Vec<JointInstance>,
+    /// Decals and Textures, each a child of one Part.
+    pub decals: Vec<DecalInstance>,
 }
 
 impl Workspace {
@@ -214,6 +259,7 @@ impl Workspace {
         Self {
             parts: vec![baseplate],
             joints: Vec::new(),
+            decals: Vec::new(),
         }
     }
     /// The World's joint spanning tree (`joints.rs`): every Part in
@@ -499,6 +545,28 @@ impl Workspace {
             }
             model.add(i, None);
         }
+        // Decals go last so the Part indices joints refer to stay the
+        // model indices.
+        for decal in &self.decals {
+            if decal.part >= self.parts.len() {
+                return Err(format!("decal {:?}: no Part {}", decal.name, decal.part));
+            }
+            let class = if decal.studs_per_tile.is_some() {
+                "Texture"
+            } else {
+                "Decal"
+            };
+            let mut i = ModelInstance::new(class);
+            i.set("Name", Property::String(decal.name.clone()))
+                .set("Face", Property::Token(decal.face))
+                .set("Texture", Property::Content(decal.texture.clone()))
+                .set("Transparency", Property::Float(decal.transparency));
+            if let Some([u, v]) = decal.studs_per_tile {
+                i.set("StudsPerTileU", Property::Float(u))
+                    .set("StudsPerTileV", Property::Float(v));
+            }
+            model.add(i, Some(decal.part));
+        }
         Ok(model)
     }
     /// Builds a Workspace from a model or place tree. Every Part and
@@ -532,6 +600,7 @@ impl Workspace {
                     workspace.parts.push(part_from(instance)?);
                 }
                 class if JOINT_CLASSES.iter().any(|(c, _)| *c == class) => {}
+                "Decal" | "Texture" => {}
                 other => {
                     return Err(format!(
                         "{other} {:?}: only Parts, WedgeParts and joints load",
@@ -548,6 +617,34 @@ impl Workspace {
             workspace
                 .joints
                 .push(joint_from(instance, *kind, &part_index)?);
+        }
+        for (parent, instance) in model.instances.iter().enumerate() {
+            for &child in &instance.children {
+                let decal = &model.instances[child];
+                if !matches!(decal.class.as_str(), "Decal" | "Texture") {
+                    continue;
+                }
+                let part = *part_index.get(&parent).ok_or_else(|| {
+                    format!(
+                        "{} {:?}: only a Part parent is ported",
+                        decal.class,
+                        decal.name()
+                    )
+                })?;
+                workspace.decals.push(decal_from(decal, part)?);
+            }
+        }
+        if let Some(&root) = model
+            .roots
+            .iter()
+            .find(|&&r| matches!(model.instances[r].class.as_str(), "Decal" | "Texture"))
+        {
+            let decal = &model.instances[root];
+            return Err(format!(
+                "{} {:?}: a Decal without a Part is not ported",
+                decal.class,
+                decal.name()
+            ));
         }
         Ok(workspace)
     }
@@ -690,6 +787,43 @@ fn part_from(instance: &ModelInstance) -> Result<PartInstance, String> {
     Ok(part)
 }
 
+fn decal_from(instance: &ModelInstance, part: usize) -> Result<DecalInstance, String> {
+    let mut decal = if instance.class == "Texture" {
+        DecalInstance::texture(part)
+    } else {
+        DecalInstance::decal(part)
+    };
+    for (name, value) in &instance.properties {
+        match name.as_str() {
+            "Name" => decal.name = instance.name().into(),
+            "Face" => decal.face = expect(instance, name, as_token)?.unwrap(),
+            "Texture" => {
+                decal.texture = instance
+                    .string(name)
+                    .ok_or_else(|| format!("Decal Texture has type {:#04x}", value.type_id()))?
+                    .into()
+            }
+            "Transparency" => decal.transparency = expect(instance, name, as_f32)?.unwrap(),
+            "StudsPerTileU" | "StudsPerTileV" if instance.class == "Texture" => {
+                let v = expect(instance, name, as_f32)?.unwrap();
+                let tile = decal.studs_per_tile.as_mut().unwrap();
+                // 00800398: values <= 0 are ignored.
+                if v > 0.0 {
+                    tile[usize::from(name == "StudsPerTileV")] = v;
+                }
+            }
+            _ => {}
+        }
+    }
+    if decal.face > 5 {
+        return Err(format!(
+            "Decal {:?}: Face {} is not a NormalId",
+            decal.name, decal.face
+        ));
+    }
+    Ok(decal)
+}
+
 fn joint_from(
     instance: &ModelInstance,
     kind: u32,
@@ -788,14 +922,16 @@ mod tests {
             assert_eq!(x, y);
         }
         assert_eq!(a.joints, b.joints);
+        assert_eq!(a.decals, b.decals);
     }
     #[test]
     fn the_demo_place_round_trips() {
         let path = place_path(DEMO_PLACE);
         let bytes = std::fs::read(&path).unwrap();
         let demo = Workspace::load(&path).unwrap();
-        assert_eq!(demo.parts.len(), 27);
+        assert_eq!(demo.parts.len(), 28);
         assert_eq!(demo.joints.len(), 5);
+        assert_eq!(demo.decals.len(), 3);
         // Saved again, the file is the same.
         assert_eq!(demo.to_model().unwrap().to_binary().unwrap(), bytes);
         let back = Workspace::from_model(&Model::parse(&bytes).unwrap()).unwrap();

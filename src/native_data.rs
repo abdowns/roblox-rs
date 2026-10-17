@@ -82,6 +82,22 @@ impl NativeImage {
         Ok(faces)
     }
 
+    /// addBlock's decal corner table (017f01b8): four corners per face in
+    /// 0x10-byte rows, read by the one-quad decal path (010cd5d6).
+    pub fn decal_faces(&self) -> Result<[[usize; 4]; 6], String> {
+        let data = self.region(0x017f01b8, 96)?;
+        let faces = std::array::from_fn(|face| {
+            std::array::from_fn(|corner| {
+                let at = face * 16 + corner * 4;
+                u32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize
+            })
+        });
+        if faces.iter().flatten().any(|v| *v > 7) {
+            return Err("invalid native decal face table".into());
+        }
+        Ok(faces)
+    }
+
     /// addWedge's face table (017f0744): the same 0x14-byte rows as the
     /// block's, with corners repeated where a face narrows to a point.
     pub fn wedge_faces(&self) -> Result<[[usize; 4]; 6], String> {
