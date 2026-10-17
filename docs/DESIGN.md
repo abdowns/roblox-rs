@@ -875,6 +875,14 @@ XML-writable property and read in name order. A save puts the Parts first,
 then the joints, all at the top level, so a load gives back the same
 creation order.
 
+Places made for the port (the viewport demo, and later the audit places)
+are binary .rbxm files in `places/`, written with `Workspace::save` and read
+with `Workspace::load`. To change one: load it, edit the Workspace in code
+(a one-off test or command), save it, and check the result with
+`rbxm-dump`. The Studio new-document Baseplate stays in code
+(`Workspace::studio_new_document`), because RobloxIDEDoc builds it in code
+too.
+
 ## Studio default world (Workspace, Baseplate, Play Solo spawn)
 
 workspace.rs holds the Workspace contents as plain `PartInstance` values with

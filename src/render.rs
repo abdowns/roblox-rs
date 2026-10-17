@@ -2634,8 +2634,22 @@ fn run_viewport(
         app.world_mut().spawn(draw);
     }
     app.update();
-    // The Play Solo viewport runs the demo place with unanchored Parts.
-    let demo = crate::workspace::Workspace::loose_parts_demo();
+    // The Play Solo viewport runs the demo place, read from its file.
+    let demo = if baseplate {
+        let path = crate::workspace::place_path(crate::workspace::DEMO_PLACE);
+        let demo = crate::workspace::Workspace::load(&path)?;
+        writeln!(
+            report,
+            "place_loaded path={} parts={} joints={}",
+            path.display(),
+            demo.parts.len(),
+            demo.joints.len()
+        )
+        .unwrap();
+        demo
+    } else {
+        crate::workspace::Workspace::default()
+    };
     install_motion_world(&mut app, bundle, baseplate.then_some(&demo))?;
     let walking_camera_root = if walking && baseplate {
         app.world_mut()

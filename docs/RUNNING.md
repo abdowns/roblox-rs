@@ -13,8 +13,12 @@ sh tools/cargo.sh run --locked -- viewport-baseplate
 Expected: the Studio new-document place, a 512x512 dark stone grey Baseplate
 with studs on top, under the default sky. The character spawns with its Head at
 (0, 107, 0), falls about one second with the fall animation, lands and idles.
-The place also holds five unanchored demo Parts (`Workspace::loose_parts_demo`,
-not a native document):
+The Baseplate and the demo Parts are read from the place file
+`places/viewport-baseplate.rbxm` (the log prints `place_loaded
+path=.../places/viewport-baseplate.rbxm parts=27 joints=5`). Print its
+contents with `sh tools/cargo.sh run --locked -- rbxm-dump
+places/viewport-baseplate.rbxm`. Next to the Baseplate are five unanchored
+Parts:
 - a red 4x6x2 "Crate" 8 studs ahead of the spawn: walk forward (W) into it and
   the character pushes it until it tips over;
 - two blue Parts resting on each other to the front left;
@@ -156,6 +160,15 @@ presentation progress remain available even before closing the window. No game
 assets leave RobloxStudio. No visual inspection was performed.
 
 ## Model files
+
+```sh
+sh tools/cargo.sh run --locked -- rbxm-dump places/viewport-baseplate.rbxm
+```
+
+Prints any .rbxm/.rbxl/.rbxmx file as text: one line per instance (class
+and Name, indented by depth), then one `.Property = value` line per property.
+For the demo place the first lines are `Part "Baseplate"` and
+`  .Anchored = Bool(true)`; the last instance is `Motor "Motor"`.
 
 ```sh
 sh tools/cargo.sh run --locked -- audit-rbxm

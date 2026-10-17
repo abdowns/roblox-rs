@@ -196,6 +196,43 @@ impl Model {
         }
         index
     }
+    /// A readable listing: one line per instance (indented by depth, with
+    /// its class and Name), then one line per property in name order. Ref
+    /// values print as the target's path of Names.
+    pub fn dump(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        let mut parent = vec![None; self.instances.len()];
+        for (i, instance) in self.instances.iter().enumerate() {
+            for &c in &instance.children {
+                parent[c] = Some(i);
+            }
+        }
+        let path = |mut i: usize| {
+            let mut names = vec![self.instances[i].name().to_string()];
+            while let Some(p) = parent[i] {
+                names.push(self.instances[p].name().to_string());
+                i = p;
+            }
+            names.reverse();
+            names.join(".")
+        };
+        let mut stack: Vec<(usize, usize)> = self.roots.iter().rev().map(|r| (*r, 0)).collect();
+        while let Some((i, depth)) = stack.pop() {
+            let instance = &self.instances[i];
+            let pad = "  ".repeat(depth);
+            writeln!(out, "{pad}{} {:?}", instance.class, instance.name()).unwrap();
+            for (name, value) in &instance.properties {
+                let text = match value {
+                    Property::Ref(Some(target)) => format!("Ref({})", path(*target)),
+                    other => format!("{other:?}"),
+                };
+                writeln!(out, "{pad}  .{name} = {text}").unwrap();
+            }
+            stack.extend(instance.children.iter().rev().map(|c| (*c, depth + 1)));
+        }
+        out
+    }
     /// The instance index and its parent for every instance under the
     /// roots, in pre-order (the native writer's referent order).
     fn pre_order(&self) -> Result<Vec<(usize, Option<usize>)>, String> {
@@ -845,7 +882,10 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Binary-format axis-aligned rotation id: id-1 = 6*right + up (NormalIds).
+/// Binary-format axis-aligned rotation id (006b11ff): id-1 = 6*right + up
+/// (NormalIds), and column 2 is right x up with the native products, so the
+/// signs of zero match. Like the native reader it does not check that the two
+/// axes are perpendicular.
 fn special_rotation(id: u8) -> Result<[[f32; 3]; 3], String> {
     let direction = |n: u8| -> Result<[f32; 3], String> {
         Ok(match n {
@@ -861,9 +901,6 @@ fn special_rotation(id: u8) -> Result<[[f32; 3]; 3], String> {
     let index = id.checked_sub(1).ok_or("invalid CFrame rotation id")?;
     let x = direction(index / 6)?;
     let y = direction(index % 6)?;
-    if x.iter().zip(&y).any(|(a, b)| a * b != 0.0) {
-        return Err("invalid CFrame rotation id".into());
-    }
     let z = [
         x[1] * y[2] - x[2] * y[1],
         x[2] * y[0] - x[0] * y[2],
@@ -1261,14 +1298,20 @@ mod tests {
             special_rotation(0x03).unwrap(),
             [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]]
         );
-        assert!(special_rotation(0x01).is_err());
+        // Right, Right: degenerate, as the native reader builds it.
+        assert_eq!(
+            special_rotation(0x01).unwrap(),
+            [[1.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+        );
+        assert!(special_rotation(0).is_err());
+        assert!(special_rotation(37).is_err());
     }
     #[test]
     fn rotation_ids_invert_special_rotations() {
         for id in 1..=36u8 {
-            if let Ok(r) = special_rotation(id) {
-                assert_eq!(rotation_id(&r), Some(id));
-            }
+            let r = special_rotation(id).unwrap();
+            let perpendicular = (id - 1) / 6 % 3 != (id - 1) % 6 % 3;
+            assert_eq!(rotation_id(&r), perpendicular.then_some(id));
         }
         let tilted = [[0.8, -0.6, 0.0], [0.6, 0.8, 0.0], [0.0, 0.0, 1.0]];
         assert_eq!(rotation_id(&tilted), None);

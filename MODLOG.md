@@ -1,5 +1,40 @@
 # MODLOG
 
+## 2026-10-16 The demo place is a file: places/viewport-baseplate.rbxm
+
+**Changed:**
+- `viewport-baseplate` reads its Workspace from
+  `places/viewport-baseplate.rbxm` (`workspace::place_path`, `DEMO_PLACE`).
+  It logs `place_loaded path=... parts=27 joints=5`.
+- `Workspace::loose_parts_demo` and its two showcase builders are gone. The
+  file was written once from them with `Workspace::save`; the builder code
+  is in git history at c94cc70.
+- `.gitignore` whitelists `places/` and `places/*.rbxm` (our own files,
+  no game data).
+- New command `rbxm-dump <file>` prints a model or place as text.
+- `rbxm::special_rotation` no longer rejects ids whose two axes are not
+  perpendicular; it builds the same degenerate matrix as the native reader
+  (006b11ff).
+- The AGENTS.md demo rule now names the file instead of the builder.
+
+**Why:** The user asked for the demo and the code-built places to live in
+.rbxm files that are read at run time.
+
+**Tested how:**
+- `sh tools/cargo.sh test --locked the_demo_place_round_trips`: the file
+  loads as 27 Parts and 5 joints, and saving it again gives the same
+  bytes.
+- At c94cc70, `the_demo_round_trips_through_a_binary_file` showed the
+  builder's Workspace and the loaded one are equal.
+- `viewport-baseplate-smoke` exits 0 and logs `place_loaded`.
+
+**Note:** One difference from the builder is native behavior. A rotation
+saved as an axis-aligned id is rebuilt with column 2 = x * y, as 006b11ff
+does. So the Motor's C0/C1 now have -0.0 where the builder had 0.0.
+Comparing viewport logs before and after cannot show the effect: the
+viewport is paced by the wall clock, and two runs of the same build logged
+steps 226 and 228.
+
 ## 2026-10-16 Workspace load and save (.rbxm)
 
 **Changed:**

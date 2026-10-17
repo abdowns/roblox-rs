@@ -216,375 +216,6 @@ impl Workspace {
             joints: Vec::new(),
         }
     }
-    /// Viewport demo place (not a native document): the new-document
-    /// Baseplate plus explicit unanchored Parts showing the kernel features.
-    /// - "Crate" (4 x 6 x 2, red) in the walking path, 8 studs ahead of the
-    ///   spawn, for the character to push.
-    /// - "Rest" and "Stack" (blue) placed just above the Baseplate and on
-    ///   each other.
-    /// - "Drop" (yellow) falling flat and "Tumble" (green) falling tilted,
-    ///   both released from heights the falling character passes.
-    pub fn loose_parts_demo() -> Self {
-        let mut workspace = Self::studio_new_document();
-        let part = |name: &str, color: u32, position: [f32; 3]| {
-            let mut p = PartInstance {
-                name: name.into(),
-                brick_color: color,
-                ..PartInstance::default()
-            };
-            p.frame.position = position;
-            p
-        };
-        let mut crate_part = part("Crate", 21, [0.0, 3.05, -8.0]);
-        crate_part.set_size([4.0, 6.0, 2.0]);
-        let rest = part("Rest", 23, [-8.0, 0.65, -6.0]);
-        let stack = part("Stack", 23, [-7.5, 1.9, -5.8]);
-        let drop = part("Drop", 24, [7.0, 40.0, -6.0]);
-        let mut tumble = part("Tumble", 28, [-6.0, 60.0, -14.0]);
-        // 30 degrees about Z, then 20 degrees about X.
-        let (sz, cz) = 30f32.to_radians().sin_cos();
-        let (sx, cx) = 20f32.to_radians().sin_cos();
-        let rz = [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]];
-        let rx = [[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]];
-        tumble.frame.rotation = std::array::from_fn(|r| {
-            std::array::from_fn(|c| (0..3).map(|k| rz[r][k] * rx[k][c]).sum())
-        });
-        workspace
-            .parts
-            .extend([crate_part, rest, stack, drop, tumble]);
-        workspace.add_feature_showcase();
-        workspace
-    }
-    /// The demo's showcase of the later kernel features, east of the spawn
-    /// (+X), away from the walking path:
-    /// - Balls (x 20..44, z -20..-34): "Roll" on an anchored 10 degree
-    ///   "Ramp", "Bounce" dropped from height, "Pebble" dropped off-center on
-    ///   an anchored "Dome", and "Kick" (diameter 4) on the ground for the
-    ///   character to push;
-    /// - a welded "L" ("Base" + "Mast", z 8) that falls as one assembly;
-    /// - "Hung", glued under an anchored "Holder";
-    /// - hinges on anchored blocks (z 16): "Swing" (free Hinge), "Wheel"
-    ///   (motor hinge, constant 0.1) and a Motor arm on a loose "Tower";
-    /// - Wedges, west of the spawn (-X; see `add_wedge_showcase`).
-    fn add_feature_showcase(&mut self) {
-        self.add_wedge_showcase();
-        const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let frame = |position: [f32; 3]| CoordinateFrame {
-            position,
-            rotation: IDENTITY,
-        };
-        let add = |workspace: &mut Workspace,
-                   name: &str,
-                   size: [f32; 3],
-                   position: [f32; 3],
-                   anchored: bool,
-                   ball: bool,
-                   color: u32| {
-            let mut part = PartInstance {
-                name: name.into(),
-                anchored,
-                brick_color: color,
-                frame: frame(position),
-                ..Default::default()
-            };
-            if ball {
-                part.set_shape(SHAPE_BALL);
-            }
-            part.set_size(size);
-            workspace.parts.push(part);
-            workspace.parts.len() - 1
-        };
-        let joint = |workspace: &mut Workspace,
-                     name: &str,
-                     kind: u32,
-                     parts: [usize; 2],
-                     c0: CoordinateFrame,
-                     c1: CoordinateFrame| {
-            workspace.joints.push(JointInstance {
-                name: name.into(),
-                kind,
-                part0: parts[0],
-                part1: parts[1],
-                c0,
-                c1,
-                face: [[0.0; 3]; 4],
-                base_angle: 0.0,
-                current_angle: 0.0,
-                desired_angle: 0.0,
-                max_velocity: 0.0,
-            });
-            workspace.joints.len() - 1
-        };
-        // Balls. The ramp's low end (-X) rests on the Baseplate.
-        let (s, c) = 10f32.to_radians().sin_cos();
-        let ramp_center = [34.0, 10.0 * s + 0.5 * c, -20.0];
-        let ramp = add(
-            self,
-            "Ramp",
-            [20.0, 1.0, 10.0],
-            ramp_center,
-            true,
-            false,
-            194,
-        );
-        self.parts[ramp].frame.rotation = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
-        let local = [8.0f32, 1.55, 0.0];
-        let roll = [
-            ramp_center[0] + c * local[0] - s * local[1],
-            ramp_center[1] + s * local[0] + c * local[1],
-            ramp_center[2],
-        ];
-        add(self, "Roll", [2.0; 3], roll, false, true, 21);
-        add(
-            self,
-            "Bounce",
-            [3.0; 3],
-            [24.0, 30.0, -30.0],
-            false,
-            true,
-            24,
-        );
-        add(self, "Dome", [6.0; 3], [40.0, 3.0, -32.0], true, true, 194);
-        add(
-            self,
-            "Pebble",
-            [1.0; 3],
-            [40.5, 12.0, -32.0],
-            false,
-            true,
-            23,
-        );
-        add(self, "Kick", [4.0; 3], [8.0, 2.0, -12.0], false, true, 28);
-        // Weld: an L dropped from 10 studs.
-        let base = add(
-            self,
-            "Base",
-            [4.0, 1.2, 2.0],
-            [20.0, 10.0, 8.0],
-            false,
-            false,
-            21,
-        );
-        let mast = add(
-            self,
-            "Mast",
-            [1.0, 4.0, 1.0],
-            [21.5, 12.6, 8.0],
-            false,
-            false,
-            21,
-        );
-        joint(
-            self,
-            "Weld",
-            joints::WELD,
-            [base, mast],
-            frame([1.5, 2.6, 0.0]),
-            frame([0.0; 3]),
-        );
-        // Glue: z of C0/C1 along -Y, the Holder's bottom face.
-        let holder = add(
-            self,
-            "Holder",
-            [4.0, 1.0, 2.0],
-            [30.0, 10.0, 8.0],
-            true,
-            false,
-            194,
-        );
-        let hung = add(
-            self,
-            "Hung",
-            [4.0, 1.0, 2.0],
-            [30.0, 9.0, 8.0],
-            false,
-            false,
-            23,
-        );
-        let down = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
-        let glue = joint(
-            self,
-            "Glue",
-            joints::GLUE,
-            [holder, hung],
-            CoordinateFrame {
-                position: [0.0, -0.5, 0.0],
-                rotation: down,
-            },
-            CoordinateFrame {
-                position: [0.0, 0.5, 0.0],
-                rotation: down,
-            },
-        );
-        self.joints[glue].face = [
-            [-2.0, -1.0, 0.0],
-            [2.0, -1.0, 0.0],
-            [2.0, 1.0, 0.0],
-            [-2.0, 1.0, 0.0],
-        ];
-        // Hinges (C0 at the anchored block's center, z along +Z).
-        let block = [1.0; 3];
-        let pivot = add(self, "Pivot", block, [20.0, 12.0, 16.0], true, false, 194);
-        let swing = add(
-            self,
-            "Swing",
-            [6.0, 0.4, 1.0],
-            [22.5, 12.0, 17.1],
-            false,
-            false,
-            24,
-        );
-        joint(
-            self,
-            "Hinge",
-            joints::ROTATE,
-            [pivot, swing],
-            frame([0.0; 3]),
-            frame([-2.5, 0.0, -1.1]),
-        );
-        let axle = add(self, "Axle", block, [30.0, 12.0, 16.0], true, false, 194);
-        self.parts[axle].surface_inputs[2] = SurfaceInput {
-            input: crate::kernel_joint::INPUT_CONSTANT,
-            param_a: 0.0,
-            param_b: 0.1,
-        };
-        let wheel = add(
-            self,
-            "Wheel",
-            [4.0, 4.0, 0.4],
-            [30.0, 12.0, 16.8],
-            false,
-            false,
-            28,
-        );
-        joint(
-            self,
-            "MotorHinge",
-            joints::ROTATE_V,
-            [axle, wheel],
-            frame([0.0; 3]),
-            frame([0.0, 0.0, -0.8]),
-        );
-        // Motor: an arm turning on top of a loose tower (z of C0/C1 along +Y).
-        let up = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
-        let tower = add(
-            self,
-            "Tower",
-            [2.0, 1.0, 2.0],
-            [40.0, 0.5, 16.0],
-            false,
-            false,
-            194,
-        );
-        let arm = add(
-            self,
-            "Arm",
-            [4.0, 0.4, 0.4],
-            [42.0, 1.2, 16.0],
-            false,
-            false,
-            21,
-        );
-        let motor = joint(
-            self,
-            "Motor",
-            joints::MOTOR,
-            [tower, arm],
-            CoordinateFrame {
-                position: [0.0, 0.5, 0.0],
-                rotation: up,
-            },
-            CoordinateFrame {
-                position: [-2.0, -0.2, 0.0],
-                rotation: up,
-            },
-        );
-        self.joints[motor].desired_angle = std::f32::consts::FRAC_PI_2;
-        self.joints[motor].max_velocity = 0.05;
-    }
-    /// WedgeParts west of the spawn (x -20..-40):
-    /// - "WedgeRamp", an anchored 8 x 4 x 16 Wedge rising towards +Z, to walk
-    ///   up from its low end at z -2;
-    /// - "Chute", an anchored 8 x 4 x 8 Wedge, with "Slider" (2 x 1 x 2) set on
-    ///   its slope: it slides off the low end;
-    /// - "Doorstop", a loose 4 x 2 x 4 Wedge dropped flat from 20 studs, and
-    ///   "Tumbler", one dropped upside down and turned, which lands on its
-    ///   edges and rolls onto a face.
-    fn add_wedge_showcase(&mut self) {
-        let mut add = |name: &str,
-                       wedge: bool,
-                       size: [f32; 3],
-                       position: [f32; 3],
-                       rotation: [[f32; 3]; 3],
-                       anchored: bool,
-                       color: u32| {
-            let mut part = PartInstance {
-                name: name.into(),
-                anchored,
-                brick_color: color,
-                frame: CoordinateFrame { position, rotation },
-                ..Default::default()
-            };
-            if wedge {
-                part.set_shape(SHAPE_WEDGE);
-            }
-            part.set_size(size);
-            self.parts.push(part);
-        };
-        const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        add(
-            "WedgeRamp",
-            true,
-            [8.0, 4.0, 16.0],
-            [-24.0, 2.0, 6.0],
-            IDENTITY,
-            true,
-            194,
-        );
-        // The Chute's slope normal is (0, 2, -1) / sqrt 5; the Slider's up
-        // axis is that normal, 0.05 studs clear of the slope at local z 2.
-        let root5 = 5f32.sqrt();
-        let (c, s) = (2.0 / root5, -1.0 / root5);
-        let lift = 0.55;
-        add(
-            "Chute",
-            true,
-            [8.0, 4.0, 8.0],
-            [-36.0, 2.0, 0.0],
-            IDENTITY,
-            true,
-            194,
-        );
-        add(
-            "Slider",
-            false,
-            [2.0, 1.0, 2.0],
-            [-36.0, 3.0 + c * lift, 2.0 + s * lift],
-            [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]],
-            false,
-            21,
-        );
-        add(
-            "Doorstop",
-            true,
-            [4.0, 2.0, 4.0],
-            [-26.0, 20.0, -14.0],
-            IDENTITY,
-            false,
-            24,
-        );
-        // Upside down (180 degrees about Z), then 30 degrees about Y.
-        let (sy, cy) = 30f32.to_radians().sin_cos();
-        add(
-            "Tumbler",
-            true,
-            [4.0, 2.0, 4.0],
-            [-36.0, 14.0, -14.0],
-            [[-cy, 0.0, -sy], [0.0, -1.0, 0.0], [-sy, 0.0, cy]],
-            false,
-            28,
-        );
-    }
     /// The World's joint spanning tree (`joints.rs`): every Part in
     /// Workspace order (World::insertPrimitive), then every joint in
     /// Workspace order (World::insertJoint). The native load interleaves
@@ -739,6 +370,17 @@ pub fn character_placement(spawn: &CoordinateFrame, primary: &CoordinateFrame) -
         rotation: IDENTITY,
     };
     compose(&compose(&placed, &inverse(&moved)), &translation)
+}
+
+/// The viewport demo place (`viewport-baseplate`), in `places/`.
+pub const DEMO_PLACE: &str = "viewport-baseplate.rbxm";
+
+/// A place or model file shipped with the project, in `places/` (our own
+/// files, not game data).
+pub fn place_path(name: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("places")
+        .join(name)
 }
 
 /// The JointInstance classes the port simulates, by Joint::JointType.
@@ -1136,13 +778,16 @@ mod tests {
         assert_eq!(a.joints, b.joints);
     }
     #[test]
-    fn the_demo_round_trips_through_a_binary_file() {
-        let demo = Workspace::loose_parts_demo();
-        let bytes = demo.to_model().unwrap().to_binary().unwrap();
+    fn the_demo_place_round_trips() {
+        let path = place_path(DEMO_PLACE);
+        let bytes = std::fs::read(&path).unwrap();
+        let demo = Workspace::load(&path).unwrap();
+        assert_eq!(demo.parts.len(), 27);
+        assert_eq!(demo.joints.len(), 5);
+        // Saved again, the file is the same.
+        assert_eq!(demo.to_model().unwrap().to_binary().unwrap(), bytes);
         let back = Workspace::from_model(&Model::parse(&bytes).unwrap()).unwrap();
         assert_same(&demo, &back);
-        // Written again, the bytes are the same.
-        assert_eq!(back.to_model().unwrap().to_binary().unwrap(), bytes);
     }
     #[test]
     fn a_part_has_the_native_property_set() {
